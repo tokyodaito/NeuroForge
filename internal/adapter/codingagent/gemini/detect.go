@@ -199,11 +199,12 @@ func hasExt(name string) bool {
 }
 
 // pathExts returns the ordered executable extensions to try. On Windows this is
-// PATHEXT (defaulting to a sane ordering when unset); elsewhere it is empty
-// (Unix resolves executable bits, not extensions).
+// PATHEXT (defaulting to a sane ordering when unset); elsewhere it is a single
+// empty extension so the bare name is probed (Unix resolves executable bits,
+// not extensions).
 func pathExts() []string {
 	if runtime.GOOS != "windows" {
-		return nil
+		return []string{""}
 	}
 	pathext := os.Getenv("PATHEXT")
 	if pathext == "" {
