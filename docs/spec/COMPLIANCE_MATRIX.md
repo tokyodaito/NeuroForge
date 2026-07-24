@@ -18,7 +18,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 
 | AC | Requirement (abridged) | Status | Milestone | Issue(s) | Package(s) |
 |----|------------------------|--------|-----------|----------|------------|
-| AC-1 | `forge` (no args) opens interactive TUI | partial (shell planned in M0-8; today prints a clear "not implemented" notice) | M0 | M0-8 | `internal/tui`, `internal/cli` |
+| AC-1 | `forge` (no args) opens interactive TUI | partial (M0 shell implemented: full-screen alt-buffer shell with graceful non-TTY degradation; full screens come in later milestones) | M0 | M0-8 | `internal/tui`, `internal/cli` |
 | AC-2 | Manage projects/tasks without CLI | planned | M1 | M1-6 | `internal/tui`, `internal/project` |
 | AC-3 | Create a task with free-form text (no template) | planned | M1 | M1-5 | `internal/task` |
 | AC-4 | Attach an image to a task | planned | M1 | M1-5 | `internal/task` |
@@ -44,10 +44,10 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-24 | Disabled visual verification never claims UI is verified | planned | M10 | M10-7 | `internal/visual`, `internal/policy` |
 | AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
-| AC-27 | Daemon resumes unfinished tasks after restart | planned | M0/M7 | M0-4, M7-3 | `internal/daemon`, `internal/storage` |
+| AC-27 | Daemon resumes unfinished tasks after restart | partial (M0: daemon persists durable state and restarts safely; full attempt reconciliation lands in M0-4/M7-3) | M0/M7 | M0-4, M7-3 | `internal/daemon`, `internal/storage` |
 | AC-28 | Agent has no merge credentials | planned (enforced by design — ADR-0008) | M3/M11 | M3-4, M11-5 | `internal/supervisor`, `internal/merge` |
 | AC-29 | Non-disableable security policy cannot be weakened by task override | planned (core in M0-7) | M0/M8 | M0-7, M8-1 | `internal/policy` |
-| AC-30 | Full task history available in audit | planned | M0+ | M0-6 | `internal/audit` |
+| AC-30 | Full task history available in audit | partial (M0: append-only audit store implemented and reconstructs per-scope history; richer event kinds land with later milestones) | M0+ | M0-6 | `internal/audit` |
 
 ## CLI surface (spec §30)
 
@@ -55,16 +55,22 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 |---------|--------|-------|
 | `forge version` | done | M0-2 |
 | `forge help` | done | M0-2 |
-| `forge` (TUI) | partial (notice only) | M0-8 |
+| `forge` (TUI) | partial (M0 full-screen shell) | M0-8 |
+| `forge daemon run` | done | M0-4 |
+| `forge daemon start` | done | M0-4 |
+| `forge daemon stop` | done | M0-4 |
+| `forge daemon status` | done | M0-4 |
+| `forge daemon logs` | done | M0-4 |
+| `forge doctor` | done (basic M0 checks; full onboarding doctor in M13) | M0 |
 | `forge project ...` | planned | M1-1..M1-4 |
 | `forge task ...` | planned | M1-5 |
 | `forge agent ...` / `forge model ...` / `forge route ...` | planned | M2, M6 |
 | `forge image-provider ...` | planned | M9 |
 | `forge quota` / `usage` / `cost` | planned | M6 |
 | `forge plugin ...` | planned | M2-7 |
-| `forge audit` | planned | M0-6 |
-| `forge emergency-stop` / `forge cleanup` | planned | M0 |
-| `forge init` / `doctor` / `update` | planned | M13 |
+| `forge audit` | planned | M1+ |
+| `forge emergency-stop` / `forge cleanup` | planned | M1+ |
+| `forge init` / `update` | planned | M13 |
 
 ## Hard rules (spec §36) — current enforcement
 
@@ -94,15 +100,69 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 24 | Agent may not self-reduce project scope | planned — M11-5 (scope_valid) |
 | 25 | Unimplemented requirements explicitly marked | done — scaffold `doc.go` markers, this matrix, help text |
 
-## Bootstrap (this change set) — what is actually done
+## Durable-workflow & security enforcement (M0)
+
+| Requirement | Status / mechanism |
+|-------------|--------------------|
+| State not held only in RAM (§11.4) | done — SQLite/WAL in `internal/storage` |
+| Daemon listens only on loopback (§11.3) | done — transport refuses non-loopback bind (tested) |
+| Local API protected by a random local token | done — per-run crypto-random token, constant-time checked |
+| Token / runtime files have safe fs permissions | done — dirs 0o700, pid/token/addr files 0o600 (tested) |
+| Migrations are idempotent and forward-only | done — `schema_migrations` + transactional steps (tested) |
+| Repeated `daemon start` never spawns a second daemon | done — single-instance guard (tested) |
+| `stop` gracefully terminates the child process | done — `/shutdown` + SIGTERM fallback (tested) |
+| No external network calls | done — loopback only, no outbound calls |
+| Structured logging | done — `log/slog` JSON |
+| Context-cancellation shutdown | done — signal/`/shutdown`/ctx → graceful drain (tested) |
+
+## Milestone M0 — what is implemented
+
+- **Storage** (`internal/storage`, ADR-0003/0010): SQLite opened in WAL mode via
+  the pure-Go `modernc.org/sqlite` driver; forward-only, idempotent, versioned
+  migration runner (`schema_migrations`); the `audit_events` append-only table
+  with DB-level triggers rejecting UPDATE/DELETE. Large artifacts stay on disk.
+- **Audit** (`internal/audit`, AC-30): append-only Recorder reconstructing
+  per-scope history; no update/delete API exposed to callers.
+- **Transport** (`internal/transport`, ADR-0004): in-memory broadcast event bus;
+  loopback-only HTTP server (JSON command API `/healthz`, `/status`,
+  `/shutdown` + SSE `/events`); random per-run bearer token, constant-time
+  checked, never logged. Repeated start refuses a non-loopback bind.
+- **Daemon** (`internal/daemon`, ADR-0002): global runtime dir layout
+  (`NEUROFORGE_HOME` / `~/.neuroforge`); the Run loop wires storage→migrate→
+  audit→bus→transport and shuts down cleanly on ctx/SIGTERM/SIGINT/`/shutdown`;
+  single-instance guard + stale/corrupted runtime reclaim; `start`/`stop`/
+  `status`/`logs`/`run`.
+- **Structured logging** (`log/slog` JSON) and **context cancellation** wired
+  through the daemon lifecycle.
+- **TUI shell** (`internal/tui`, AC-1): full-screen alternate-buffer shell that
+  renders a banner, placeholders and daemon status, exits on q/Esc/Ctrl-C, and
+  degrades gracefully on a non-TTY.
+- **CLI**: `forge daemon {run,start,stop,status,logs}`, `forge doctor` (build,
+  platform, runtime home + permissions, DB schema version, daemon status).
+- **Tests**: storage/migrations (WAL, idempotency, concurrent readers,
+  append-only), audit (history reconstruction), transport (loopback refusal,
+  token auth, SSE ordering, bus), daemon Run (health, private files, audit
+  persistence, API+context shutdown), and **integration tests** that build the
+  real `forge` binary and exercise lifecycle / repeated-start / corrupted-state
+  / SIGTERM cancellation / restart. All run under `go test -race` and `make check`.
+
+### Remaining in M0 (not in this change set)
+
+- M0-7 policy core (pipeline toggles + dependency rules) — AC-7/AC-29 core.
+- M0-4 full startup reconciliation of in-flight attempts (resume/finish).
+- M0-9 dedicated end-to-end demonstrable scenario harness (the building blocks
+  above are exercised by tests but the scripted scenario is formalised with the
+  remainder).
+
+## Bootstrap (original scaffold) — context
 
 - `forge version` / `forge help` implemented + unit-tested (`internal/cli`,
   `internal/version`).
 - Modular-monolith package skeleton created (25 packages build & vet clean); every
   not-yet-implemented package carries a `STATUS: scaffold — not implemented` doc
   comment.
-- `make build` / `test` / `lint` / `check` configured and green; zero external
-  dependencies (`go.mod` clean, no `go.sum`).
+- `make build` / `test` / `lint` / `check` configured and green (the original
+  scaffold had zero deps; M0 added `modernc.org/sqlite`, ADR-0010).
 - ADRs 0001–0009, architecture docs (COMPONENTS / DATA_FLOW / STATE_MACHINES),
   AGENTS/README/CONTRIBUTING, and this matrix + implementation plan in place.
 - `docs/spec/NEUROFORGE_SPEC.md` **untouched**.

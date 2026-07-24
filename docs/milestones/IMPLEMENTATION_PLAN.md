@@ -56,20 +56,21 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Checks:** `go test ./internal/cli ./internal/version`; `make build`.
 - **DoD:** unit tests cover every branch; `make check` green.
 
-### M0-3 — SQLite storage + migrations
+### M0-3 — SQLite storage + migrations `[DONE]`
 - **Goal:** durable, transactional store with versioned schema.
 - **Scope:** `internal/storage`: open DB in WAL mode, migration runner, the §31
   table set (incrementally), "state before external action" write helpers.
 - **Allowed paths:** `internal/storage/**`, a storage test DB (temp dir).
 - **Forbidden:** daemon, adapters, policy logic.
-- **Depends on:** M0-1. **Related ADR:** 0003.
+- **Depends on:** M0-1. **Related ADR:** 0003, 0010.
 - **Acceptance:** migrations are forward-only and idempotent; concurrent readers
   + single writer works; large artifacts referenced, not stored as BLOBs.
 - **Checks:** unit tests (open, migrate from empty, re-migrate is no-op, WAL
-  readable during write).
-- **DoD:** driver choice (CGO vs pure-Go) justified; no `go vet` issues.
+  readable during write). — green under `make check`.
+- **DoD:** driver choice justified (ADR-0010, pure-Go modernc.org/sqlite); no
+  `go vet` issues. Remaining §31 tables land with later milestones (§36.25).
 
-### M0-4 — Daemon process + lifecycle + startup reconciliation
+### M0-4 — Daemon process + lifecycle + startup reconciliation `[PARTIAL: lifecycle + restart-safe done; full attempt reconciliation pending]`
 - **Goal:** single owner of mutable workflow state that recovers on restart.
 - **Scope:** `internal/daemon`: start/stop, PID/lockfile, startup reconciliation
   of persisted attempts (resume/finish), no silent resume of forbidden ops.
@@ -80,8 +81,12 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
   never resumes a `LOCAL_REVIEW` push.
 - **Checks:** integration test: start → write attempt → kill → restart → reconciled.
 - **DoD:** recovery scenario green; AC-27 test exists.
+  — **Done in this change set:** process lifecycle (start/stop/status/logs/run),
+  single-instance guard, stale/corrupted runtime reclaim, durable restart-safe
+  state, signal/context graceful shutdown. **Pending:** full attempt
+  reconciliation (resume/finish of in-flight work) and the AC-27 resume test.
 
-### M0-5 — Loopback transport (HTTP JSON + SSE + token)
+### M0-5 — Loopback transport (HTTP JSON + SSE + token) `[DONE]`
 - **Goal:** TUI/CLI ↔ daemon command + live-event channel.
 - **Scope:** `internal/transport`: loopback-only listener, JSON command API, SSE
   events, random bearer token.
@@ -90,10 +95,10 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Depends on:** M0-1. **Related ADR:** 0004.
 - **Acceptance:** refuses non-loopback bind; rejects requests without token; SSE
   delivers events in order; token never logged.
-- **Checks:** unit tests (bind refusal, auth, event order).
-- **DoD:** transport reusable by both CLI and TUI.
+- **Checks:** unit tests (bind refusal, auth, event order). — green.
+- **DoD:** transport reusable by both CLI and TUI. — done (CLI uses the client).
 
-### M0-6 — Audit log (append-only)
+### M0-6 — Audit log (append-only) `[DONE]`
 - **Goal:** tamper-evident per-task history (AC-30).
 - **Scope:** `internal/audit`: append-only event store; record commands, changed
   files, provider/model, attachment transfers, push/PR/merge/revert, policy
@@ -103,10 +108,10 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Depends on:** M0-3.
 - **Acceptance:** entries are append-only and reconstruct a task history; not
   writable by agent processes.
-- **Checks:** unit tests (append, no update/delete, history reconstruction).
-- **DoD:** audit API documented; AC-30 data shape supported.
+- **Checks:** unit tests (append, no update/delete, history reconstruction). — green.
+- **DoD:** audit API documented; AC-30 data shape supported. — done (foundation).
 
-### M0-7 — Policy core (pipeline toggles + dependency rules)
+### M0-7 — Policy core (pipeline toggles + dependency rules) `[PLANNED — not in this change set]`
 - **Goal:** deterministic resolution of pipeline switches (§5, §5.1).
 - **Scope:** `internal/policy`: toggle model, dependency rules
   (push=false ⇒ no CR/merge/post_merge), prompt-injection priority constants.
@@ -118,7 +123,7 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Checks:** table-driven unit tests for every dependency rule.
 - **DoD:** rule table is the tested source of truth.
 
-### M0-8 — TUI shell
+### M0-8 — TUI shell `[DONE]`
 - **Goal:** `forge` with no args opens a (minimal) full-screen UI (AC-1 start).
 - **Scope:** `internal/tui`: open full-screen layout, connect to daemon via
   transport, show "no projects" placeholder; graceful image fallback (§6.7).
@@ -127,10 +132,10 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Depends on:** M0-5.
 - **Acceptance:** opens full-screen; exits cleanly; degrades on terminals without
   image support.
-- **Checks:** integration smoke test (start/exit); manual scenario doc.
-- **DoD:** AC-1 partially satisfied (shell only).
+- **Checks:** integration smoke test (start/exit); manual scenario doc. — green.
+- **DoD:** AC-1 partially satisfied (shell only). — done.
 
-### M0-9 — Demonstrable M0 scenario
+### M0-9 — Demonstrable M0 scenario `[PENDING]`
 - **Goal:** end-to-end proof for M0.
 - **Scope:** glue + an integration test script.
 - **Allowed paths:** test harness under `internal/daemon` test or `cmd/forge`.
@@ -140,6 +145,9 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
   `forge version`/`help` work.
 - **Checks:** `make check` includes the scenario.
 - **DoD:** M0 ships buildable + demonstrable (rule §36.20).
+  — The building blocks (build/start/persist/restart/stop) are exercised by the
+  integration tests in `internal/cli`; the formal scripted scenario + full
+  reconciliation lands with the remainder of M0.
 
 ---
 
