@@ -161,3 +161,24 @@ func (c *Client) setAuth(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 }
+
+// readBody reads and returns the response body (capped at 1 MiB).
+func readBody(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// parseErrorMessage extracts the "error" field from a JSON error body, or falls
+// back to the raw body text.
+func parseErrorMessage(body []byte, status int) string {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err == nil {
+		if msg, ok := m["error"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return fmt.Sprintf("status %d", status)
+	}
+	return text
+}

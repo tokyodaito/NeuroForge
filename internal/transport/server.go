@@ -27,6 +27,12 @@ type Config struct {
 	// AuditReader, if set, backs the read-only GET /audit endpoint. Nil makes
 	// /audit return 503 (e.g. in tests that do not wire storage).
 	AuditReader AuditReader
+	// ProjectAPI, if set, backs the project management endpoints (/projects).
+	// Nil makes those endpoints return 503.
+	ProjectAPI ProjectAPI
+	// TaskAPI, if set, backs the task management endpoints (/tasks).
+	// Nil makes those endpoints return 503.
+	TaskAPI TaskAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -103,6 +109,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	mux.HandleFunc("/events", s.withToken(s.handleEvents))
 	mux.HandleFunc("/shutdown", s.withToken(s.handleShutdown))
 	mux.HandleFunc("/audit", s.withToken(s.handleAudit))
+	s.registerAPIRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{
