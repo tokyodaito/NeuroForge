@@ -3,7 +3,6 @@
 package proctree
 
 import (
-	"fmt"
 	"os/exec"
 	"syscall"
 )
@@ -21,13 +20,22 @@ func NewGroupCommand(name string, arg ...string) *exec.Cmd {
 
 // KillGroup terminates the process tree led by cmd via taskkill /T /F. The
 // signal argument is ignored (taskkill is always forceful).
+//
+// The operation is best-effort and idempotent: if taskkill reports a nonzero
+// exit (e.g. the process already exited, or a concurrent kill raced with us),
+// we fall back to terminating the leader directly and return nil. This mirrors
+// the unix implementation, where ESRCH (no such process) is not an error, so
+// cancellation never fails spuriously when the group is already gone.
 func KillGroup(cmd *exec.Cmd, _ Signal) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
 	kill := exec.Command("taskkill", "/PID", itoa(cmd.Process.Pid), "/T", "/F")
-	if err := kill.Run(); err != nil {
-		return fmt.Errorf("taskkill: %w", err)
+	if _, err := kill.CombinedOutput(); err != nil {
+		// The tree (or leader) is likely already gone. Kill the leader directly
+		// as a last resort; ignore the error since the goal — terminate the
+		// group — is either achieved or already was.
+		_ = cmd.Process.Kill()
 	}
 	return nil
 }
