@@ -1,12 +1,13 @@
 // Package audit records the tamper-evident audit trail.
 //
-// STATUS: scaffold — not implemented (planned for milestone M0, extended later).
+// STATUS: foundation implemented for milestone M0 (append-only store over
+// SQLite, spec §29.4 / AC-30).
 //
-// Scope (docs/spec/NEUROFORGE_SPEC.md §29.4): record commands, changed files,
-// provider/model used, attachment transfers, push, PR/MR, merge, revert and policy
-// overrides so that a full per-task history (input -> specification -> route ->
-// attempts -> usage -> changes -> verification -> delivery) is reconstructable
-// (AC-30).
+// The audit trail is append-only: events can be recorded and queried, never
+// updated or deleted. Mutation is rejected at the storage layer (triggers) and
+// the Recorder exposes no update/delete API. A full per-task history (input ->
+// specification -> route -> attempts -> usage -> changes -> verification ->
+// delivery) is reconstructable by querying events by scope/scope id.
 //
-// Boundaries: append-only; must not be writable by agent processes.
+// Boundaries: the audit store must never be writable by agent processes.
 package audit
