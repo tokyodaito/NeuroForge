@@ -1,0 +1,36 @@
+# Built binary and dist artifacts
+/forge
+/forge.exe
+/dist/
+/bin/
+
+# Test / coverage artifacts
+*.out
+*.test
+coverage.txt
+coverage.html
+
+# Go workspace files (keep go.work optional and local)
+/go.work
+/go.work.sum
+
+# Vendor is not used; keep module-based
+/vendor/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# NeuroForge local runtime (never commit per-user state)
+/.neuroforge/
