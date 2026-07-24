@@ -239,7 +239,12 @@ func pathExts() []string {
 	if ext == "" {
 		return nil
 	}
-	parts := strings.Split(ext, string(os.PathListSeparator))
+	// PATHEXT is a Windows environment variable whose value is always
+	// semicolon-delimited, independent of the host OS path-list separator
+	// (os.PathListSeparator is ':' on Unix). Split on ';' so a PATHEXT set on a
+	// non-Windows host (e.g. in tests or cross-platform tooling) is parsed
+	// correctly rather than treated as one giant entry.
+	parts := strings.Split(ext, ";")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)

@@ -77,8 +77,14 @@ func TestLookPathWindowsExtensionTrial(t *testing.T) {
 }
 
 // TestLookPathBatAndExeShims covers .bat and (on Windows) .exe resolution from
-// PATHEXT, plus the npm-shim pattern (a .cmd wrapper).
+// PATHEXT, plus the npm-shim pattern (a .cmd wrapper). PATHEXT extension
+// resolution is a Windows concern: on Unix a bare name is resolved by the exec
+// bit, and .bat/.cmd/.exe shims are not executable, so the whole scenario is
+// Windows-only.
 func TestLookPathBatAndExeShims(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PATHEXT .bat/.cmd/.exe shim resolution is Windows-specific")
+	}
 	dir := t.TempDir()
 	withPath(t, dir)
 
