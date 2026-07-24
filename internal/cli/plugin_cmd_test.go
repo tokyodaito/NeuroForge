@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,11 @@ func m2FakeBinary(t *testing.T) string {
 			t.Fatal(err)
 		}
 		bin := filepath.Join(dir, "fake-coding-agent")
+		// Windows requires the .exe suffix for an executable; without it the
+		// build target cannot be exec'd by the plugin conformance harness.
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/fake-coding-agent")
 		cmd.Dir = root
 		if out, err := cmd.CombinedOutput(); err != nil {
