@@ -17,10 +17,11 @@ import (
 
 // RunConfig configures a daemon Run. Zero values use safe defaults.
 type RunConfig struct {
-	Dirs   Dirs
-	Addr   string       // loopback listen address; default "127.0.0.1:0"
-	Token  string       // if empty, a random token is generated
-	Logger *slog.Logger // optional override; otherwise JSON to stderr
+	Dirs        Dirs
+	Addr        string       // loopback listen address; default "127.0.0.1:0"
+	Token       string       // if empty, a random token is generated
+	Reconcilers []Reconciler // if nil, DefaultReconcilers() is used (extension point)
+	Logger      *slog.Logger // optional override; otherwise JSON to stderr
 }
 
 // Run is the daemon process entry point. It blocks until ctx is cancelled, a
@@ -69,6 +70,21 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 
 	// 2. Open the append-only audit recorder.
 	recorder := audit.NewRecorder(db, logger)
+
+	// 3. Startup reconciliation: reconcile durable + ephemeral runtime state
+	// against OS reality BEFORE we bind/claim the runtime dir. This is the
+	// deterministic recovery point (AC-27 framework). A live-owner conflict
+	// aborts startup so no duplicate daemon is created.
+	reconcilers := cfg.Reconcilers
+	if reconcilers == nil {
+		reconcilers = DefaultReconcilers()
+	}
+	if _, err := Reconcile(runCtx, ReconcileTx{
+		DB: db, Audit: recorder, Dirs: cfg.Dirs, Logger: logger,
+	}, reconcilers); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
 	if _, err := recorder.Record(runCtx, audit.Event{
 		Type:    "daemon.starting",
 		Actor:   audit.ActorDaemon,
@@ -77,7 +93,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		return fmt.Errorf("audit starting: %w", err)
 	}
 
-	// 3. Internal event bus + loopback transport server.
+	// 4. Internal event bus + loopback transport server.
 	bus := transport.NewBus()
 	defer bus.Close()
 
@@ -102,7 +118,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	}
 	srv.SetVersion(version.Version)
 
-	// 4. Bind the loopback listener BEFORE writing runtime files, so the
+	// 5. Bind the loopback listener BEFORE writing runtime files, so the
 	// address advertised to clients is real.
 	addr, err := srv.Listen()
 	if err != nil {
@@ -110,7 +126,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	}
 	baseURL := "http://" + addr.String()
 
-	// 5. Write runtime files (mode 0o600) so the CLI/TUI can reach us.
+	// 6. Write runtime files (mode 0o600) so the CLI/TUI can reach us.
 	if err := writeRuntimeFiles(cfg.Dirs, os.Getpid(), token, baseURL); err != nil {
 		return fmt.Errorf("write runtime files: %w", err)
 	}
@@ -129,13 +145,13 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	}
 	bus.Publish("daemon.started", map[string]any{"addr": baseURL, "pid": os.Getpid()})
 
-	// 6. Install signal handlers. signal.NotifyContext cancels sigCtx on signal
+	// 7. Install signal handlers. signal.NotifyContext cancels sigCtx on signal
 	// OR when runCtx is cancelled (by /shutdown or parent), and serves as the
 	// blocking context below.
 	sigCtx, stop := signal.NotifyContext(runCtx, terminationSignals()...)
 	defer stop()
 
-	// 7. Serve until cancelled, then shut down.
+	// 8. Serve until cancelled, then shut down.
 	serveErr := srv.Serve(sigCtx)
 
 	if _, err := recorder.Record(context.Background(), audit.Event{
