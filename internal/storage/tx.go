@@ -52,6 +52,17 @@ func (t *Tx) Rollback() error {
 	return t.tx.Rollback()
 }
 
+// Exec executes one statement against the pool. It is the non-transactional
+// counterpart of [Tx.Exec] for single-statement mutations that do not need to
+// share a transaction with other writes (spec §11.4).
+func (d *DB) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	res, err := d.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: exec: %w", err)
+	}
+	return res, nil
+}
+
 // Exec executes one statement within this transaction. It is the escape hatch
 // for callers that need to run a statement that is not covered by a dedicated
 // typed method, while still sharing the transaction (spec §11.4, ADR-0003).

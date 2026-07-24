@@ -32,6 +32,14 @@ const (
 	// StateFailed: the agent run failed; the workspace is retained for
 	// inspection.
 	StateFailed State = "failed"
+	// StateWaitingQuota: every route in the chain is quota-exhausted; the work
+	// package is parked until an account resets (spec §15.5, §20.3, §32
+	// PROVIDER_QUOTA). It is NOT terminal — it resumes automatically.
+	StateWaitingQuota State = "waiting_quota"
+	// StateQuarantined: an unrecoverable failure (protocol error, exhausted
+	// retries, no fallback) requires human attention before the work can
+	// continue (spec §28 QUARANTINE, §32). Terminal-ish; a human un-quarantines.
+	StateQuarantined State = "quarantined"
 	// StateDeleted: the worktree has been removed.
 	StateDeleted State = "deleted"
 )
