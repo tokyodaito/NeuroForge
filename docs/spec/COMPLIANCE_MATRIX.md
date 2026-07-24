@@ -18,10 +18,10 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 
 | AC | Requirement (abridged) | Status | Milestone | Issue(s) | Package(s) |
 |----|------------------------|--------|-----------|----------|------------|
-| AC-1 | `forge` (no args) opens interactive TUI | partial (M0 shell implemented: full-screen alt-buffer shell with graceful non-TTY degradation; full screens come in later milestones) | M0 | M0-8 | `internal/tui`, `internal/cli` |
-| AC-2 | Manage projects/tasks without CLI | planned | M1 | M1-6 | `internal/tui`, `internal/project` |
-| AC-3 | Create a task with free-form text (no template) | planned | M1 | M1-5 | `internal/task` |
-| AC-4 | Attach an image to a task | planned | M1 | M1-5 | `internal/task` |
+| AC-1 | `forge` (no args) opens interactive TUI | done (M1: full TUI with projects/tasks screens, keyboard nav, command palette, status bar, mouse support, live event refresh via daemon SSE) | M0/M1 | M0-8, M1-6 | `internal/tui`, `internal/cli` |
+| AC-2 | Manage projects/tasks without CLI | done (M1: TUI screens for projects and tasks; add project, navigate, start/pause/stop, pause/cancel tasks) | M1 | M1-6 | `internal/tui`, `internal/project` |
+| AC-3 | Create a task with free-form text (no template) | done (M1: `forge task add` + TUI; description can be the only user field) | M1 | M1-5 | `internal/task` |
+| AC-4 | Attach an image to a task | done (M1: `-a`/`--attach` flag; content-addressed SHA-256 storage under `~/.neuroforge/artifacts/`) | M1 | M1-5 | `internal/task` |
 | AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | planned | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent` |
 | AC-6 | A 7th agent via plugin, no core changes | planned | M2 | M2-7 | `internal/adapter/codingagent` |
 | AC-7 | LOCAL_REVIEW performs no Git network ops | partial (M0: structurally enforced in `internal/policy` network lock; wire enforcement via Merge Governor in M11) | M0/M11 | M0-7, M11-7 | `internal/policy`, `internal/adapter/vcs` |
@@ -47,7 +47,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-27 | Daemon resumes unfinished tasks after restart | **PARTIAL** (M0: startup reconciliation framework + M0 entities done, audited, idempotent; full agent-attempt resume blocked on M2/M3 — not faked) | M0/M7 | M0-4, M7-3 | `internal/daemon`, `internal/storage` |
 | AC-28 | Agent has no merge credentials | planned (enforced by design — ADR-0008) | M3/M11 | M3-4, M11-5 | `internal/supervisor`, `internal/merge` |
 | AC-29 | Non-disableable security policy cannot be weakened by task override | partial (M0: policy core enforces AC-29 invariant; full pipeline wiring in M8-1) | M0/M8 | M0-7, M8-1 | `internal/policy` |
-| AC-30 | Full task history available in audit | partial (M0: append-only store reconstructs per-scope history + read-only `/audit` API; richer event kinds land with later milestones) | M0+ | M0-6 | `internal/audit` |
+| AC-30 | Full task history available in audit | done (M1: project/task lifecycle events — added/removed/state_changed — all recorded in append-only audit store; `forge daemon logs -f` for live events) | M0+ | M0-6, M1-1, M1-5 | `internal/audit` |
 
 ## CLI surface (spec §30)
 
@@ -55,15 +55,26 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 |---------|--------|-------|
 | `forge version` | done | M0-2 |
 | `forge help` | done | M0-2 |
-| `forge` (TUI) | partial (M0 full-screen shell) | M0-8 |
+| `forge` (TUI) | done (M1 full TUI with projects/tasks screens) | M0-8, M1-6 |
+| `forge dashboard` | done (alias for TUI) | M1 |
 | `forge daemon run` | done | M0-4 |
 | `forge daemon start` | done | M0-4 |
 | `forge daemon stop` | done | M0-4 |
 | `forge daemon status` | done | M0-4 |
 | `forge daemon logs` | done | M0-4 |
 | `forge doctor` | done (basic M0 checks; full onboarding doctor in M13) | M0 |
-| `forge project ...` | planned | M1-1..M1-4 |
-| `forge task ...` | planned | M1-5 |
+| `forge project add` | done (--name, --json) | M1-1 |
+| `forge project list` | done (--json) | M1-1 |
+| `forge project show` | done (--json) | M1-1 |
+| `forge project start` | done | M1-4 |
+| `forge project pause` | done | M1-4 |
+| `forge project stop` | done | M1-4 |
+| `forge project remove` | done (files NOT deleted) | M1-1 |
+| `forge task add` | done (-p/--project, --title, --priority, -a/--attach, --json) | M1-5 |
+| `forge task list` | done (-p/--project, --json) | M1-5 |
+| `forge task show` | done (--json) | M1-5 |
+| `forge task pause` | done | M1-5 |
+| `forge task cancel` | done | M1-5 |
 | `forge agent ...` / `forge model ...` / `forge route ...` | planned | M2, M6 |
 | `forge image-provider ...` | planned | M9 |
 | `forge quota` / `usage` / `cost` | planned | M6 |
@@ -88,7 +99,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 11 | No full repo in prompt | planned — M12-3 |
 | 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only |
 | 13 | No push in LOCAL_REVIEW | planned (design-enforced) — ADR-0008 |
-| 14 | Never modify primary checkout | planned — ADR-0007 (M3-1) |
+| 14 | Never modify primary checkout | done (M1: project add validates Git repo read-only; no writes to checkout) | ADR-0007 |
 | 15 | Agent cannot change project security policy | done (core) — `internal/policy` AC-29 enforcement; full wiring in M8-1 |
 | 16 | Agent cannot disable checks that validate its output | done (core) — `internal/policy` mandatory checks; full wiring in M8-1 |
 | 17–18 | No silent install / privilege escalation | planned — M13-3 |
@@ -166,6 +177,52 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
   or deterministic restart` scenario cannot be exercised yet. It is not faked
   (rule §36.25). AC-27 stays **PARTIAL**, blocked on M2/M3; AC-27 completion
   also touches M7-3.
+
+## Milestone M1 — what is implemented
+
+- **Project Registry** (`internal/project`, §8): register Git repositories with
+  read-only validation (never modifies checkout §17.1), list/show/remove
+  projects, auto-generated slug IDs with uniqueness handling, duplicate-path
+  rejection. Every mutation audited (§29.4).
+- **Project State Machine** (`internal/project`, §8.4): the six M1 states
+  (DISABLED/IDLE/RUNNING/PAUSED/DRAINING/ERROR) with validated transitions;
+  illegal transitions rejected with `ErrInvalidTransition`. State persisted to
+  SQLite before any effect (§11.4).
+- **Local Backlog** (`internal/task`, §9): free-form task creation (AC-3 —
+  description can be the only user field), optional title/priority, project
+  association. Content-addressed attachments (SHA-256, §9.5, AC-4) stored under
+  `~/.neuroforge/artifacts/<hash>`.
+- **Task State Machine** (`internal/task`): NEW/INGESTED/PAUSED/CANCELLED with
+  validated transitions; terminal states cannot be left.
+- **Daemon API** (`internal/transport`, `internal/daemon`): RESTful project and
+  task endpoints (`GET/POST/DELETE /projects`, `GET/POST /tasks`, lifecycle
+  actions). The daemon is the single owner of mutable state (ADR-0002); both
+  CLI and TUI reach it only through the loopback HTTP API — the TUI never
+  touches SQLite directly.
+- **CLI Commands** (`internal/cli`): `forge project {add,list,show,start,pause,
+  stop,remove}`, `forge task {add,list,show,pause,cancel}`, `forge dashboard`.
+  All read commands support `--json`.
+- **TUI** (`internal/tui`, ADR-0011): Model-View-Update architecture with raw
+  terminal mode (`golang.org/x/term`). Projects screen (list + navigation +
+  state colours), Tasks screen (project-filtered), detail views, command palette
+  (Ctrl-P fuzzy search), status bar (daemon status + key hints), mouse tracking,
+  and live event refresh via daemon SSE subscription. Model/update logic is
+  fully unit-tested without a terminal.
+- **Durable state** (`internal/storage`, §11.4): migration v3 adds `projects`,
+  `tasks`, `task_attachments` tables. State survives daemon restart (verified by
+  integration test).
+- **Tests**: project state machine (table-driven valid/invalid transitions),
+  task state machine, project registry (duplicate rejection, non-Git rejection,
+  git validation, audit recording, state persistence), task backlog (free-form,
+  attachment hashing, content-addressed storage, state transitions), transport
+  API endpoints (HTTP round-trip with mock API, auth, empty-list-as-array,
+  POST body), TUI model/update (keyboard navigation, screen switching, command
+  palette, daemon event handling, view rendering), and the **M1 demonstrable
+  scenario** (builds real `forge` binary, exercises 15-step end-to-end flow:
+  add project → list/start → add tasks with attachment → pause/cancel →
+  restart daemon → verify persistence → audit trail). Plus duplicate-project
+  rejection, nonexistent-repo rejection, and local API invalid-transition tests.
+  All run under `go test -race` and `make check`.
 
 ## Bootstrap (original scaffold) — context
 

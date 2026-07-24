@@ -166,7 +166,7 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 > Spec §8 (projects), §9 (tasks, compiler-lite). Scenario: add a project, manage a
 > local backlog, drive the project state machine — no agents yet.
 
-### M1-1 — Project registry
+### M1-1 — Project registry `[DONE]`
 - **Goal:** register/list/remove projects, persist config.
 - **Scope:** `internal/project` (registry), `internal/storage` (projects,
   project_policies).
@@ -175,9 +175,9 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Depends on:** M0-3, M0-6. **AC:** — (enabler).
 - **Acceptance:** `forge project add/list` work; idempotent; config versioned.
 - **Checks:** unit + CLI tests; `--json` output.
-- **DoD:** project row + policy row stored.
+- **DoD:** project row + policy row stored. — Done.
 
-### M1-2 — Project onboarding & detection
+### M1-2 — Project onboarding & detection `[planned]`
 - **Goal:** detect languages/build/test/lint/AGENTS.md/README/CI/remote (§8.3),
   confirm before writing.
 - **Scope:** `internal/project`, `internal/repoinfo` (early, read-only scan).
@@ -188,7 +188,7 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Checks:** fixture-repo unit tests.
 - **DoD:** onboarding result stored in project config.
 
-### M1-3 — Project state machine
+### M1-3 — Project state machine `[DONE]`
 - **Goal:** implement §8.4 transitions.
 - **Scope:** `internal/project` (state), `docs/architecture/STATE_MACHINES.md`
   already documents it.
@@ -197,18 +197,18 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Acceptance:** all legal transitions allowed; illegal ones rejected; persisted
   before effect.
 - **Checks:** table-driven transition tests.
-- **DoD:** state machine matches the doc.
+- **DoD:** state machine matches the doc. — Done (six M1 states + transition table).
 
-### M1-4 — Project lifecycle commands
+### M1-4 — Project lifecycle commands `[DONE]`
 - **Goal:** start/pause/drain/stop/settings.
 - **Scope:** `internal/cli` (project cmds), `internal/project`.
 - **Allowed:** `internal/cli/**`, `internal/project/**`.
 - **Depends on:** M1-3.
 - **Acceptance:** commands drive the state machine; drain waits for active work.
 - **Checks:** CLI/integration tests.
-- **DoD:** AC-2 (manage projects without CLI is TUI; CLI parity here).
+- **DoD:** AC-2 (manage projects without CLI is TUI; CLI parity here). — Done.
 
-### M1-5 — Local backlog (tasks, compiler-lite)
+### M1-5 — Local backlog (tasks, compiler-lite) `[DONE]`
 - **Goal:** `forge task add/list/show` with free-form text + attachments (§9).
 - **Scope:** `internal/task` (model, backlog), content-addressed attachments (§9.5),
   redaction hook (§9.6 stubbed to policy).
@@ -218,20 +218,25 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Acceptance:** free-form task created; image attachment stored with hash+mime;
   metadata recorded.
 - **Checks:** unit tests (hashing, mime, metadata).
-- **DoD:** AC-3/AC-4 testable.
+- **DoD:** AC-3/AC-4 testable. — Done.
 
-### M1-6 — Project/task TUI screens
+### M1-6 — Project/task TUI screens `[DONE]`
 - **Goal:** Projects + Tasks panes (§6.2/§6.3 minimal).
 - **Scope:** `internal/tui`.
 - **Allowed:** `internal/tui/**`, transport.
 - **Depends on:** M0-8, M1-1, M1-5. **AC:** AC-2.
 - **Acceptance:** add project & create task without CLI; lists update live.
 - **Checks:** TUI smoke test; manual scenario.
-- **DoD:** AC-2 satisfied for projects/tasks.
+- **DoD:** AC-2 satisfied for projects/tasks. — Done (MVU architecture with raw
+  mode, command palette, status bar, mouse support, live SSE refresh).
 
-### M1-7 — M1 demonstrable scenario
+### M1-7 — M1 demonstrable scenario `[DONE]`
 - **Depends on:** M1-1..M1-6. Build → add project → onboard → add free-form task
   w/ attachment → see it in TUI. **DoD:** AC-2/AC-3/AC-4 green.
+  — Done: `internal/cli/m1_scenario_test.go` drives the real `forge` binary
+  through 15 steps (add project, list --json, start, add tasks with attachments,
+  pause/cancel, daemon restart persistence, audit trail). Plus duplicate-project,
+  non-git-repo, and local API tests. Runs under `make check` / `go test -race`.
 
 ---
 
