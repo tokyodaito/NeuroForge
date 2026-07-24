@@ -56,6 +56,13 @@ make test               # unit tests
 There is no daemon, no SQLite storage and no real adapters yet — those arrive in
 their milestones (see the implementation plan).
 
+### Windows
+
+On Windows the PowerShell scripts under `scripts/` are the first-class path
+(`scripts/check.ps1`, `scripts/dev.ps1`, `scripts/test.ps1`, `scripts/doctor.ps1`)
+— no `make` or C compiler required. See the full
+[Windows setup guide](docs/platforms/WINDOWS.md).
+
 ---
 
 ## Repository layout
