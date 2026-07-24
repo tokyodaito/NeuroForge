@@ -20,7 +20,7 @@ func quietLogger() *slog.Logger {
 
 // runInBackground starts a daemon Run in a goroutine and registers a cleanup
 // that cancels and waits for it. The returned stop function is idempotent.
-func runInBackground(t *testing.T) Dirs {
+func runInBackground(t *testing.T) (Dirs, func()) {
 	t.Helper()
 	dirs := WithRoot(t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,7 +50,7 @@ func runInBackground(t *testing.T) Dirs {
 		})
 	}
 	t.Cleanup(stop)
-	return dirs
+	return dirs, func() { <-done }
 }
 
 func waitForHealthy(dirs Dirs, timeout time.Duration) error {
@@ -71,7 +71,7 @@ type errTimeout struct{}
 func (errTimeout) Error() string { return "timed out" }
 
 func TestRun_BindsLoopbackAndServesHealth(t *testing.T) {
-	dirs := runInBackground(t)
+	dirs, _ := runInBackground(t)
 
 	st := GetStatus(context.Background(), dirs)
 	if st.State != StatusRunning {
@@ -89,7 +89,7 @@ func TestRun_BindsLoopbackAndServesHealth(t *testing.T) {
 }
 
 func TestRun_RuntimeFilesArePrivate(t *testing.T) {
-	dirs := runInBackground(t)
+	dirs, _ := runInBackground(t)
 
 	for _, p := range []string{dirs.PIDFile, dirs.TokenFile, dirs.AddrFile} {
 		info, err := os.Stat(p)
@@ -110,7 +110,7 @@ func TestRun_RuntimeFilesArePrivate(t *testing.T) {
 }
 
 func TestRun_GracefulShutdownOnCancel(t *testing.T) {
-	dirs := runInBackground(t)
+	dirs, _ := runInBackground(t)
 	if st := GetStatus(context.Background(), dirs); st.State != StatusRunning {
 		t.Fatalf("not running: %s", st.State)
 	}
@@ -119,7 +119,7 @@ func TestRun_GracefulShutdownOnCancel(t *testing.T) {
 }
 
 func TestRun_AuditStartedPersistedWhileRunning(t *testing.T) {
-	dirs := runInBackground(t)
+	dirs, _ := runInBackground(t)
 	time.Sleep(80 * time.Millisecond) // allow daemon.started to flush
 
 	db, err := storage.Open(context.Background(), filepath.Join(dirs.Root, "state.db"), &storage.Options{Logger: quietLogger()})
@@ -148,7 +148,7 @@ func TestRun_AuditStartedPersistedWhileRunning(t *testing.T) {
 // against a separate process. We do NOT call daemon.Stop() here because in this
 // in-process harness the daemon shares the test process PID.
 func TestRun_APIShutdownRecordsStopped(t *testing.T) {
-	dirs := runInBackground(t)
+	dirs, wait := runInBackground(t)
 
 	addr, _ := readAddr(dirs)
 	token, _ := readToken(dirs)
@@ -156,14 +156,9 @@ func TestRun_APIShutdownRecordsStopped(t *testing.T) {
 	if err := cli.Shutdown(context.Background()); err != nil {
 		t.Fatalf("api shutdown: %v", err)
 	}
-	// Wait until the daemon is no longer reachable.
-	deadline := time.Now().Add(5 * time.Second)
-	for isReachableAndHealthy(context.Background(), dirs) {
-		if time.Now().After(deadline) {
-			t.Fatal("daemon still healthy after /shutdown")
-		}
-		time.Sleep(40 * time.Millisecond)
-	}
+	// Wait for the daemon Run goroutine to fully exit, so the daemon.stopped
+	// audit event has been written and the DB flushed.
+	wait()
 
 	db, err := storage.Open(context.Background(), filepath.Join(dirs.Root, "state.db"), &storage.Options{Logger: quietLogger()})
 	if err != nil {
@@ -185,10 +180,10 @@ func TestRun_APIShutdownRecordsStopped(t *testing.T) {
 }
 
 func TestRun_TokenIsRandomPerRun(t *testing.T) {
-	d1 := runInBackground(t)
+	d1, _ := runInBackground(t)
 	tok1, _ := readToken(d1)
 
-	d2 := runInBackground(t)
+	d2, _ := runInBackground(t)
 	tok2, _ := readToken(d2)
 
 	if tok1 == "" || tok2 == "" {

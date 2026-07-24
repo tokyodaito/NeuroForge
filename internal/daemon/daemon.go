@@ -97,6 +97,13 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	bus := transport.NewBus()
 	defer bus.Close()
 
+	// 4a. Domain services (project registry, task backlog) wired to the
+	// transport API. The daemon is the single owner of mutable state
+	// (ADR-0002); the CLI and TUI reach these services only through the
+	// loopback API.
+	services := NewServices(db, recorder, cfg.Dirs.ArtifactsDir, bus, logger)
+	apiAdapter := newAPIAdapter(services)
+
 	token := cfg.Token
 	if token == "" {
 		token, err = transport.GenerateToken()
@@ -113,6 +120,8 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		Token:             token,
 		OnShutdownRequest: cancel,
 		AuditReader:       &auditReader{db: db},
+		ProjectAPI:        apiAdapter,
+		TaskAPI:           apiAdapter,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)

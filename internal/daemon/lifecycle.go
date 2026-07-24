@@ -187,3 +187,26 @@ func killProcess(pid int) {
 func GetStatus(ctx context.Context, dirs Dirs) Status {
 	return probeStatus(ctx, dirs)
 }
+
+// Connect returns a transport.Client for the running daemon, or an error if the
+// daemon is not reachable. It reads the address and token from the runtime
+// files. Both CLI and TUI use this to reach the daemon API (ADR-0004: the TUI
+// never touches SQLite directly).
+func Connect(ctx context.Context, dirs Dirs) (*transport.Client, error) {
+	addr, err := ReadAddr(dirs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
+	}
+	token, err := ReadToken(dirs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
+	}
+	if addr == "" || token == "" {
+		return nil, ErrNotRunning
+	}
+	cli := transport.NewClient(addr, token)
+	if _, err := cli.Health(ctx); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
+	}
+	return cli, nil
+}
