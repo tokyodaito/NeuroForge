@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,6 +48,20 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
 	if err := c.getJSON(ctx, "/status", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Audit calls GET /audit?limit=limit (newest-first). A limit<=0 uses the
+// server default.
+func (c *Client) Audit(ctx context.Context, limit int) ([]AuditEntry, error) {
+	path := "/audit"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	var out []AuditEntry
+	if err := c.getJSON(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

@@ -122,6 +122,9 @@ func readAddr(dirs Dirs) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
+// ReadAddr is the exported form of readAddr for CLI/TUI consumers.
+func ReadAddr(dirs Dirs) (string, error) { return readAddr(dirs) }
+
 // probeStatus discovers the daemon lifecycle status from disk + API.
 func probeStatus(ctx context.Context, dirs Dirs) Status {
 	pid, err := readPID(dirs)

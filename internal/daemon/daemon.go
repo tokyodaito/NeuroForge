@@ -112,6 +112,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		Addr:              cfg.Addr,
 		Token:             token,
 		OnShutdownRequest: cancel,
+		AuditReader:       &auditReader{db: db},
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)

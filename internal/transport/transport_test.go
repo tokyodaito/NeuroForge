@@ -227,3 +227,75 @@ func TestEvent_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip mismatch: %+v", got)
 	}
 }
+
+type stubAuditReader struct {
+	entries []AuditEntry
+}
+
+func (s *stubAuditReader) AuditEntries(ctx context.Context, limit int) ([]AuditEntry, error) {
+	return s.entries, nil
+}
+
+func TestAuditEndpoint_RequiresTokenAndReturnsEntries(t *testing.T) {
+	token, _ := GenerateToken()
+	bus := NewBus()
+	srv, err := NewServer(Config{
+		Addr:  "127.0.0.1:0",
+		Token: token,
+		AuditReader: &stubAuditReader{entries: []AuditEntry{
+			{ID: 3, Type: "daemon.started", Scope: "system", ScopeID: "global", Actor: "daemon"},
+			{ID: 2, Type: "reconcile.complete", Scope: "system", ScopeID: "global", Actor: "daemon"},
+		}},
+	}, bus, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	addr, err := srv.Listen()
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.srv.Close() })
+	go func() { _ = srv.Serve(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	base := "http://" + addr.String()
+
+	// No token -> 401.
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", base+"/audit", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want 401", resp.StatusCode)
+	}
+
+	// With token -> entries.
+	cli := NewClient(base, token)
+	entries, err := cli.Audit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len = %d, want 2", len(entries))
+	}
+	if entries[0].ID != 3 {
+		t.Errorf("first (newest) id = %d, want 3", entries[0].ID)
+	}
+}
+
+func TestAuditEndpoint_NoReaderReturns503(t *testing.T) {
+	_, base, token := startTestServer(t, nil) // no AuditReader wired
+	cli := NewClient(base, token)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", base+"/audit", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	_ = cli
+}

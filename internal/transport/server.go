@@ -24,6 +24,9 @@ type Config struct {
 	// OnShutdownRequest is invoked when a client POSTs /shutdown with a valid
 	// token. The daemon wires it to cancel its run context (graceful stop).
 	OnShutdownRequest func()
+	// AuditReader, if set, backs the read-only GET /audit endpoint. Nil makes
+	// /audit return 503 (e.g. in tests that do not wire storage).
+	AuditReader AuditReader
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -99,6 +102,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	mux.HandleFunc("/status", s.withToken(s.handleStatus))
 	mux.HandleFunc("/events", s.withToken(s.handleEvents))
 	mux.HandleFunc("/shutdown", s.withToken(s.handleShutdown))
+	mux.HandleFunc("/audit", s.withToken(s.handleAudit))
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{
@@ -237,7 +241,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":      "neuroforge-daemon",
-		"endpoints": []string{"/healthz", "/status", "/events", "/shutdown"},
+		"endpoints": []string{"/healthz", "/status", "/events", "/audit", "/shutdown"},
 	})
 }
 
