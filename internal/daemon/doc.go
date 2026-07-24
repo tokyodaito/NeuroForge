@@ -1,12 +1,19 @@
 // Package daemon hosts the long-running Forge daemon process.
 //
-// STATUS: scaffold — not implemented (planned for milestone M0, Foundation).
+// STATUS: foundation implemented for milestone M0 (ADR-0002).
 //
-// Scope (docs/spec/NEUROFORGE_SPEC.md §11.2): own process and durable workflow
-// state, start and supervise agent processes, manage the task queue, stream
-// events to the TUI, and safely resume or restart attempts after a crash.
+// Implemented in M0:
+//   - Global runtime directory layout (NEUROFORGE_HOME or ~/.neuroforge).
+//   - The daemon server loop: open storage (SQLite/WAL), run migrations, open
+//     the append-only audit recorder, create the internal event bus, serve the
+//     loopback transport API, and shut down cleanly on context cancellation,
+//     SIGTERM/SIGINT or a /shutdown request.
+//   - Process lifecycle: start (spawn detached child), stop (graceful then
+//     forceful), status and logs.
+//   - Single-instance guard: a repeated start never creates a second daemon;
+//     stale/corrupted runtime state is reclaimed.
 //
-// Boundaries: durable state lives in package storage (SQLite); this package must
-// not contain adapter implementations, routing logic, or VCS network operations.
-// The daemon never holds merge credentials (§28).
+// Durable workflow state lives in package storage; durable audit history in
+// package audit; the wire API in package transport. The daemon never holds
+// merge credentials (§28) and performs no Git network operations.
 package daemon

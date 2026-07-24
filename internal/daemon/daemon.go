@@ -1,0 +1,168 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/signal"
+
+	"neuroforge/internal/audit"
+	"neuroforge/internal/storage"
+	"neuroforge/internal/transport"
+	"neuroforge/internal/version"
+)
+
+// RunConfig configures a daemon Run. Zero values use safe defaults.
+type RunConfig struct {
+	Dirs   Dirs
+	Addr   string       // loopback listen address; default "127.0.0.1:0"
+	Token  string       // if empty, a random token is generated
+	Logger *slog.Logger // optional override; otherwise JSON to stderr
+}
+
+// Run is the daemon process entry point. It blocks until ctx is cancelled, a
+// termination signal (SIGTERM/SIGINT) is received, or a client calls
+// /shutdown. It guarantees graceful shutdown: the transport stops accepting,
+// the audit log records the stop, and the database is closed before returning.
+//
+// State is durable before any external action: the database and audit log are
+// opened and the runtime files are written only after the loopback listener is
+// bound (spec §11.4).
+func Run(ctx context.Context, cfg RunConfig) (retErr error) {
+	if err := cfg.Dirs.Ensure(); err != nil {
+		return err
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = newLogger(os.Stderr)
+	}
+	logger = logger.With("component", "daemon", "pid", os.Getpid())
+
+	// Derive a cancellable context that signals and /shutdown can trigger.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Surface panics/errors in the audit log and runtime files.
+	defer func() {
+		if retErr != nil {
+			logger.Error("daemon exited with error", "err", retErr)
+		}
+	}()
+
+	// 1. Open durable storage and run migrations.
+	db, err := storage.Open(runCtx, cfg.Dirs.StateDB, &storage.Options{Logger: logger})
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer func() {
+		if cErr := db.Close(); cErr != nil && retErr == nil {
+			retErr = fmt.Errorf("close storage: %w", cErr)
+		}
+	}()
+	if err := db.Migrate(runCtx); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+
+	// 2. Open the append-only audit recorder.
+	recorder := audit.NewRecorder(db, logger)
+	if _, err := recorder.Record(runCtx, audit.Event{
+		Type:    "daemon.starting",
+		Actor:   audit.ActorDaemon,
+		Payload: audit.Payload("home", cfg.Dirs.Root),
+	}); err != nil {
+		return fmt.Errorf("audit starting: %w", err)
+	}
+
+	// 3. Internal event bus + loopback transport server.
+	bus := transport.NewBus()
+	defer bus.Close()
+
+	token := cfg.Token
+	if token == "" {
+		token, err = transport.GenerateToken()
+		if err != nil {
+			return fmt.Errorf("generate token: %w", err)
+		}
+	}
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:0"
+	}
+
+	srv, err := transport.NewServer(transport.Config{
+		Addr:              cfg.Addr,
+		Token:             token,
+		OnShutdownRequest: cancel,
+	}, bus, logger)
+	if err != nil {
+		return fmt.Errorf("transport server: %w", err)
+	}
+	srv.SetVersion(version.Version)
+
+	// 4. Bind the loopback listener BEFORE writing runtime files, so the
+	// address advertised to clients is real.
+	addr, err := srv.Listen()
+	if err != nil {
+		return fmt.Errorf("transport listen: %w", err)
+	}
+	baseURL := "http://" + addr.String()
+
+	// 5. Write runtime files (mode 0o600) so the CLI/TUI can reach us.
+	if err := writeRuntimeFiles(cfg.Dirs, os.Getpid(), token, baseURL); err != nil {
+		return fmt.Errorf("write runtime files: %w", err)
+	}
+	defer func() {
+		// Remove runtime files on exit so a crashed-next-time start is clean.
+		cleanRuntimeFiles(cfg.Dirs)
+	}()
+
+	logger.Info("daemon listening", "addr", baseURL)
+	if _, err := recorder.Record(runCtx, audit.Event{
+		Type:    "daemon.started",
+		Actor:   audit.ActorDaemon,
+		Payload: audit.Payload("addr", baseURL, "pid", os.Getpid()),
+	}); err != nil {
+		logger.Warn("audit daemon.started failed", "err", err)
+	}
+	bus.Publish("daemon.started", map[string]any{"addr": baseURL, "pid": os.Getpid()})
+
+	// 6. Install signal handlers. signal.NotifyContext cancels sigCtx on signal
+	// OR when runCtx is cancelled (by /shutdown or parent), and serves as the
+	// blocking context below.
+	sigCtx, stop := signal.NotifyContext(runCtx, terminationSignals()...)
+	defer stop()
+
+	// 7. Serve until cancelled, then shut down.
+	serveErr := srv.Serve(sigCtx)
+
+	if _, err := recorder.Record(context.Background(), audit.Event{
+		Type:    "daemon.stopped",
+		Actor:   audit.ActorDaemon,
+		Payload: audit.Payload("reason", shutdownReason(runCtx)),
+	}); err != nil {
+		logger.Warn("audit daemon.stopped failed", "err", err)
+	}
+	bus.Publish("daemon.stopped", nil)
+	logger.Info("daemon stopped", "pid", os.Getpid())
+
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		return serveErr
+	}
+	return nil
+}
+
+// newLogger returns a structured JSON logger writing to w. JSON is chosen so
+// `forge daemon logs` yields machine-parseable structured records.
+func newLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+func shutdownReason(ctx context.Context) string {
+	if err := ctx.Err(); err != nil {
+		return err.Error()
+	}
+	return "shutdown request"
+}
