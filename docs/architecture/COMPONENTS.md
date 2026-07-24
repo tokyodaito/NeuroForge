@@ -128,8 +128,8 @@ or routing core (rule §13.3). Adapters never receive merge credentials (§28).
 
 Each package directory contains a `doc.go` whose header records its status.
 `internal/cli`, `internal/version`, `internal/storage`, `internal/audit`,
-`internal/transport`, `internal/daemon` and `internal/tui` carry implemented
-foundations (M0) or full implementations; every not-yet-implemented package
-keeps a `STATUS: scaffold — not implemented (planned for M<n>)` marker. The
-cumulative status of spec requirements is in
+`internal/transport`, `internal/daemon`, `internal/policy` and `internal/tui`
+carry implemented foundations (M0) or full implementations; every
+not-yet-implemented package keeps a `STATUS: scaffold — not implemented (planned
+for M<n>)` marker. The cumulative status of spec requirements is in
 [`../spec/COMPLIANCE_MATRIX.md`](../spec/COMPLIANCE_MATRIX.md).

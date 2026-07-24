@@ -82,15 +82,28 @@ Gap analysis for closing out milestone M0 (Foundation). Source of truth:
 
 ---
 
+## Outcome
+
+All three gaps were addressed:
+
+- **M0-7 — DONE.** `internal/policy` (pure domain package): typed toggles,
+  profiles, `Normalize` (§5.1), `Resolve` (AC-29 + network lock + UI-vv rule),
+  Action gate, injection priority. Table-driven tests green.
+- **M0-4 — PARTIAL.** Reconciliation framework + M0 entity coverage + extension
+  point + audited decisions, all tested. Full agent-attempt resume is blocked on
+  M2/M3 (not faked).
+- **M0-9 — DONE.** Automated 12-step scenario in `make check` driving the real
+  binary; plus a read-only `/audit` endpoint to read history through the daemon.
+
 ## AC status after this pass
 
 | AC | Requirement | Status | Note |
 |----|-------------|--------|------|
 | AC-1 | `forge` opens TUI | partial | M0 shell; full screens later |
-| AC-7 | LOCAL_REVIEW no Git network ops | partial | structurally enforced in `internal/policy` now; wire enforcement (Merge Governor) in M11 |
-| AC-27 | Daemon resumes unfinished tasks after restart | **PARTIAL** | reconcile framework + M0 entities done; full attempt resume blocked on M2/M3 |
-| AC-29 | Non-disableable security policy | partial→done(core) | policy core enforces; full pipeline wiring in M8-1 |
-| AC-30 | Full task history in audit | partial | append-only store + read API; richer kinds per later milestones |
+| AC-7 | LOCAL_REVIEW no Git network ops | partial | structurally enforced in `internal/policy`; wire enforcement (Merge Governor) in M11 |
+| AC-27 | Daemon resumes unfinished tasks after restart | **PARTIAL** | reconcile framework + M0 entities done; full attempt resume blocked on **M2/M3** |
+| AC-29 | Non-disableable security policy | partial | policy core enforces the invariant; full pipeline wiring in M8-1 |
+| AC-30 | Full task history in audit | partial | append-only store + read-only `/audit` API; richer kinds per later milestones |
 
 ## Readiness verdict
 

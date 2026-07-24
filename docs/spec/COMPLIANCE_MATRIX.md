@@ -24,7 +24,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-4 | Attach an image to a task | planned | M1 | M1-5 | `internal/task` |
 | AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | planned | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent` |
 | AC-6 | A 7th agent via plugin, no core changes | planned | M2 | M2-7 | `internal/adapter/codingagent` |
-| AC-7 | LOCAL_REVIEW performs no Git network ops | planned (enforced by design — ADR-0008) | M0/M11 | M0-7, M11-7 | `internal/policy`, `internal/adapter/vcs` |
+| AC-7 | LOCAL_REVIEW performs no Git network ops | partial (M0: structurally enforced in `internal/policy` network lock; wire enforcement via Merge Governor in M11) | M0/M11 | M0-7, M11-7 | `internal/policy`, `internal/adapter/vcs` |
 | AC-8 | Code saved in a separate local result branch | planned | M3 | M3-5 | `internal/workspace` |
 | AC-9 | Open diff and worktree from TUI | planned | M3 | M3-5 | `internal/tui`, `internal/workspace` |
 | AC-10 | Accept / reject / ask-for-changes | planned | M3/M11 | M3-5, M11-2 | `internal/workspace`, `internal/adapter/vcs` |
@@ -44,10 +44,10 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-24 | Disabled visual verification never claims UI is verified | planned | M10 | M10-7 | `internal/visual`, `internal/policy` |
 | AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
-| AC-27 | Daemon resumes unfinished tasks after restart | partial (M0: daemon persists durable state and restarts safely; full attempt reconciliation lands in M0-4/M7-3) | M0/M7 | M0-4, M7-3 | `internal/daemon`, `internal/storage` |
+| AC-27 | Daemon resumes unfinished tasks after restart | **PARTIAL** (M0: startup reconciliation framework + M0 entities done, audited, idempotent; full agent-attempt resume blocked on M2/M3 — not faked) | M0/M7 | M0-4, M7-3 | `internal/daemon`, `internal/storage` |
 | AC-28 | Agent has no merge credentials | planned (enforced by design — ADR-0008) | M3/M11 | M3-4, M11-5 | `internal/supervisor`, `internal/merge` |
-| AC-29 | Non-disableable security policy cannot be weakened by task override | planned (core in M0-7) | M0/M8 | M0-7, M8-1 | `internal/policy` |
-| AC-30 | Full task history available in audit | partial (M0: append-only audit store implemented and reconstructs per-scope history; richer event kinds land with later milestones) | M0+ | M0-6 | `internal/audit` |
+| AC-29 | Non-disableable security policy cannot be weakened by task override | partial (M0: policy core enforces AC-29 invariant; full pipeline wiring in M8-1) | M0/M8 | M0-7, M8-1 | `internal/policy` |
+| AC-30 | Full task history available in audit | partial (M0: append-only store reconstructs per-scope history + read-only `/audit` API; richer event kinds land with later milestones) | M0+ | M0-6 | `internal/audit` |
 
 ## CLI surface (spec §30)
 
@@ -68,7 +68,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | `forge image-provider ...` | planned | M9 |
 | `forge quota` / `usage` / `cost` | planned | M6 |
 | `forge plugin ...` | planned | M2-7 |
-| `forge audit` | planned | M1+ |
+| `forge audit` | partial (read-only `/audit` API available; `forge audit` CLI command in M1+) | M0/M1+ |
 | `forge emergency-stop` / `forge cleanup` | planned | M1+ |
 | `forge init` / `update` | planned | M13 |
 
@@ -89,8 +89,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only |
 | 13 | No push in LOCAL_REVIEW | planned (design-enforced) — ADR-0008 |
 | 14 | Never modify primary checkout | planned — ADR-0007 (M3-1) |
-| 15 | Agent cannot change project security policy | planned — M0-7 |
-| 16 | Agent cannot disable checks that validate its output | planned — M0-7 |
+| 15 | Agent cannot change project security policy | done (core) — `internal/policy` AC-29 enforcement; full wiring in M8-1 |
+| 16 | Agent cannot disable checks that validate its output | done (core) — `internal/policy` mandatory checks; full wiring in M8-1 |
 | 17–18 | No silent install / privilege escalation | planned — M13-3 |
 | 19 | No provider CLI update during active run | planned — M13-5 |
 | 20 | App builds + demonstrable scenario after each milestone | enforced — `make check` gate |
@@ -124,14 +124,21 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 - **Audit** (`internal/audit`, AC-30): append-only Recorder reconstructing
   per-scope history; no update/delete API exposed to callers.
 - **Transport** (`internal/transport`, ADR-0004): in-memory broadcast event bus;
-  loopback-only HTTP server (JSON command API `/healthz`, `/status`,
+  loopback-only HTTP server (JSON command API `/healthz`, `/status`, `/audit`,
   `/shutdown` + SSE `/events`); random per-run bearer token, constant-time
   checked, never logged. Repeated start refuses a non-loopback bind.
 - **Daemon** (`internal/daemon`, ADR-0002): global runtime dir layout
   (`NEUROFORGE_HOME` / `~/.neuroforge`); the Run loop wires storage→migrate→
-  audit→bus→transport and shuts down cleanly on ctx/SIGTERM/SIGINT/`/shutdown`;
-  single-instance guard + stale/corrupted runtime reclaim; `start`/`stop`/
-  `status`/`logs`/`run`.
+  **reconcile**→audit→bus→transport and shuts down cleanly on ctx/SIGTERM/
+  SIGINT/`/shutdown`; single-instance guard + stale/corrupted runtime reclaim;
+  startup reconciliation framework (every decision audited, idempotent, with an
+  extension point for M2/M3 attempt reconcilers); `start`/`stop`/`status`/
+  `logs`/`run`.
+- **Policy core** (`internal/policy`, §4/§5/§5.1/§29): typed pipeline toggles,
+  autonomy profiles, `Normalize` (§5.1 dependency rules), `Resolve` (AC-29
+  invariant + LOCAL_REVIEW network lock + UI-merge visual-verification rule),
+  typed Action gate, and the prompt-injection priority order. Pure domain
+  package (imports only `fmt`).
 - **Structured logging** (`log/slog` JSON) and **context cancellation** wired
   through the daemon lifecycle.
 - **TUI shell** (`internal/tui`, AC-1): full-screen alternate-buffer shell that
@@ -141,18 +148,24 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
   platform, runtime home + permissions, DB schema version, daemon status).
 - **Tests**: storage/migrations (WAL, idempotency, concurrent readers,
   append-only), audit (history reconstruction), transport (loopback refusal,
-  token auth, SSE ordering, bus), daemon Run (health, private files, audit
-  persistence, API+context shutdown), and **integration tests** that build the
-  real `forge` binary and exercise lifecycle / repeated-start / corrupted-state
-  / SIGTERM cancellation / restart. All run under `go test -race` and `make check`.
+  token auth, SSE ordering, `/audit`, bus), policy (table-driven profiles, §5.1
+  rules, AC-29, network lock, injection ordering), daemon Run + reconciliation
+  (health, private files, audit persistence, API+context shutdown, stale/
+  corrupted reclaim, live-pid conflict abort, extension point), and
+  **integration tests** that build the real `forge` binary and exercise
+  lifecycle / repeated-start / corrupted-state / SIGTERM cancellation / restart
+  plus the **automated M0 demonstrable scenario** (12 steps). All run under
+  `go test -race` and `make check`.
 
-### Remaining in M0 (not in this change set)
+### Remaining in M0
 
-- M0-7 policy core (pipeline toggles + dependency rules) — AC-7/AC-29 core.
-- M0-4 full startup reconciliation of in-flight attempts (resume/finish).
-- M0-9 dedicated end-to-end demonstrable scenario harness (the building blocks
-  above are exercised by tests but the scripted scenario is formalised with the
-  remainder).
+- **AC-27 full agent-attempt recovery** is the only honest gap. The startup
+  reconciliation framework + M0 entity coverage are done, but real agent
+  attempts / work packages / worktrees do not exist until **M2/M3**, so the
+  end-to-end `start attempt → checkpoint → kill → restart → reconcile → resume
+  or deterministic restart` scenario cannot be exercised yet. It is not faked
+  (rule §36.25). AC-27 stays **PARTIAL**, blocked on M2/M3; AC-27 completion
+  also touches M7-3.
 
 ## Bootstrap (original scaffold) — context
 
