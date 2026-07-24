@@ -70,7 +70,7 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **DoD:** driver choice justified (ADR-0010, pure-Go modernc.org/sqlite); no
   `go vet` issues. Remaining §31 tables land with later milestones (§36.25).
 
-### M0-4 — Daemon process + lifecycle + startup reconciliation `[PARTIAL: lifecycle + reconcile framework done; AC-27 full attempt resume blocked on M2/M3]`
+### M0-4 — Daemon process + lifecycle + startup reconciliation `[PARTIAL: lifecycle + reconcile + workspace reconciler done; AC-27 full attempt resume blocked on M7]`
 - **Goal:** single owner of mutable workflow state that recovers on restart.
 - **Scope:** `internal/daemon`: start/stop, PID/lockfile, startup reconciliation
   of persisted attempts (resume/finish), no silent resume of forbidden ops.
@@ -86,9 +86,10 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
   signal/context graceful shutdown, and a deterministic idempotent startup
   **reconciliation framework** (Reconciler interface + extension point) covering
   the M0 runtime entities (runtime files, DB health), with every decision
-  audited and a live-owner conflict abort. **Pending (AC-27 blocker):** full
-  agent-attempt / work-package / worktree resume — those entities do not exist
-  until M2/M3 and are not faked (§36.25). AC-27 stays PARTIAL until the
+  audited and a live-owner conflict abort. **M3** added the workspace reconciler
+  (verifies worktree integrity at startup). **Pending (AC-27 blocker):** full
+  agent-attempt resume via continuation packs — those entities land in M7
+  and are not faked (§36.25). AC-27 stays PARTIAL until the
   `start attempt → checkpoint → kill → restart → reconcile → resume/restart`
   end-to-end scenario exists (also M7-3).
 
@@ -335,35 +336,52 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 
 > Spec §17, §18.4. Goal: isolated, resumable, checkpointed runs.
 
-### M3-1 — Git worktree manager + branch naming
+### M3-1 — Git worktree manager + branch naming `[DONE]`
 - **Allowed:** `internal/workspace/**`. **Forbidden:** vcs adapters, push.
 - **Depends on:** M0-3. **Related ADR:** 0007.
 - **Acceptance:** worktrees under `~/.neuroforge/workspaces`; branch names per
   §17.3; main checkout never modified (AC-8).
 - **Checks:** fs + git assertions.
+  — Done: `internal/workspace` manager creates isolated worktrees with
+  `forge/<task>/<wp>/attempt-<n>` branches; the safe git runner enforces a
+  positive allowlist (AC-7); primary-checkout-untouched is unit + integration
+  tested.
 
-### M3-2 — Semantic leases (§18.4)
+### M3-2 — Semantic leases (§18.4) `[DONE]`
 - **Allowed:** `internal/workgraph/**`, storage (semantic_leases).
 - **Depends on:** M1-5.
 - **Acceptance:** file + semantic resources leased; conflicts block (BLOCKED_LEASE).
+  — Done: `internal/workgraph` LeaseManager acquires/releases path + semantic
+  leases; conflicts return ErrLeaseConflict; tested.
 
-### M3-3 — Checkpoints
+### M3-3 — Checkpoints `[DONE]`
 - **Allowed:** `internal/workspace/**`, `internal/audit`.
 - **Acceptance:** §21.3 checkpoint moments created; never auto-merge to main.
+  — Done: checkpoint commits created at the §21.3 moments inside the attempt
+  branch; durable records survive restart.
 
-### M3-4 — Process supervision (allowlisted env)
+### M3-4 — Process supervision (allowlisted env) `[DONE]`
 - **Allowed:** `internal/supervisor/**`.
 - **Acceptance:** agent env is allowlisted; no merge creds/token (AC-28).
 - **Checks:** env-leak test.
+  — Done: `internal/supervisor` EnvAllowlist strips all forbidden vars;
+  AssertEnvSafe verifies; tested with the fake agent.
 
-### M3-5 — Local review result
+### M3-5 — Local review result `[DONE]`
 - **Allowed:** `internal/workspace/**`, `internal/cli` (open/diff/accept/reject).
 - **Depends on:** M3-1. **AC:** AC-8, AC-9, AC-10.
 - **Acceptance:** `forge/result/<task>` branch; diff/worktree openable; accept/
   reject/ask-for-changes.
+  — Done: result branch, diff, patch export, keep/reject/ask lifecycle; all via
+  CLI + API; reject deletes only the managed worktree.
 
-### M3-6 — M3 scenario
+### M3-6 — M3 scenario `[DONE]`
 - **Depends on:** M3-1..M3-5. AC-7/AC-8/AC-9/AC-10 demonstrable.
+  — Done: `internal/cli/m3_scenario_test.go` drives the real `forge` binary
+  through 30+ steps (temp repo → project → task → workspace → fake-agent run →
+  checkpoint → result branch → verify primary untouched → verify no network
+  ops → daemon restart → verify result accessible → diff → reject). Plus the
+  AC-7 security test. Runs under `make check` / `go test -race`.
 
 ---
 

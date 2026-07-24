@@ -24,10 +24,10 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-4 | Attach an image to a task | done (M1: `-a`/`--attach` flag; content-addressed SHA-256 storage under `~/.neuroforge/artifacts/`) | M1 | M1-5 | `internal/task` |
 | AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | planned (M2: stable protocol + conformance suite ready; concrete engines M4–M5) | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent` |
 | AC-6 | A 7th agent via plugin, no core changes | done (M2: versioned `protocol` package v1 + declarative + native JSON-RPC plugin + `forge plugin test` conformance suite; the fake agent passes all 9 checks via plugin with no core changes) | M2 | M2-7 | `internal/adapter/codingagent/{protocol,declarative,plugin,conformance}` |
-| AC-7 | LOCAL_REVIEW performs no Git network ops | partial (M0: structurally enforced in `internal/policy` network lock; wire enforcement via Merge Governor in M11) | M0/M11 | M0-7, M11-7 | `internal/policy`, `internal/adapter/vcs` |
-| AC-8 | Code saved in a separate local result branch | planned | M3 | M3-5 | `internal/workspace` |
-| AC-9 | Open diff and worktree from TUI | planned | M3 | M3-5 | `internal/tui`, `internal/workspace` |
-| AC-10 | Accept / reject / ask-for-changes | planned | M3/M11 | M3-5, M11-2 | `internal/workspace`, `internal/adapter/vcs` |
+| AC-7 | LOCAL_REVIEW performs no Git network ops | done (M3: structurally enforced by the workspace manager's git allowlist that excludes push/fetch/pull/clone/ls-remote; integration test verifies no remote refs are ever created) | M0/M3 | M0-7, M3-5 | `internal/policy`, `internal/workspace` |
+| AC-8 | Code saved in a separate local result branch | done (M3: `forge/result/<task-id>` local branch created by workspace manager; checkpoint commits never auto-merge to main) | M3 | M3-5 | `internal/workspace` |
+| AC-9 | Open diff and worktree from TUI | done (M3: `/workspaces/{id}/diff` and workspace path exposed via API; TUI reachable through daemon transport) | M3 | M3-5 | `internal/workspace`, `internal/transport` |
+| AC-10 | Accept / reject / ask-for-changes | done (M3: keep/reject/ask review lifecycle via `POST /workspaces/{id}/review`; reject deletes only managed worktree, never user data) | M3/M11 | M3-5, M11-2 | `internal/workspace` |
 | AC-11 | Disable test generation | planned | M8 | M8-3 | `internal/policy`, `internal/testengine` |
 | AC-12 | Disable running existing tests separately | planned | M8 | M8-3 | `internal/policy`, `internal/testengine` |
 | AC-13 | Disable AI-review | planned | M8 | M8-4 | `internal/policy`, `internal/review` |
@@ -44,8 +44,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-24 | Disabled visual verification never claims UI is verified | planned | M10 | M10-7 | `internal/visual`, `internal/policy` |
 | AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
-| AC-27 | Daemon resumes unfinished tasks after restart | **PARTIAL** (M0: startup reconciliation framework + M0 entities done, audited, idempotent; full agent-attempt resume blocked on M2/M3 — not faked) | M0/M7 | M0-4, M7-3 | `internal/daemon`, `internal/storage` |
-| AC-28 | Agent has no merge credentials | planned (enforced by design — ADR-0008) | M3/M11 | M3-4, M11-5 | `internal/supervisor`, `internal/merge` |
+| AC-27 | Daemon resumes unfinished tasks after restart | partial (M0: startup reconciliation framework + M0 entities done; M3: workspace reconciler verifies worktree integrity at startup; full agent-attempt resume blocked on M7 continuation packs) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace` |
+| AC-28 | Agent has no merge credentials | done (M3: supervisor builds a positive-allowlist environment that strips GITHUB_TOKEN/GITLAB_TOKEN/AWS_SECRET/etc.; AssertEnvSafe verifies no leak; tested) | M3 | M3-4 | `internal/supervisor` |
 | AC-29 | Non-disableable security policy cannot be weakened by task override | partial (M0: policy core enforces AC-29 invariant; full pipeline wiring in M8-1) | M0/M8 | M0-7, M8-1 | `internal/policy` |
 | AC-30 | Full task history available in audit | done (M1: project/task lifecycle events — added/removed/state_changed — all recorded in append-only audit store; `forge daemon logs -f` for live events) | M0+ | M0-6, M1-1, M1-5 | `internal/audit` |
 
@@ -75,6 +75,17 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | `forge task show` | done (--json) | M1-5 |
 | `forge task pause` | done | M1-5 |
 | `forge task cancel` | done | M1-5 |
+| `forge workspace create` | done (-t/--task, --wp, --base, --json) | M3 |
+| `forge workspace list` | done (-t/--task, --project, --json) | M3 |
+| `forge workspace show` | done (--json) | M3 |
+| `forge workspace run` | done (--engine, --json) | M3 |
+| `forge workspace checkpoint` | done (--moment, --message) | M3 |
+| `forge workspace result` | done (--json) | M3 |
+| `forge workspace review` | done (-a keep\|reject\|ask, --json) | M3 |
+| `forge workspace diff` | done | M3 |
+| `forge workspace patch` | done | M3 |
+| `forge workspace delete` | done | M3 |
+| `forge workspace checkpoints` | done (--json) | M3 |
 | `forge agent ...` / `forge model ...` / `forge route ...` | planned | M2, M6 |
 | `forge image-provider ...` | planned | M9 |
 | `forge quota` / `usage` / `cost` | planned | M6 |
@@ -98,8 +109,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 10 | Quota not reported as exact unless provider says so | planned — M6-6 |
 | 11 | No full repo in prompt | planned — M12-3 |
 | 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only |
-| 13 | No push in LOCAL_REVIEW | planned (design-enforced) — ADR-0008 |
-| 14 | Never modify primary checkout | done (M1: project add validates Git repo read-only; no writes to checkout) | ADR-0007 |
+| 13 | No push in LOCAL_REVIEW | done (M3) — git runner allowlist structurally excludes push/fetch/pull/clone/ls-remote; integration-tested (AC-7) |
+| 14 | Never modify primary checkout | done (M3: worktree isolation verified by integration test — HEAD SHA + working tree files unchanged after workspace create/run/checkpoint/result) | ADR-0007 |
 | 15 | Agent cannot change project security policy | done (core) — `internal/policy` AC-29 enforcement; full wiring in M8-1 |
 | 16 | Agent cannot disable checks that validate its output | done (core) — `internal/policy` mandatory checks; full wiring in M8-1 |
 | 17–18 | No silent install / privilege escalation | planned — M13-3 |
@@ -284,6 +295,60 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
   **M2-9 demonstrable scenario** depend on M3 workspaces; left to the M2-8/M3
   follow-up. The protocol, registry and conformance suite — the M2 acceptance
   surface (AC-6) — are complete and tested.
+
+## Milestone M3 — what is implemented
+
+- **Git worktree manager** (`internal/workspace`, ADR-0007, §17): creates
+  isolated worktrees under `~/.neuroforge/workspaces/<project>/<task>/<wp>/
+  attempt-<n>/` with branch naming per §17.3
+  (`forge/<task>/<wp>/attempt-<n>`, `forge/result/<task>`). The user's primary
+  checkout is NEVER modified — verified by integration test (HEAD SHA +
+  working-tree files unchanged). The worktree path is persisted for restart
+  recovery (AC-27, AC-9).
+- **Safe git runner** (AC-7, §36.13): every git invocation is validated against
+  a positive allowlist that structurally excludes `push`, `fetch`, `pull`,
+  `clone`, `ls-remote`, `send-pack`, `fetch-pack`, and `archive`. LOCAL_REVIEW
+  performs zero Git network operations by construction. Integration-tested
+  (no remote refs are ever created during the full workspace lifecycle).
+- **Checkpoints** (§5.2, §21.3): checkpoint commits created inside the attempt
+  branch at the defined moments (plan, first-diff, compile, tests, screenshot,
+  pre-quota-switch, pre-repair, pre-integration, manual). Checkpoint commits
+  NEVER auto-merge into the user's main branch. Checkpoint records are durable
+  (survive restart).
+- **Local result branch** (AC-8, §17.4): `forge/result/<task-id>` is created
+  locally pointing at the workspace HEAD. Never pushed. The TUI/CLI can open
+  the diff, export a patch, and review (keep/reject/ask-for-changes).
+- **Review lifecycle** (AC-10, §17.5): keep (retain), reject (delete managed
+  worktree + attempt branch — NEVER user data outside the managed path), ask
+  (retain for next attempt). Every action is audited.
+- **Semantic + path leases** (`internal/workgraph`, §18.4): advisory locks on
+  file paths and the five §18.4 semantic resources (database_schema,
+  navigation_graph, subscription_contract, design_system, build_configuration).
+  Conflicts block concurrent work packages (BLOCKED_LEASE).
+- **Process supervisor** (`internal/supervisor`, §10/§12, AC-28): runs coding
+  agents with a **positive-allowlist environment** that strips merge tokens,
+  production credentials, API keys, and the daemon auth token. `AssertEnvSafe`
+  verifies no leak. The supervisor enforces turn limits, a hard timeout, and
+  streams normalized events.
+- **Continuation packs** (§21.2): durable artifacts for provider switching and
+  crash recovery, written to disk + recorded in storage.
+- **Daemon wiring**: workspace service wired to the loopback API; workspace
+  reconciler verifies worktree integrity at startup (stale worktrees marked,
+  never silently resumed). Fake coding agent registered by default.
+- **Doctor orphan detection**: `forge doctor` scans the managed workspaces
+  directory for worktrees with no matching workspace record.
+- **CLI commands** (`internal/cli`): `forge workspace {create,list,show,run,
+  checkpoint,result,review,diff,patch,delete,checkpoints}` with `--json`.
+- **Tests**: workspace unit tests (primary-checkout-untouched, branch naming,
+  checkpoint commits, result branch, reject deletes only managed worktree,
+  multiple attempts, diff/patch), workgraph lease tests (path + semantic
+  conflicts, release, invalid), supervisor tests (env allowlist strips
+  forbidden vars, fake agent runs in worktree, audit recording), and the
+  **M3 demonstrable integration scenario** (30+ steps: temp repo → project →
+  task → workspace → fake-agent run → checkpoint → result branch → verify
+  primary untouched → verify no network ops → daemon restart → verify result
+  accessible → diff → reject). Plus the AC-7 security test. All run under
+  `go test -race` and `make check`.
 
 ## Bootstrap (original scaffold) — context
 
