@@ -13,27 +13,33 @@ func writeHelp(w io.Writer) {
 
 const helpText = `NeuroForge — autonomous multi-model development factory (local-first).
 
-Only bootstrap commands are implemented in the current milestone (M0 scaffold).
-The full command surface is defined in docs/spec/NEUROFORGE_SPEC.md (section 30)
-and is delivered across milestones M0-M13. Unimplemented requirements are tracked
-explicitly in docs/spec/COMPLIANCE_MATRIX.md.
+Foundation commands are implemented in milestone M0. The full command surface
+is defined in docs/spec/NEUROFORGE_SPEC.md (section 30) and is delivered across
+milestones M0-M13. Unimplemented requirements are tracked explicitly in
+docs/spec/COMPLIANCE_MATRIX.md.
 
 Usage:
   forge <command> [flags]
 
 Implemented commands:
-  version          Print version, commit and build/platform information
-  help             Show this help message
+  version             Print version, commit and build/platform information
+  help                Show this help message
+  doctor              Run basic system checks
+  daemon run          Run the daemon in the foreground
+  daemon start        Start the daemon as a detached background process
+  daemon stop         Stop a running daemon
+  daemon status       Print daemon lifecycle status (--json supported)
+  daemon logs         Print the daemon structured log (-f follows live events)
 
   Aliases:
     version  -> -v, -version, --version
     help     -> -h, --help
 
-Running "forge" with no arguments is intended to open the interactive TUI
-(spec AC-1), but the TUI is not implemented yet.
+Running "forge" with no arguments opens the interactive TUI shell (spec AC-1).
+In M0 this is a minimal full-screen shell; the full TUI is delivered across
+later milestones.
 
 Not implemented (planned, by milestone):
-  forge (interactive TUI)        M0
   forge project ...              M1
   forge task ...                 M1
   forge agent ...                M2-M5
@@ -41,10 +47,9 @@ Not implemented (planned, by milestone):
   forge image-provider ...       M9
   forge quota / usage / cost     M6
   forge plugin ...               M2
-  forge audit                    M0
-  forge emergency-stop           M0
-  forge cleanup                  M0
-  forge init / doctor / update   M13
+  forge audit                    M1+
+  forge emergency-stop           M1+
+  forge init / update            M13
 
 Exit codes:
   0   success
