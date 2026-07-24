@@ -1,0 +1,147 @@
+package storage
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// Migration is a single forward-only schema step.
+type Migration struct {
+	Version     int
+	Description string
+	// Up is the SQL applied for this migration. Multiple statements are
+	// executed sequentially within a single transaction.
+	Up string
+}
+
+// migrations is the ordered list of all schema migrations. Append only — never
+// edit or reorder an already-released migration (spec §31, ADR-0003).
+//
+// M0 only creates what the foundation actually uses: the bookkeeping table and
+// the append-only audit_events table. The remaining §31 tables are added by
+// later milestones as their owning packages land (rule §36.25: unimplemented
+// requirements must be explicitly marked, not disguised as finished stubs).
+var migrations = []Migration{
+	{
+		Version:     1,
+		Description: "create schema_migrations bookkeeping table",
+		Up:          `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, description TEXT NOT NULL)`,
+	},
+	{
+		Version:     2,
+		Description: "create audit_events append-only table (AC-30)",
+		Up: `
+CREATE TABLE IF NOT EXISTS audit_events (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	ts         TEXT    NOT NULL,
+	scope      TEXT    NOT NULL,
+	scope_id   TEXT    NOT NULL,
+	event_type TEXT    NOT NULL,
+	actor      TEXT    NOT NULL,
+	payload    TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_scope ON audit_events (scope, scope_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_type   ON audit_events (event_type, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_ts     ON audit_events (ts);
+
+-- Append-only enforcement: the audit trail must never be mutated or erased
+-- (spec §29.4, AC-30). UPDATE and DELETE are rejected at the storage layer so
+-- that even a bug in a caller cannot rewrite history.
+CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+	BEFORE UPDATE ON audit_events
+BEGIN
+	SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+	BEFORE DELETE ON audit_events
+BEGIN
+	SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+`,
+	},
+}
+
+// Migrate applies all pending migrations in order. It is idempotent: re-running
+// it against an up-to-date database is a no-op. Each migration runs in its own
+// transaction; a failure rolls back that migration and aborts.
+func (d *DB) Migrate(ctx context.Context) error {
+	// Ensure the bookkeeping table exists before we query it. Migration 1 does
+	// this too, but we need it present to read applied versions first.
+	if _, err := d.db.ExecContext(ctx,
+		`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, description TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("storage: ensure schema_migrations: %w", err)
+	}
+
+	applied, err := d.appliedVersions(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, m := range migrations {
+		if _, ok := applied[m.Version]; ok {
+			continue
+		}
+		if err := d.applyMigration(ctx, m); err != nil {
+			return fmt.Errorf("storage: migration %d (%s): %w", m.Version, m.Description, err)
+		}
+		d.logger.Info("storage: migration applied",
+			"version", m.Version, "description", m.Description)
+	}
+	return nil
+}
+
+// CurrentVersion returns the highest applied migration version, or 0 if none.
+func (d *DB) CurrentVersion(ctx context.Context) (int, error) {
+	applied, err := d.appliedVersions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	max := 0
+	for v := range applied {
+		if v > max {
+			max = v
+		}
+	}
+	return max, nil
+}
+
+func (d *DB) appliedVersions(ctx context.Context) (map[int]bool, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("storage: read schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int]bool)
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("storage: scan migration version: %w", err)
+		}
+		out[v] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: iterate migrations: %w", err)
+	}
+	return out, nil
+}
+
+func (d *DB) applyMigration(ctx context.Context, m Migration) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if m.Up != "" {
+		if _, err := tx.ExecContext(ctx, m.Up); err != nil {
+			return fmt.Errorf("exec migration: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)`,
+		m.Version, time.Now().UTC().Format(time.RFC3339Nano), m.Description); err != nil {
+		return fmt.Errorf("record migration: %w", err)
+	}
+	return tx.Commit()
+}

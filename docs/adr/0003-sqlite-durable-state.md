@@ -1,6 +1,7 @@
 # ADR-0003: SQLite (WAL) for durable state
 
-- **Status:** Accepted
+- **Status:** Accepted (supplemented by [ADR-0010](0010-sqlite-driver-modernc.md)
+  for the concrete driver choice)
 - **Date:** 2026-07-24
 - **Spec refs:** §11.4 (durable workflow), §31 (storage schema), §22.2 (SQLite
   FTS), §10 (primary store)
@@ -13,10 +14,11 @@ quota snapshots, audit) plus full-text search over the repo index (§22.2). The
 spec fixes the primary store as SQLite (§10) and lists the minimal table set
 (§31). Large artifacts must live on the filesystem, not as BLOBs (§31).
 
-> Not yet implemented — `internal/storage` is currently a scaffold (M0). The
-> concrete driver choice will be a follow-up ADR amendment recorded here when M0
-> storage lands, including CGO vs pure-Go trade-off justification (a dependency,
-> so it will be justified per `AGENTS.md`).
+> **Implemented in M0** (see ADR-0010 for the driver choice). `internal/storage`
+> opens SQLite in WAL mode via the pure-Go `modernc.org/sqlite` driver, runs a
+> forward-only idempotent migration runner, and persists the `audit_events`
+> append-only table. The remaining §31 tables are added by later milestones as
+> their owning packages land (rule §36.25).
 
 ## Decision
 

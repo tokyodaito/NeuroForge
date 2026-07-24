@@ -23,3 +23,4 @@ an ADR with a new one rather than rewriting it.
 | [0007](0007-git-worktree-isolation.md) | Git worktree isolation for agent runs | Accepted | §17 |
 | [0008](0008-local-review-security-model.md) | LOCAL_REVIEW security model | Accepted | §3.2, §29 |
 | [0009](0009-deterministic-merge-governor.md) | Deterministic Merge Governor | Accepted | §28 |
+| [0010](0010-sqlite-driver-modernc.md) | Pure-Go SQLite driver (modernc.org/sqlite) | Accepted | §10, §31 |

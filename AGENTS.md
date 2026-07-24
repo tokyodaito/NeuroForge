@@ -85,7 +85,9 @@ Do not put adapter code in core packages, and do not put core logic in adapters.
 
 ## When adding a dependency
 
-External dependencies are currently **zero**. If you must add one:
+External dependencies are kept minimal. As of M0 there is one justified
+dependency: `modernc.org/sqlite` (pure-Go SQLite driver, ADR-0010 — mandated by
+spec §10/§31). If you must add another:
 
 1. Justify it in the PR description **and** the commit message (why no stdlib,
    why this library, licence compatibility).
