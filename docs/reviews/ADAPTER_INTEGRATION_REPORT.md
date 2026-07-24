@@ -252,10 +252,48 @@ actually runs. No production code changed; the adapter's `Version`/`detect`/
 - Re-run with `PATH` reduced to `System32` only (so `codex` is unresolvable,
   simulating the CI runner): the two tests now pass; previously they failed.
 - `scripts/check.ps1` — OK (gofmt + vet + full suite).
-- Audited the other five adapter packages the same way (claude, gemini, kimi,
-  grok, opencode): all already host-independent; no further fixes needed.
+- Initial audit of the other five adapters was run on Windows only and so could
+  not surface Linux-only failures; a subsequent Linux CI run found three more
+  (see §12).
 
 **main status.** `main` at `f608dce` still contains the bug (the PR #2 merge
 predates `f62819b`). Merging `integration/adapters` (now containing `f62819b`)
 into `main`, or cherry-picking `f62819b`, will green CI. No push or merge into
 `main` was performed by this task, per the integration brief.
+
+## 12. Linux CI follow-up: cross-platform detect tests (`2ea31bc`)
+
+A subsequent `make check` on the Linux CI runner surfaced three more adapter
+packages with Windows-only assumptions that the Windows dev host (and the
+Windows-only audit in §11) could not catch. All four failures (codex + these
+three) share a theme: tests that are deterministic on Windows but not on Linux.
+Fix on `integration/adapters` as `2ea31bc`.
+
+**claude — `TestPathExts`, `TestCandidatePathsAppendsExtensions`.** `pathExts()`
+split PATHEXT on `os.PathListSeparator`, which is `:` on Linux, so a set PATHEXT
+(`.COM;.EXE;.BAT;.CMD`) became one giant entry instead of four. PATHEXT is a
+Windows env var whose value is **always** semicolon-delimited regardless of host
+OS; split on `";"`. This is a genuine production correctness fix (gemini and
+grok already split PATHEXT on `";"`; claude was the outlier). `os` remains used.
+
+**gemini — `TestLookPathUnicodeAndSpaces`.** The fixture binary was written
+`0o644` (no exec bit); `statExecutable` correctly requires the exec bit on Unix,
+so `lookPath` returned not found. Write the fixture `0o755` (exec bit; ignored on
+Windows). Test-only fix; production `statExecutable` is correct.
+
+**grok — `TestLookPathBatAndExeShims`.** Created a `.bat`/`.cmd`/`.exe` shim and
+expected a bare name to resolve via PATHEXT on Linux. PATHEXT extension trials
+are Windows-only (Unix resolves by exec bit, and `.bat`/`.cmd`/`.exe` are not
+executable shims). Guard the test with a Windows-only skip, matching
+kimi/gemini/opencode. Test-only fix; production `searchPath` is correct.
+
+**Proactive audit.** Grepped all adapter detect code for the PATHEXT-separator
+anti-pattern: claude was the only adapter splitting PATHEXT on
+`os.PathListSeparator`; the remaining `os.PathListSeparator` usages build PATH
+(correct — PATH uses the OS separator). kimi/gemini/opencode Windows-shim tests
+are already `runtime.GOOS`-guarded.
+
+**Verification.** All three packages pass on Windows (no regression);
+`GOOS=linux go vet ./...` passes (test code compiles for Linux);
+`scripts/check.ps1` OK. (The Linux *runtime* run itself is performed by CI;
+this Windows host has no Linux test runner.)
