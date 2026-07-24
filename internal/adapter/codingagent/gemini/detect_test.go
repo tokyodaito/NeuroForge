@@ -219,7 +219,9 @@ func TestLookPathUnicodeAndSpaces(t *testing.T) {
 		suffix = ".cmd"
 	}
 	full := filepath.Join(nested, binName+suffix)
-	if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+	// The fixture must be executable on Unix (statExecutable requires the exec
+	// bit); mode bits are ignored on Windows, so 0o755 is correct everywhere.
+	if err := os.WriteFile(full, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", nested)
