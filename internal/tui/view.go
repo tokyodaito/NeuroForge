@@ -27,6 +27,12 @@ func View(m Model) string {
 		b.WriteString(projectDetailView(m))
 	case ScreenTaskDetail:
 		b.WriteString(taskDetailView(m))
+	case ScreenUsage:
+		b.WriteString(usageView(m))
+	case ScreenQuotas:
+		b.WriteString(quotasView(m))
+	case ScreenRouteDecision:
+		b.WriteString(routeDecisionView(m))
 	case ScreenHelp:
 		b.WriteString(helpView())
 	}

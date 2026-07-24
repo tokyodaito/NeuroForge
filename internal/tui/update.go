@@ -81,7 +81,8 @@ func handleKey(m Model, key string) (Model, Effect) {
 		m.Screen = ScreenHelp
 		return m, EffectNone
 	case "esc":
-		if m.Screen == ScreenHelp || m.Screen == ScreenProjectDetail || m.Screen == ScreenTaskDetail {
+		if m.Screen == ScreenHelp || m.Screen == ScreenProjectDetail || m.Screen == ScreenTaskDetail ||
+			m.Screen == ScreenUsage || m.Screen == ScreenQuotas || m.Screen == ScreenRouteDecision {
 			m.Screen = m.PrevScreen
 			return m, EffectNone
 		}
@@ -276,6 +277,18 @@ func applyCommand(m Model, cmd Command) (Model, Effect) {
 		return m, EffectCancelTask
 	case "add-project":
 		return m, EffectStartProjectAdd
+	case "goto-usage":
+		m.PrevScreen = m.Screen
+		m.Screen = ScreenUsage
+		return m, EffectNone
+	case "goto-quotas":
+		m.PrevScreen = m.Screen
+		m.Screen = ScreenQuotas
+		return m, EffectNone
+	case "goto-route":
+		m.PrevScreen = m.Screen
+		m.Screen = ScreenRouteDecision
+		return m, EffectNone
 	}
 	return m, EffectNone
 }

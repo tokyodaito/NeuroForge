@@ -3,6 +3,9 @@ package tui
 import (
 	"time"
 
+	"neuroforge/internal/budget"
+	"neuroforge/internal/quota"
+	"neuroforge/internal/router"
 	"neuroforge/internal/transport"
 )
 
@@ -15,6 +18,10 @@ const (
 	ScreenProjectDetail
 	ScreenTaskDetail
 	ScreenHelp
+	// M6 screens (spec §6.2 Usage/Quotas + route decision §19.6).
+	ScreenUsage
+	ScreenQuotas
+	ScreenRouteDecision
 )
 
 func (s Screen) String() string {
@@ -29,6 +36,12 @@ func (s Screen) String() string {
 		return "Task Detail"
 	case ScreenHelp:
 		return "Help"
+	case ScreenUsage:
+		return "Usage"
+	case ScreenQuotas:
+		return "Quotas"
+	case ScreenRouteDecision:
+		return "Route Decision"
 	}
 	return "?"
 }
@@ -50,6 +63,10 @@ const (
 	EffectShowProjectDetail
 	EffectShowTaskDetail
 	EffectStartProjectAdd
+	// M6 navigation effects (no daemon round-trip; data is in-process).
+	EffectGotoUsage
+	EffectGotoQuotas
+	EffectGotoRouteDecision
 )
 
 // Model is the complete TUI state. It is a plain struct so the update logic
@@ -82,6 +99,13 @@ type Model struct {
 
 	// Last refresh time
 	LastRefresh time.Time
+
+	// M6 data (spec §6.1/§6.2/§19.6). Populated in-process from the default
+	// router/quota/budget fixtures so the dashboard is demonstrable without a
+	// live run. These are snapshots; the daemon does not yet own them.
+	UsageSummary  *budget.AggregatedSummary
+	QuotaRows     []quota.Snapshot
+	RouteDecision *router.Explanation
 }
 
 // Msg is an input event for the Update function.
@@ -130,6 +154,9 @@ func AllCommands() []Command {
 		{"pause-task", "Pause task", "Pause the selected task", EffectPauseTask},
 		{"cancel-task", "Cancel task", "Cancel the selected task", EffectCancelTask},
 		{"add-project", "Add project", "Register a new Git repository", EffectStartProjectAdd},
+		{"goto-usage", "Usage", "Show coding/image usage and cost (§14.4)", EffectGotoUsage},
+		{"goto-quotas", "Quotas", "Show provider quota per account (§20)", EffectGotoQuotas},
+		{"goto-route", "Route decision", "Explain the route decision (§19.6)", EffectGotoRouteDecision},
 		{"quit", "Quit", "Exit NeuroForge", EffectQuit},
 	}
 }
@@ -180,7 +207,7 @@ func containsFold(s, sub string) bool {
 
 // InitialModel returns the starting model state.
 func InitialModel() Model {
-	return Model{
+	m := Model{
 		Screen:         ScreenProjects,
 		Projects:       []transport.ProjectDTO{},
 		Tasks:          []transport.TaskDTO{},
@@ -189,4 +216,17 @@ func InitialModel() Model {
 		Width:          80,
 		Height:         24,
 	}
+	m = loadM6Snapshot(m)
+	return m
+}
+
+// loadM6Snapshot fills the in-process M6 dashboard data (usage/quota/route) from
+// the default router fixtures. This makes the Usage/Quotas/RouteDecision screens
+// demonstrable without a live provider run (rule §36.5). In a later milestone
+// these snapshots will be refreshed from the daemon.
+func loadM6Snapshot(m Model) Model {
+	m.UsageSummary = m6UsageSnapshot()
+	m.QuotaRows = m6QuotaSnapshot()
+	m.RouteDecision = m6RouteSnapshot()
+	return m
 }
