@@ -60,6 +60,48 @@ BEGIN
 END;
 `,
 	},
+	{
+		Version:     3,
+		Description: "create projects, tasks and task_attachments tables (M1)",
+		Up: `
+CREATE TABLE IF NOT EXISTS projects (
+	id         TEXT PRIMARY KEY,
+	name       TEXT NOT NULL,
+	path       TEXT NOT NULL UNIQUE,
+	remote     TEXT NOT NULL DEFAULT '',
+	state      TEXT NOT NULL DEFAULT 'DISABLED',
+	profile    TEXT NOT NULL DEFAULT 'LOCAL_REVIEW',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+	id          TEXT PRIMARY KEY,
+	project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	title       TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL,
+	priority    TEXT NOT NULL DEFAULT 'NORMAL',
+	state       TEXT NOT NULL DEFAULT 'NEW',
+	created_at  TEXT NOT NULL,
+	updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks (project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_state   ON tasks (state);
+
+CREATE TABLE IF NOT EXISTS task_attachments (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+	hash        TEXT NOT NULL,
+	filename    TEXT NOT NULL,
+	mime_type   TEXT NOT NULL,
+	size        INTEGER NOT NULL,
+	role        TEXT NOT NULL DEFAULT 'GENERAL_CONTEXT',
+	created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments (task_id);
+CREATE INDEX IF NOT EXISTS idx_task_attachments_hash ON task_attachments (hash);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running
