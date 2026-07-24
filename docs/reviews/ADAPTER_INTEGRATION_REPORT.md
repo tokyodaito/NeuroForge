@@ -8,7 +8,7 @@
 - **ADRs:** [ADR-0005](../adr/0005-coding-agent-adapter-protocol.md),
   [ADR-0012](../adr/0012-versioned-coding-agent-protocol.md)
 - **Acceptance criteria:** AC-5 (six engines), AC-6 (7th via plugin, unchanged core)
-- **Head SHA:** `bd01a8a9e1b167e8bf548fe3186c0eb7cf6b9920`
+- **Head SHA:** `84a9d70` (this report); code+docs integration tip `bd01a8a`
 
 This report records the integration of the six first-party coding-agent adapter
 branches into `integration/adapters`. The spec is the source of truth; this
