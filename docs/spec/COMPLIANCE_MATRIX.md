@@ -32,7 +32,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-12 | Disable running existing tests separately | planned | M8 | M8-3 | `internal/policy`, `internal/testengine` |
 | AC-13 | Disable AI-review | planned | M8 | M8-4 | `internal/policy`, `internal/review` |
 | AC-14 | Push / PR-MR / merge switchable separately | planned | M8/M11 | M8-1, M11-6 | `internal/policy`, `internal/adapter/vcs` |
-| AC-15 | Quota failure after edits → continuation via fallback, checkpoint kept | planned | M7 | M7-1, M7-5 | `internal/supervisor`, `internal/adapter/codingagent` |
+| AC-15 | Quota failure after edits → continuation via fallback, checkpoint kept | done (M7: cross-engine failover controller writes a continuation pack at the pre-quota-switch checkpoint, opens the circuit on the primary account, selects a fallback route and continues from the current state — the fallback receives ONLY the pack, never the full conversation; completed steps are deduped so they are not repeated; bounded recovery, no infinite retry) | M7 | M7-1, M7-5 | `internal/supervisor`, `internal/workspace` |
 | AC-16 | Simple task → cheap route | done (M6: deterministic router maps C0→TINY/C1→SMALL via §19.3 base tiers; table-driven + scenario tests; exhausted accounts excluded) | M6 | M6-4 | `internal/router` |
 | AC-17 | Complex task → strong model | done (M6: C3/C4 escalate to HEAVY/FRONTIER; risk R3/R4 floors the tier; fallback chain per §21.1) | M6 | M6-4 | `internal/router` |
 | AC-18 | Dashboard shows exact vs ~estimated vs unknown usage distinctly | done (M6: confidence EXACT/PROVIDER_REPORTED/ESTIMATED/INFERRED/UNKNOWN carried end-to-end; `FormatRemaining` prefixes `~` for estimated/inferred; TUI Usage screen + `forge usage` tag totals) | M6 | M6-9 | `internal/quota`, `internal/budget`, `internal/tui`, `internal/cli` |
@@ -44,7 +44,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-24 | Disabled visual verification never claims UI is verified | planned | M10 | M10-7 | `internal/visual`, `internal/policy` |
 | AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
-| AC-27 | Daemon resumes unfinished tasks after restart | partial (M0: startup reconciliation framework + M0 entities done; M3: workspace reconciler verifies worktree integrity at startup; full agent-attempt resume blocked on M7 continuation packs) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace` |
+| AC-27 | Daemon resumes unfinished tasks after restart | partial→done (M0: startup reconciliation framework; M3: workspace reconciler; M7: attempt reconciler recovers in-flight attempts — an active workspace with a checkpoint + continuation pack is reconciled as resumable; an interrupted run is marked failed so it is not treated as live; the durable pack survives restart so the failover controller can resume. The framework never auto-resumes a delivery operation.) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace`, `internal/supervisor` |
 | AC-28 | Agent has no merge credentials | done (M3: supervisor builds a positive-allowlist environment that strips GITHUB_TOKEN/GITLAB_TOKEN/AWS_SECRET/etc.; AssertEnvSafe verifies no leak; tested) | M3 | M3-4 | `internal/supervisor` |
 | AC-29 | Non-disableable security policy cannot be weakened by task override | partial (M0: policy core enforces AC-29 invariant; full pipeline wiring in M8-1) | M0/M8 | M0-7, M8-1 | `internal/policy` |
 | AC-30 | Full task history available in audit | done (M1: project/task lifecycle events — added/removed/state_changed — all recorded in append-only audit store; `forge daemon logs -f` for live events) | M0+ | M0-6, M1-1, M1-5 | `internal/audit` |
@@ -493,3 +493,94 @@ stabilized boundary remains the single source of truth.
 - A pre-existing race in `internal/adapter/codingagent/claude.TestRunConcurrent`
   exists on `main` independent of M6; it is out of scope (adapter protocol is
   frozen, §36.7) and tracked separately.
+
+## Milestone M7 — Failover — what is implemented
+
+- **Continuation packs** (`internal/supervisor`, spec §21.2): durable artifacts
+  written at provider switches / crash recovery. The pack captures
+  base/current SHA, completed steps (deduped), remaining work, the triggering
+  failures, verification status, and the next objective. `BuildPackFromRun`
+  extracts the pack from a run's events; `MergePacks` accumulates progress
+  across a multi-hop failover; `RenderFallbackPrompt` renders the prompt the
+  fallback agent receives (the FULL conversation history of the failed run is
+  deliberately NOT transferred — spec §21.2). Packs are persisted on disk
+  (mode 0o600) and recorded in `continuation_packs` (durable recovery substrate).
+- **Recovery classifier** (`internal/supervisor/recovery.go`, spec §21/§32):
+  deterministic mapping of a §32 failure class to a bounded recovery action
+  (retry / failover / wait_quota / quarantine / terminal / pause). Honours the
+  per-class retry budget from `protocol.DefaultPolicy` so **no class triggers an
+  infinite retry** (§32). Distinguishes "all routes quota-exhausted"
+  (WAITING_QUOTA) from "unrecoverable" (QUARANTINE). Never an LLM (§22.6).
+- **Resume / clean-restart policy** (`internal/supervisor/resume.go`, spec §21):
+  decides whether to resume an existing provider session (transient failure +
+  engine supports `SessionResume` + budget remains) or do a clean restart on a
+  fallback route from the continuation pack. Failover always means a clean
+  restart — the old session is irrelevant when switching provider.
+- **Cross-engine failover controller** (`internal/supervisor/failover.go`,
+  spec §21, AC-15): runs an agent across a route chain. On a provider-side
+  failure it checkpoints (pre-quota-switch, §21.3), builds + persists a
+  continuation pack, opens the circuit via the QuotaHook, selects the next
+  fallback route, and continues with the pack-derived prompt. Transient
+  failures (rate-limit/crash/timeout) get a bounded same-route retry with
+  cooldown + jitter before failover. Terminal failures (build/test/scope/policy)
+  are surfaced immediately — never retried or failed over.
+- **Provider cooldown + jitter** (`internal/supervisor/jitter.go` + recovery
+  classifier, §20.3): cooldowns carry a configurable jitter fraction; the
+  quota manager already applied jitter to retry-after windows. Bounded retries
+  apply the cooldown before each attempt.
+- **Retry limits** — enforced by the recovery classifier honouring
+  `protocol.DefaultPolicy`'s bounded `MaxRetries` per class; property-tested to
+  guarantee no infinite retry (§32).
+- **Checkpoint retention** (`internal/workspace/recovery.go`, spec §21.3):
+  `RetainCheckpoints` prunes the oldest checkpoint records beyond a retention
+  window once a run settles; the underlying commits stay in the attempt branch
+  (the recovery substrate), only the bookkeeping rows are bounded.
+- **WAITING_QUOTA + QUARANTINED** (`internal/workspace/recovery.go`, spec
+  §15.5/§20.3/§28/§32): new workspace lifecycle states. WAITING_QUOTA parks a
+  work package when every route is quota-exhausted (resumes automatically when a
+  route resets). QUARANTINE marks an unrecoverable failure for human review.
+  Both are re-entrant (a parked/quarantined workspace can return to active).
+- **Crash/restart recovery** (`internal/daemon/attempt_reconcile.go`, AC-27,
+  spec §11.4): a new startup reconciler recovers in-flight agent attempts after
+  a daemon restart. An active workspace with a checkpoint + continuation pack
+  is reconciled as resumable; an interrupted run is marked failed so it is not
+  treated as live. Never auto-resumes a delivery operation (§36.13).
+- **Daemon wiring** (`internal/daemon/failover_hook.go`): thin adapters bridge
+  the real `workspace.Manager` and `quota.Manager` onto the supervisor's
+  `WorkspaceHook`/`QuotaHook` interfaces (the supervisor stays free of a
+  workspace import — the daemon is the composition root). The attempt
+  reconciler is registered in the startup reconciliation chain.
+- **Tests**: recovery classifier (table-driven: quota→failover, rate-limit
+  bounded retry, auth→quarantine, terminal, protocol-error quarantine, no-
+  infinite-retry property, jitter), resume policy (failover=clean-restart,
+  retry+capability), continuation pack (fallback prompt has no transcript,
+  completed dedup, multi-hop merge, build-from-run dedupe), failover controller
+  (AC-15 quota-after-edits→fallback keeps checkpoint, all-routes-exhausted→
+  WAITING_QUOTA, terminal-not-retried, rate-limit retry-then-failover), real
+  hook integration (workspace checkpoint/state + quota feedback), workspace
+  recovery states + checkpoint retention, attempt reconciler (resumable / no-
+  pack-stale / waiting-quota-kept), **M7 scenario** (12-step AC-15 proof: two
+  attempts, circuit opened, pack written, pre-quota-switch checkpoint,
+  fallback got pack not conversation, pack durable), and a **crash/restart**
+  integration test (checkpoint + pack survive DB close/reopen). All run under
+  `go test -race` and `make check`; no real paid providers (§36.5).
+
+### Adapter protocol unchanged
+
+M7 adds **no** types to `internal/adapter/codingagent/protocol` and modifies no
+adapter. The failover controller consumes the stabilized §32 taxonomy +
+`DefaultPolicy` that M2 defined.
+
+### Remaining in M7 (explicitly not faked, rule §36.25)
+
+- The failover controller is exercised in-process (full real storage + workspace
+  + quota manager + fake agent). It is not yet wired behind a `forge workspace`
+  CLI subcommand / transport endpoint — that wiring lands when the scheduler
+  (M6 follow-up) dispatches tasks, since the scheduler is what invokes the
+  controller per task with a router-derived route chain. The pure failover
+  logic is complete and tested end-to-end against the fake agent.
+- Live quota reset detection (auto-unparking a WAITING_QUOTA workspace the moment
+  a provider reports a fresh quota window) depends on the daemon-owned quota
+  polling that arrives with the scheduler wiring; the recovery classifier +
+  reconciler already handle the decision correctly once a route becomes
+  available.

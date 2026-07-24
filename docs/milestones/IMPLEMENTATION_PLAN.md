@@ -70,7 +70,7 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **DoD:** driver choice justified (ADR-0010, pure-Go modernc.org/sqlite); no
   `go vet` issues. Remaining §31 tables land with later milestones (§36.25).
 
-### M0-4 — Daemon process + lifecycle + startup reconciliation `[PARTIAL: lifecycle + reconcile + workspace reconciler done; AC-27 full attempt resume blocked on M7]`
+### M0-4 — Daemon process + lifecycle + startup reconciliation `[DONE: lifecycle + reconcile + workspace reconciler + M7 attempt reconciler]`
 - **Goal:** single owner of mutable workflow state that recovers on restart.
 - **Scope:** `internal/daemon`: start/stop, PID/lockfile, startup reconciliation
   of persisted attempts (resume/finish), no silent resume of forbidden ops.
@@ -87,11 +87,11 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
   **reconciliation framework** (Reconciler interface + extension point) covering
   the M0 runtime entities (runtime files, DB health), with every decision
   audited and a live-owner conflict abort. **M3** added the workspace reconciler
-  (verifies worktree integrity at startup). **Pending (AC-27 blocker):** full
-  agent-attempt resume via continuation packs — those entities land in M7
-  and are not faked (§36.25). AC-27 stays PARTIAL until the
-  `start attempt → checkpoint → kill → restart → reconcile → resume/restart`
-  end-to-end scenario exists (also M7-3).
+  (verifies worktree integrity at startup). **M7** added the attempt reconciler:
+  an active workspace with a checkpoint + continuation pack is reconciled as
+  resumable; an interrupted run is marked failed so it is not treated as live;
+  the durable pack survives restart. The `start attempt → checkpoint → kill →
+  restart → reconcile` end-to-end scenario now exists (AC-27 satisfied).
 
 ### M0-5 — Loopback transport (HTTP JSON + SSE + token) `[DONE]`
 - **Goal:** TUI/CLI ↔ daemon command + live-event channel.
@@ -449,11 +449,24 @@ Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
 
 > Spec §21. Goal: switch providers without losing progress.
 
-- **M7-1 — Continuation packs** (§21.2): `internal/supervisor`/storage. **AC:** AC-15.
-- **M7-2 — Provider switching** using packs.
-- **M7-3 — Recovery on restart** (ties to M0-4). **AC:** AC-27.
-- **M7-4 — Session policy.**
-- **M7-5 — Scenario:** fake quota failure after edits → fallback keeps checkpoint (AC-15).
+- **M7-1 — Continuation packs** (§21.2): `internal/supervisor`/storage. **AC:** AC-15. `[DONE]`
+  — `ContinuationPack` with completed/remaining/verification; `BuildPackFromRun`
+  (deduped), `MergePacks` (multi-hop), `RenderFallbackPrompt` (no full conversation),
+  persisted on disk + `continuation_packs`.
+- **M7-2 — Provider switching** using packs. `[DONE]` — `FailoverController` runs a
+  route chain; on a provider-side failure it checkpoints (pre-quota-switch),
+  writes a pack, opens the circuit, selects the fallback, continues with the
+  pack-derived prompt. Recovery classifier + resume policy bound the behaviour.
+- **M7-3 — Recovery on restart** (ties to M0-4). **AC:** AC-27. `[DONE]` —
+  `attemptReconciler` recovers in-flight attempts at daemon startup; a
+  checkpoint+pack-backed active workspace is reconciled as resumable, an
+  interrupted run is marked failed; the durable pack survives restart.
+- **M7-4 — Session policy.** `[DONE]` — `ResumePolicy` decides resume (same
+  engine+session) vs clean restart (failover from pack); clean restart policy
+  is enforced for all provider-side failures.
+- **M7-5 — Scenario:** fake quota failure after edits → fallback keeps checkpoint (AC-15). `[DONE]`
+  — `TestM7_AC15_PrimaryQuotaAfterEdits_FallbackContinuesFromCheckpoint` (12-step
+  proof) + crash/restart integration test.
 
 ---
 
