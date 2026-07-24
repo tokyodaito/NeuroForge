@@ -71,6 +71,14 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(args[1:])
 	case "plugin":
 		return a.runPlugin(args[1:])
+	case "quota":
+		return a.runQuota(args[1:])
+	case "usage":
+		return a.runUsage(args[1:])
+	case "cost":
+		return a.runCost(args[1:])
+	case "route":
+		return a.runRoute(args[1:])
 	default:
 		fmt.Fprintf(a.Err, "%s: unknown command %q\n\n", a.Name, args[0])
 		writeHelp(a.Err)

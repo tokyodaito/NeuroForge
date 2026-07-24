@@ -63,6 +63,11 @@ Implemented commands:
 
   dashboard           Open the interactive TUI (same as 'forge' with no args)
 
+  quota               Show provider quota per account (§20) (--json)
+  usage               Show aggregated usage: included vs paid, confidence-tagged (§14.4) (--json)
+  cost                Show cost report across scopes (§23) (--json)
+  route explain       Explain the deterministic route decision for a task (§19.6) (--json)
+
   Aliases:
     version  -> -v, -version, --version
     help     -> -h, --help
@@ -72,9 +77,8 @@ Running "forge" with no arguments opens the interactive TUI (spec AC-1).
 Not implemented (planned, by milestone):
   forge project init/settings  M1+
   forge agent ...              M2-M5
-  forge model ... / route ...  M6
+  forge model ...              M6+
   forge image-provider ...     M9
-  forge quota / usage / cost   M6
   forge audit                  M1+
   forge emergency-stop         M1+
   forge init / update          M13
