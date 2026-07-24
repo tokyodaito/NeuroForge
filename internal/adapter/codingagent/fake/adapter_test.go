@@ -190,14 +190,20 @@ func TestScenarioTimeoutHangsUntilCancelled(t *testing.T) {
 	// terminated by context cancellation (simulating the supervisor timeout).
 	a := New(AdapterOptions{Scenario: ScenarioTimeout, Installed: true})
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// The observation window must be strictly shorter than the context deadline:
+	// the only thing that produces a terminal event here is ctx cancellation
+	// (which emits run.cancelled), so if the deadline raced with the check the
+	// test would report a false positive. The deadline comfortably outlives the
+	// window so we genuinely verify the scenario does not terminate on its own.
+	observe := hangGrace * 2
+	ctx, cancel := context.WithTimeout(context.Background(), observe+500*time.Millisecond)
 	defer cancel()
 	_, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "t", Engine: "fake", Model: "fake/standard", Workspace: t.TempDir()}, sink)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// No terminal event should arrive within a short window (it hangs).
-	time.Sleep(hangGrace * 2)
+	// No terminal event should arrive within the observation window (it hangs).
+	time.Sleep(observe)
 	if lastType(sink.Events()).IsTerminal() {
 		t.Errorf("timeout scenario terminated unexpectedly: %s", lastType(sink.Events()))
 	}

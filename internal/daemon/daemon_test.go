@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +96,17 @@ func TestRun_RuntimeFilesArePrivate(t *testing.T) {
 		info, err := os.Stat(p)
 		if err != nil {
 			t.Fatalf("stat %s: %v", p, err)
+		}
+		if runtime.GOOS == "windows" {
+			// Windows has no Unix permission model: os.WriteFile/Chmod with
+			// 0o600 are a no-op and files are created with the default DACL,
+			// so Mode().Perm() reports 0o666 regardless. We deliberately do
+			// NOT claim a 0o600 guarantee on Windows (no false security claim,
+			// rule §36.25). Privacy on Windows is enforced by the owning
+			// directory being owner-only (~/.neuroforge/run, created 0o700),
+			// which the user profile ACL keeps private. The 0o600 assertion is
+			// retained on POSIX, where it is meaningful and enforced.
+			continue
 		}
 		if mode := info.Mode().Perm(); mode != 0o600 {
 			t.Errorf("%s mode = %o, want 600", p, mode)

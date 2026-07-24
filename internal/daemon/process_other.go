@@ -1,14 +1,14 @@
-//go:build !unix
+//go:build !unix && !windows
 
-// Package daemon process helpers for non-Unix platforms (e.g. Windows).
+// Package daemon process helpers for platforms without Unix signal support and
+// without a dedicated Windows implementation (e.g. js/wasm).
 //
-// STATUS: limited (M0). Unix (darwin/linux) process supervision is fully
-// implemented in process_unix.go. On Windows, reliable background daemon
-// detachment and signal-based liveness probing require platform-specific APIs
-// (job objects / OpenProcess) that are intentionally deferred. The daemon Run
-// loop, loopback API, durable storage and audit are platform-independent and
-// fully functional; only detached start/stop semantics are reduced here. This
-// is an explicitly-marked limitation (rule §36.25), not a hidden stub.
+// STATUS: limited. Unix (darwin/linux) process supervision is fully implemented
+// in process_unix.go and Windows in process_windows.go. On other platforms the
+// daemon Run loop, loopback API, durable storage and audit are platform-
+// independent and fully functional; only detached start/stop liveness probing is
+// reduced here. This is an explicitly-marked limitation (rule §36.25), not a
+// hidden stub.
 package daemon
 
 import (

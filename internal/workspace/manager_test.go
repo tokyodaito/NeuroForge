@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -356,7 +357,8 @@ func listFiles(t *testing.T, dir string) map[string]bool {
 		// Exclude .git internals: git worktree inherently adds ref/worktree
 		// metadata to the shared object database. The spec invariant (§17.1)
 		// is that the working tree (user-visible source files) is untouched.
-		if rel == ".git" || len(rel) >= 5 && rel[:5] == ".git/" {
+		// Use filepath.Separator so this works on both POSIX (/) and Windows (\).
+		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
 			return nil
 		}
 		out[rel] = true
