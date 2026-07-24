@@ -102,6 +102,83 @@ CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments (task_i
 CREATE INDEX IF NOT EXISTS idx_task_attachments_hash ON task_attachments (hash);
 `,
 	},
+	{
+		Version:     4,
+		Description: "create workspaces, checkpoints, leases and continuation_packs tables (M3)",
+		Up: `
+-- Workspaces: isolated Git worktrees for agent runs (spec §17, ADR-0007).
+-- Each workspace is an attempt inside a work package; branch naming follows
+-- §17.3. The primary checkout is never recorded here — only the managed
+-- worktree path.
+CREATE TABLE IF NOT EXISTS workspaces (
+	id              TEXT PRIMARY KEY,
+	project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+	work_package_id TEXT NOT NULL DEFAULT 'main',
+	attempt         INTEGER NOT NULL DEFAULT 1,
+	kind            TEXT NOT NULL DEFAULT 'attempt',
+	path            TEXT NOT NULL,          -- managed worktree filesystem path
+	branch          TEXT NOT NULL,          -- forge/<task>/<wp>/attempt-<n>
+	result_branch   TEXT NOT NULL DEFAULT '',-- forge/result/<task> (when ready)
+	base_sha        TEXT NOT NULL DEFAULT '',
+	head_sha        TEXT NOT NULL DEFAULT '',
+	result_sha      TEXT NOT NULL DEFAULT '',
+	state           TEXT NOT NULL DEFAULT 'pending',
+	engine          TEXT NOT NULL DEFAULT '',
+	model           TEXT NOT NULL DEFAULT '',
+	run_id          TEXT NOT NULL DEFAULT '',
+	session_id      TEXT NOT NULL DEFAULT '',
+	created_at      TEXT NOT NULL,
+	updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_project ON workspaces (project_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_task    ON workspaces (task_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_state   ON workspaces (state);
+
+-- Checkpoints: durable records of checkpoint commits (spec §21.3, §5.2).
+-- A checkpoint commit lives in the attempt branch and NEVER auto-merges into
+-- the user's main branch.
+CREATE TABLE IF NOT EXISTS checkpoints (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+	commit_sha    TEXT NOT NULL,
+	moment        TEXT NOT NULL,  -- plan|first-diff|compile|tests|screenshot|pre-quota-switch|pre-repair|pre-integration|manual
+	message       TEXT NOT NULL DEFAULT '',
+	created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_workspace ON checkpoints (workspace_id);
+
+-- Leases: advisory locks on file paths and semantic resources (spec §18.4).
+-- Two kinds: 'path' (a repository file/directory) and 'semantic' (one of the
+-- §18.4 resource classes). Conflicts block work from starting concurrently.
+CREATE TABLE IF NOT EXISTS leases (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	scope         TEXT NOT NULL,  -- 'project' | 'workspace'
+	scope_id      TEXT NOT NULL,  -- project id or workspace id
+	kind          TEXT NOT NULL,  -- 'path' | 'semantic'
+	resource      TEXT NOT NULL,  -- file path or semantic class name
+	workspace_id  TEXT NOT NULL DEFAULT '',
+	state         TEXT NOT NULL DEFAULT 'active', -- 'active' | 'released'
+	created_at    TEXT NOT NULL,
+	released_at   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_leases_scope   ON leases (scope, scope_id, state);
+CREATE INDEX IF NOT EXISTS idx_leases_resource ON leases (kind, resource, state);
+
+-- Continuation packs: durable references to on-disk continuation-pack files
+-- (spec §21.2). Used for provider switching and crash recovery (AC-15, AC-27).
+CREATE TABLE IF NOT EXISTS continuation_packs (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+	file_path         TEXT NOT NULL,
+	specification_hash TEXT NOT NULL DEFAULT '',
+	base_sha          TEXT NOT NULL DEFAULT '',
+	current_sha       TEXT NOT NULL DEFAULT '',
+	created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_packs_workspace ON continuation_packs (workspace_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running

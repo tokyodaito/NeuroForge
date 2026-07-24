@@ -51,3 +51,14 @@ func (t *Tx) Commit() error {
 func (t *Tx) Rollback() error {
 	return t.tx.Rollback()
 }
+
+// Exec executes one statement within this transaction. It is the escape hatch
+// for callers that need to run a statement that is not covered by a dedicated
+// typed method, while still sharing the transaction (spec §11.4, ADR-0003).
+func (t *Tx) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	res, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: tx exec: %w", err)
+	}
+	return res, nil
+}
