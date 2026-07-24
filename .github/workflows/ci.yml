@@ -1,0 +1,86 @@
+name: ci
+
+# NeuroForge continuous integration.
+#
+# This workflow was added as part of the Windows bootstrap. It runs the
+# cross-platform build/test gate on Windows (the first-class path on Windows,
+# using scripts/check.ps1) and a Linux baseline that also carries the race
+# detector. No real AI providers, coding-agent CLIs or secrets are used
+# (spec rules §36.5/§36.17); everything runs offline with the fake agent.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+  # Allow manual triggering from the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows (build / vet / test / race / check.ps1)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go version
+        run: go version
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (CGO-free, pure-Go SQLite)
+        env:
+          CGO_ENABLED: '0'
+        run: go test -count=1 ./...
+
+      # The race detector needs cgo, hence a C compiler. The windows-latest
+      # runner image ships MinGW gcc (C:\msys64); make it reachable. This is
+      # only for the race step — production builds remain pure-Go (CGO_ENABLED=0)
+      # and never require a compiler (modernc.org/sqlite).
+      - name: Enable cgo for the race detector (locate mingw gcc)
+        run: |
+          $gcc = @('C:\msys64\mingw64\bin', 'C:\msys64\ucrt64\bin') |
+                  Where-Object { Test-Path (Join-Path $_ 'gcc.exe') } |
+                  Select-Object -First 1
+          if ($gcc) {
+            Add-Content -Path $env:GITHUB_PATH -Value $gcc
+            Write-Host "gcc on PATH: $gcc"
+          } else {
+            Write-Host "::warning::no mingw gcc found; the race step may fail."
+          }
+
+      - name: go test -race
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race -count=1 ./...
+
+      - name: Windows gate (scripts/check.ps1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
+
+  linux:
+    name: Linux (make check + race baseline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: make check (fmt-check + vet + test)
+        run: make check
+
+      - name: go test -race
+        run: go test -race -count=1 ./...
