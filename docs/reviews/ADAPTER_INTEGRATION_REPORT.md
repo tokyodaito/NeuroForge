@@ -8,7 +8,7 @@
 - **ADRs:** [ADR-0005](../adr/0005-coding-agent-adapter-protocol.md),
   [ADR-0012](../adr/0012-versioned-coding-agent-protocol.md)
 - **Acceptance criteria:** AC-5 (six engines), AC-6 (7th via plugin, unchanged core)
-- **Head SHA:** `integration/adapters` tip — see `git log integration/adapters`; code+docs integration tip `bd01a8a`
+- **Head SHA:** `integration/adapters` tip — see `git log integration/adapters`; code+docs integration tip `bd01a8a`; post-merge CI fix `f62819b`
 
 This report records the integration of the six first-party coding-agent adapter
 branches into `integration/adapters`. The spec is the source of truth; this
@@ -218,3 +218,44 @@ Recommended follow-ups (out of scope for this integration):
 - Wire `builtin.RegisterAll` into the daemon startup once the supervisor is
   connected to the live scheduler (M2-8 / M6).
 - Add per-adapter review notes for gemini/kimi/grok to match codex/claude/opencode.
+
+## 11. Post-merge CI fix (`f62819b`)
+
+`integration/adapters` was merged into `main` via PR #2 (`f608dce`). CI on `main`
+then failed in the codex adapter package:
+
+```
+--- FAIL: TestVersionMethodProtocolIsOne   version_test.go:101: EngineVersion = ""
+--- FAIL: TestVersionMethodUnparsableFlagged version_test.go:116: expected a non-empty Error
+FAIL  neuroforge/internal/adapter/codingagent/codex
+```
+
+**Root cause.** Those two tests built the adapter via `newTestAdapter(fr)`
+without overriding the binary-resolution seam, so detection fell back to
+`exec.LookPath("codex")` (codex/options.go). They passed only on hosts that have
+`codex` installed (the dev box had `codex.ps1` on PATH, resolved via PATHEXT) and
+failed on the Linux CI runner where `codex` is absent: detection returned
+`Installed=false`, so the version probe never ran, `EngineVersion` stayed empty,
+and the unparsable-version `Error` branch (`d.Installed && !pv.valid`) was never
+taken. The tests were host-dependent — a violation of the offline/deterministic
+test principle (rule §36.5). Every other test in the file already injected a
+deterministic lookup; these two had missed it.
+
+**Fix.** Inject the same deterministic lookup (`func(string) (string, error) {
+return "/bin/codex", nil }`) into both tests so the fakeRunner's version probe
+actually runs. No production code changed; the adapter's `Version`/`detect`/
+`probe` logic is correct as-is. The fix is on `integration/adapters` as `f62819b`
+(exactly one commit ahead of the PR #2 merge content).
+
+**Verification.**
+- `go test -count=1 ./internal/adapter/codingagent/codex/...` — green.
+- Re-run with `PATH` reduced to `System32` only (so `codex` is unresolvable,
+  simulating the CI runner): the two tests now pass; previously they failed.
+- `scripts/check.ps1` — OK (gofmt + vet + full suite).
+- Audited the other five adapter packages the same way (claude, gemini, kimi,
+  grok, opencode): all already host-independent; no further fixes needed.
+
+**main status.** `main` at `f608dce` still contains the bug (the PR #2 merge
+predates `f62819b`). Merging `integration/adapters` (now containing `f62819b`)
+into `main`, or cherry-picking `f62819b`, will green CI. No push or merge into
+`main` was performed by this task, per the integration brief.
