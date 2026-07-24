@@ -86,7 +86,10 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// aborts startup so no duplicate daemon is created.
 	reconcilers := cfg.Reconcilers
 	if reconcilers == nil {
-		reconcilers = WithExtraReconcilers(&workspaceReconciler{wm: wsManager})
+		reconcilers = WithExtraReconcilers(
+			&workspaceReconciler{wm: wsManager},
+			&attemptReconciler{wm: wsManager}, // M7: recover in-flight attempts (AC-27)
+		)
 	}
 	if _, err := Reconcile(runCtx, ReconcileTx{
 		DB: db, Audit: recorder, Dirs: cfg.Dirs, Logger: logger,
