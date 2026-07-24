@@ -1,0 +1,46 @@
+# Line-ending policy for NeuroForge.
+#
+# The repository normalises all text to LF. This keeps gofmt, the Makefile,
+# YAML manifests and shell scripts stable across platforms and is required for
+# `make fmt-check` / scripts/check.ps1 to pass on Windows (where a default
+# core.autocrlf=true checkout would otherwise inject CRLF into .go files and
+# make gofmt flag every file).
+#
+# .bat/.cmd are forced to CRLF (native Windows batch tooling expects it).
+# Binary artifacts are marked binary so they are never normalised or diffed.
+
+# Default: text, normalised to LF on checkin/checkout.
+* text=auto eol=lf
+
+# LF-sensitive source and config.
+*.go           text eol=lf
+go.mod         text eol=lf
+go.sum         text eol=lf
+*.yaml         text eol=lf
+*.yml          text eol=lf
+*.md           text eol=lf
+*.sh           text eol=lf
+*.ps1          text eol=lf
+Makefile       text eol=lf
+.editorconfig  text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+LICENSE        text eol=lf
+
+# Windows batch scripts: CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary artifacts: never normalise, never diff.
+*.exe  binary
+*.dll  binary
+*.pdb  binary
+*.db   binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
