@@ -22,7 +22,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-2 | Manage projects/tasks without CLI | done (M1: TUI screens for projects and tasks; add project, navigate, start/pause/stop, pause/cancel tasks) | M1 | M1-6 | `internal/tui`, `internal/project` |
 | AC-3 | Create a task with free-form text (no template) | done (M1: `forge task add` + TUI; description can be the only user field) | M1 | M1-5 | `internal/task` |
 | AC-4 | Attach an image to a task | done (M1: `-a`/`--attach` flag; content-addressed SHA-256 storage under `~/.neuroforge/artifacts/`) | M1 | M1-5 | `internal/task` |
-| AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | planned (M2: stable protocol + conformance suite ready; concrete engines M4–M5) | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent` |
+| AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | done (M4/M5: all six first-party adapters integrated on `integration/adapters`; each implements the full 13-method `codingagent.Adapter` surface at protocol v1 and passes the §13.3 conformance suite offline; central `builtin` registry wires them with no provider-specific core logic) | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent/{codex,claude,gemini,kimi,grok,opencode,builtin}` |
 | AC-6 | A 7th agent via plugin, no core changes | done (M2: versioned `protocol` package v1 + declarative + native JSON-RPC plugin + `forge plugin test` conformance suite; the fake agent passes all 9 checks via plugin with no core changes) | M2 | M2-7 | `internal/adapter/codingagent/{protocol,declarative,plugin,conformance}` |
 | AC-7 | LOCAL_REVIEW performs no Git network ops | done (M3: structurally enforced by the workspace manager's git allowlist that excludes push/fetch/pull/clone/ls-remote; integration test verifies no remote refs are ever created) | M0/M3 | M0-7, M3-5 | `internal/policy`, `internal/workspace` |
 | AC-8 | Code saved in a separate local result branch | done (M3: `forge/result/<task-id>` local branch created by workspace manager; checkpoint commits never auto-merge to main) | M3 | M3-5 | `internal/workspace` |
@@ -349,6 +349,59 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
   primary untouched → verify no network ops → daemon restart → verify result
   accessible → diff → reject). Plus the AC-7 security test. All run under
   `go test -race` and `make check`.
+
+## Milestone M4/M5 — coding-agent adapters (integrated)
+
+All six first-party coding engines (§12, AC-5) integrated on branch
+`integration/adapters`. Each is a self-contained in-process Go adapter ("Path
+3" of the adapter dev guide) under `internal/adapter/codingagent/<engine>/`.
+
+- **Engines** — Codex (`codex`), Claude Code (`claude`), Gemini CLI (`gemini`),
+  Kimi Code (`kimi`), Grok Build (`grok`), OpenCode (`opencode`).
+- **Interface coverage** — every adapter satisfies `codingagent.Adapter` (13
+  methods, §12.2), enforced at compile time by a `var _ codingagent.Adapter`
+  assertion.
+- **Protocol v1 frozen** — no event types or shared types were added to
+  `internal/adapter/codingagent/protocol`. Each adapter translates its engine's
+  native schema onto the existing §12.4 normalized event set.
+- **No core changes** — each adapter lives in its own subpackage; no shared/core
+  package was modified. `go.mod`/`go.sum` untouched (stdlib + existing internal
+  packages only).
+- **No self-registration** — adapters expose `New(opts)`; the daemon wires them.
+- **Security invariants** — allowlisted environment only (§29.2, AC-28);
+  `--share`/YOLO/bypass modes never enabled; secret redaction in
+  stderr/events/artifacts; credentials never cross the boundary.
+- **Cancellation/timeout** — terminate the whole process group via the shared
+  `proctree` package (Windows-safe: `CREATE_NEW_PROCESS_GROUP` + `taskkill /T /F`).
+- **Windows correctness** — PATHEXT-aware discovery (`.exe`/`.cmd`/`.bat`/npm
+  shims; `.ps1` skipped where not spawnable), paths with spaces/Unicode, CRLF +
+  UTF-8 BOM tolerance in stream parsers, no Unix-only assumptions.
+- **Offline conformance** — all nine §13.3 checks (handshake, version
+  compatibility, event ordering, malformed output, cancellation, timeout, quota
+  failure, resume, process crash) honoured through each adapter's real run
+  pipeline against recorded byte-stream fixtures — no paid calls (rule §36.5).
+  Authenticated model enumeration / live quota / live health are deferred to
+  each adapter's opt-in build-tagged smoke test (skipped in CI).
+- **Central registry** — `internal/adapter/codingagent/builtin` constructs and
+  registers all six adapters into a `codingagent.Registry` with default options.
+  It holds no provider-specific logic (§13.3); canonical engine ids live there
+  as the integration contract, verified against each adapter's `ID()`.
+- **Tests** — per-adapter unit + conformance + (opt-in) smoke suites, plus
+  `builtin` integration tests: discovery of all six, id uniqueness, duplicate
+  rejection, and dispatch through the common `codingagent.Adapter` interface
+  (the only surface the scheduler/supervisor core may use — ADR-0005).
+- **Docs** — `docs/adapters/<engine>.md` per engine, `docs/adapters/README.md`
+  index, per-adapter review notes under `docs/reviews/adapters/`, and the
+  `docs/reviews/ADAPTER_INTEGRATION_REPORT.md` integration report.
+
+### Explicitly not implemented (rule §36.25 — never faked)
+
+- `ListModels` returns empty for engines with no offline catalogue (no
+  hard-coded model names, §36.8); the model catalogue arrives in M6-1.
+- `InspectQuota` reports UNKNOWN where the headless CLI exposes no live quota
+  API (§20.1, §36.10); per-run usage flows via `usage.updated`.
+- `SendMessage`/`Resume` return explicit errors where the engine has no
+  headless live-message or resumable-session contract.
 
 ## Bootstrap (original scaffold) — context
 
