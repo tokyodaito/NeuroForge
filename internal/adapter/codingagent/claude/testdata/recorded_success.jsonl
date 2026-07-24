@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"recorded-session-001","model":"sonnet","cwd":"/ws"}
+{"type":"assistant","session_id":"recorded-session-001","message":{"content":[{"type":"text","text":"Created src/greet.go"}]}}
+{"type":"assistant","session_id":"recorded-session-001","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Edit","input":{"file_path":"src/greet.go"}}]}}
+{"type":"user","session_id":"recorded-session-001","message":{"content":[{"type":"tool_result","id":"toolu_01","content":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"recorded-session-001","num_turns":4,"result":"Created src/greet.go","total_cost_usd":0.0456,"usage":{"input_tokens":10234,"output_tokens":1289,"cache_creation_input_tokens":5110,"cache_read_input_tokens":3201}}
