@@ -78,22 +78,20 @@ func TestRun_NoArgs_NonTTY_DegradesGracefully(t *testing.T) {
 	}
 }
 
-func TestRun_NoArgs_TTY_RendersAltScreen(t *testing.T) {
+func TestRun_NoArgs_TTY_WithoutRealTerminalFD_DegradesGracefully(t *testing.T) {
+	// In M1 the TUI uses raw mode (term.MakeRaw) which requires a real terminal
+	// FD on stdin. Even if stderrIsTTY returns true, a pipe on stdin means we
+	// cannot enter raw mode and must degrade. The full-screen TUI is tested via
+	// integration tests that build the real binary.
 	a, out, _ := newTestApp(t)
 	a.stderrIsTTY = func() bool { return true }
-	a.Stdin = bytes.NewReader([]byte("q\n")) // quit immediately
+	a.Stdin = bytes.NewReader([]byte("q\n"))
 	if code := a.Run(nil); code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
 	got := out.String()
-	if !strings.Contains(got, "\x1b[?1049h") {
-		t.Errorf("expected alternate-screen enter sequence; got %q", got)
-	}
-	if !strings.Contains(got, "NeuroForge") {
-		t.Errorf("expected banner; got %q", got)
-	}
-	if !strings.Contains(got, "\x1b[?1049l") {
-		t.Errorf("expected alternate-screen leave sequence on exit; got %q", got)
+	if !strings.Contains(got, "requires an interactive terminal") {
+		t.Errorf("expected degradation notice when stdin is not a terminal; got %q", got)
 	}
 }
 

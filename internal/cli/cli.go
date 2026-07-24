@@ -61,6 +61,12 @@ func (a *App) Run(args []string) int {
 		return a.runDoctor(args[1:])
 	case "daemon":
 		return a.runDaemon(args[1:])
+	case "dashboard":
+		return a.runTUI()
+	case "project":
+		return a.runProject(args[1:])
+	case "task":
+		return a.runTask(args[1:])
 	default:
 		fmt.Fprintf(a.Err, "%s: unknown command %q\n\n", a.Name, args[0])
 		writeHelp(a.Err)

@@ -13,10 +13,10 @@ func writeHelp(w io.Writer) {
 
 const helpText = `NeuroForge — autonomous multi-model development factory (local-first).
 
-Foundation commands are implemented in milestone M0. The full command surface
-is defined in docs/spec/NEUROFORGE_SPEC.md (section 30) and is delivered across
-milestones M0-M13. Unimplemented requirements are tracked explicitly in
-docs/spec/COMPLIANCE_MATRIX.md.
+Foundation and project/task management commands are implemented in milestones
+M0 and M1. The full command surface is defined in docs/spec/NEUROFORGE_SPEC.md
+(section 30) and is delivered across milestones M0-M13. Unimplemented requirements
+are tracked explicitly in docs/spec/COMPLIANCE_MATRIX.md.
 
 Usage:
   forge <command> [flags]
@@ -31,25 +31,38 @@ Implemented commands:
   daemon status       Print daemon lifecycle status (--json supported)
   daemon logs         Print the daemon structured log (-f follows live events)
 
+  project add <path>  Register a Git repository (--name, --json)
+  project list        List registered projects (--json)
+  project show <id>   Show project details (--json)
+  project start <id>  Start the factory (DISABLED -> IDLE)
+  project pause <id>  Pause the factory
+  project stop <id>   Stop the factory
+  project remove <id> Unregister a project (files NOT deleted)
+
+  task add            Create a task (-p/--project, --title, --priority, -a/--attach)
+  task list           List tasks (-p/--project, --json)
+  task show <id>      Show task details (--json)
+  task pause <id>     Pause a task
+  task cancel <id>    Cancel a task
+
+  dashboard           Open the interactive TUI (same as 'forge' with no args)
+
   Aliases:
     version  -> -v, -version, --version
     help     -> -h, --help
 
-Running "forge" with no arguments opens the interactive TUI shell (spec AC-1).
-In M0 this is a minimal full-screen shell; the full TUI is delivered across
-later milestones.
+Running "forge" with no arguments opens the interactive TUI (spec AC-1).
 
 Not implemented (planned, by milestone):
-  forge project ...              M1
-  forge task ...                 M1
-  forge agent ...                M2-M5
-  forge model ... / route ...    M6
-  forge image-provider ...       M9
-  forge quota / usage / cost     M6
-  forge plugin ...               M2
-  forge audit                    M1+
-  forge emergency-stop           M1+
-  forge init / update            M13
+  forge project init/settings  M1+
+  forge agent ...              M2-M5
+  forge model ... / route ...  M6
+  forge image-provider ...     M9
+  forge quota / usage / cost   M6
+  forge plugin ...             M2
+  forge audit                  M1+
+  forge emergency-stop         M1+
+  forge init / update          M13
 
 Exit codes:
   0   success
