@@ -92,7 +92,9 @@ func TestDeriveCapabilitiesUnknownVersionIsConservative(t *testing.T) {
 
 func TestVersionMethodProtocolIsOne(t *testing.T) {
 	fr := &fakeRunner{version: "codex 0.42.0"}
-	a := newTestAdapter(fr)
+	a := newTestAdapter(fr, func(o *Options) {
+		o.lookup = func(string) (string, error) { return "/bin/codex", nil }
+	})
 	v := a.Version(t.Context())
 	if v.ProtocolVersion != protocol.ProtocolVersion {
 		t.Fatalf("ProtocolVersion = %d, want %d", v.ProtocolVersion, protocol.ProtocolVersion)
@@ -107,7 +109,9 @@ func TestVersionMethodProtocolIsOne(t *testing.T) {
 
 func TestVersionMethodUnparsableFlagged(t *testing.T) {
 	fr := &fakeRunner{version: "codex-some-weird-build"}
-	a := newTestAdapter(fr)
+	a := newTestAdapter(fr, func(o *Options) {
+		o.lookup = func(string) (string, error) { return "/bin/codex", nil }
+	})
 	v := a.Version(t.Context())
 	if v.ProtocolVersion != protocol.ProtocolVersion {
 		t.Fatalf("ProtocolVersion = %d", v.ProtocolVersion)
