@@ -9,10 +9,15 @@ import (
 	"os"
 	"os/signal"
 
+	"neuroforge/internal/adapter/codingagent"
+	"neuroforge/internal/adapter/codingagent/fake"
 	"neuroforge/internal/audit"
 	"neuroforge/internal/storage"
+	"neuroforge/internal/supervisor"
 	"neuroforge/internal/transport"
 	"neuroforge/internal/version"
+	"neuroforge/internal/workgraph"
+	"neuroforge/internal/workspace"
 )
 
 // RunConfig configures a daemon Run. Zero values use safe defaults.
@@ -71,13 +76,17 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// 2. Open the append-only audit recorder.
 	recorder := audit.NewRecorder(db, logger)
 
+	// 2a. Create the workspace manager early so the workspace reconciler can
+	// verify worktree integrity during startup reconciliation (AC-27).
+	wsManager := workspace.NewManager(db, recorder, cfg.Dirs.WorkspacesDir, logger)
+
 	// 3. Startup reconciliation: reconcile durable + ephemeral runtime state
 	// against OS reality BEFORE we bind/claim the runtime dir. This is the
 	// deterministic recovery point (AC-27 framework). A live-owner conflict
 	// aborts startup so no duplicate daemon is created.
 	reconcilers := cfg.Reconcilers
 	if reconcilers == nil {
-		reconcilers = DefaultReconcilers()
+		reconcilers = WithExtraReconcilers(&workspaceReconciler{wm: wsManager})
 	}
 	if _, err := Reconcile(runCtx, ReconcileTx{
 		DB: db, Audit: recorder, Dirs: cfg.Dirs, Logger: logger,
@@ -104,6 +113,34 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	services := NewServices(db, recorder, cfg.Dirs.ArtifactsDir, bus, logger)
 	apiAdapter := newAPIAdapter(services)
 
+	// 4b. Lease manager + supervisor (M3, spec §17/§18/§12).
+	// The workspace manager was created at step 2a (before reconciliation).
+	// The supervisor runs agents with an allowlisted environment (AC-28).
+	leaseManager := workgraph.NewLeaseManager(db)
+
+	// Register the fake coding agent so the supervisor can run it (rule §36.6).
+	adapterRegistry := codingagent.Default()
+	if !hasAdapter(adapterRegistry, "fake") {
+		adapterRegistry.MustRegister(fake.New(fake.AdapterOptions{Installed: true}), 0)
+	}
+
+	sup := supervisor.New(supervisor.Options{
+		Adapters: adapterRegistry,
+		Audit:    recorder,
+		Logger:   logger,
+		FullEnv:  os.Environ(),
+	})
+
+	resolveProject := func(ctx context.Context, projectID string) (string, error) {
+		p, err := services.Projects.Get(ctx, projectID)
+		if err != nil {
+			return "", err
+		}
+		return p.Path, nil
+	}
+	wsService := NewWorkspaceService(wsManager, leaseManager, sup, services.Tasks, recorder, logger, resolveProject)
+	wsAdapter := newWorkspaceAPIAdapter(wsService)
+
 	token := cfg.Token
 	if token == "" {
 		token, err = transport.GenerateToken()
@@ -122,6 +159,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		AuditReader:       &auditReader{db: db},
 		ProjectAPI:        apiAdapter,
 		TaskAPI:           apiAdapter,
+		WorkspaceAPI:      wsAdapter,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)

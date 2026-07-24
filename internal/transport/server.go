@@ -33,6 +33,9 @@ type Config struct {
 	// TaskAPI, if set, backs the task management endpoints (/tasks).
 	// Nil makes those endpoints return 503.
 	TaskAPI TaskAPI
+	// WorkspaceAPI, if set, backs the workspace endpoints (/workspaces).
+	// Nil makes those endpoints return 503.
+	WorkspaceAPI WorkspaceAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -110,6 +113,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	mux.HandleFunc("/shutdown", s.withToken(s.handleShutdown))
 	mux.HandleFunc("/audit", s.withToken(s.handleAudit))
 	s.registerAPIRoutes(mux)
+	s.registerWorkspaceRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{

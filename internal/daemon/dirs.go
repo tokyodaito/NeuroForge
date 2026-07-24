@@ -18,13 +18,14 @@ const EnvChild = "NEUROFORGE_DAEMON_CHILD"
 // Dirs describes the daemon's on-disk runtime layout. Every file that holds
 // runtime state or a secret lives here with restrictive permissions.
 type Dirs struct {
-	Root         string // NEUROFORGE_HOME (default ~/.neuroforge)
-	StateDB      string // SQLite database file
-	LogFile      string // daemon structured log (append)
-	PIDFile      string // PID of the running daemon
-	TokenFile    string // loopback API bearer token (secret)
-	AddrFile     string // base URL of the loopback API
-	ArtifactsDir string // content-addressed artifacts (future)
+	Root          string // NEUROFORGE_HOME (default ~/.neuroforge)
+	StateDB       string // SQLite database file
+	LogFile       string // daemon structured log (append)
+	PIDFile       string // PID of the running daemon
+	TokenFile     string // loopback API bearer token (secret)
+	AddrFile      string // base URL of the loopback API
+	ArtifactsDir  string // content-addressed artifacts
+	WorkspacesDir string // root for managed Git worktrees (§17.2)
 }
 
 // DefaultDirs resolves the runtime layout from NEUROFORGE_HOME, falling back to
@@ -43,26 +44,28 @@ func DefaultDirs() (Dirs, error) {
 		return Dirs{}, fmt.Errorf("daemon: absolutise %q: %w", root, err)
 	}
 	return Dirs{
-		Root:         root,
-		StateDB:      filepath.Join(root, "state.db"),
-		LogFile:      filepath.Join(root, "logs", "daemon.log"),
-		PIDFile:      filepath.Join(root, "run", "daemon.pid"),
-		TokenFile:    filepath.Join(root, "run", "daemon.token"),
-		AddrFile:     filepath.Join(root, "run", "daemon.addr"),
-		ArtifactsDir: filepath.Join(root, "artifacts"),
+		Root:          root,
+		StateDB:       filepath.Join(root, "state.db"),
+		LogFile:       filepath.Join(root, "logs", "daemon.log"),
+		PIDFile:       filepath.Join(root, "run", "daemon.pid"),
+		TokenFile:     filepath.Join(root, "run", "daemon.token"),
+		AddrFile:      filepath.Join(root, "run", "daemon.addr"),
+		ArtifactsDir:  filepath.Join(root, "artifacts"),
+		WorkspacesDir: root, // worktrees go under <root>/workspaces/...
 	}, nil
 }
 
 // WithRoot returns a Dirs rooted at root (helper for tests).
 func WithRoot(root string) Dirs {
 	return Dirs{
-		Root:         root,
-		StateDB:      filepath.Join(root, "state.db"),
-		LogFile:      filepath.Join(root, "logs", "daemon.log"),
-		PIDFile:      filepath.Join(root, "run", "daemon.pid"),
-		TokenFile:    filepath.Join(root, "run", "daemon.token"),
-		AddrFile:     filepath.Join(root, "run", "daemon.addr"),
-		ArtifactsDir: filepath.Join(root, "artifacts"),
+		Root:          root,
+		StateDB:       filepath.Join(root, "state.db"),
+		LogFile:       filepath.Join(root, "logs", "daemon.log"),
+		PIDFile:       filepath.Join(root, "run", "daemon.pid"),
+		TokenFile:     filepath.Join(root, "run", "daemon.token"),
+		AddrFile:      filepath.Join(root, "run", "daemon.addr"),
+		ArtifactsDir:  filepath.Join(root, "artifacts"),
+		WorkspacesDir: root,
 	}
 }
 

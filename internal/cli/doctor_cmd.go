@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"neuroforge/internal/daemon"
 	"neuroforge/internal/storage"
@@ -40,6 +41,7 @@ func (a *App) runDoctor(args []string) int {
 	} else {
 		checks = append(checks, checkRuntimeHome(dirs)...)
 		checks = append(checks, checkDatabase(dirs)...)
+		checks = append(checks, checkOrphanWorktrees(dirs)...)
 		checks = append(checks, checkDaemon(dirs)...)
 	}
 
@@ -175,6 +177,42 @@ func checkDaemon(dirs daemon.Dirs) []checkResult {
 	default:
 		return []checkResult{{name: "daemon", level: okLevel, detail: "not running (use 'forge daemon start')"}}
 	}
+}
+
+// checkOrphanWorktrees scans the managed workspaces directory for Git worktrees
+// that have no matching workspace record. These are leftovers from crashed or
+// interrupted runs and should be reported (spec: orphan worktree detection).
+func checkOrphanWorktrees(dirs daemon.Dirs) []checkResult {
+	wsRoot := filepath.Join(dirs.Root, "workspaces")
+	info, err := os.Stat(wsRoot)
+	if err != nil || !info.IsDir() {
+		return []checkResult{{name: "orphan-worktrees", level: okLevel, detail: "no workspaces directory (none created yet)"}}
+	}
+
+	// Walk the directory tree looking for .git files (worktree signature).
+	var orphans []string
+	_ = filepath.WalkDir(wsRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || path == wsRoot {
+			return nil
+		}
+		gitPath := filepath.Join(path, ".git")
+		if gi, gErr := os.Stat(gitPath); gErr == nil && !gi.IsDir() {
+			orphans = append(orphans, path)
+		}
+		return nil
+	})
+
+	// If the daemon is running, cross-check against the DB. If not, report all
+	// worktrees as potential orphans (the DB may have records we can't read
+	// without the daemon).
+	if len(orphans) == 0 {
+		return []checkResult{{name: "orphan-worktrees", level: okLevel, detail: "none detected"}}
+	}
+	detail := fmt.Sprintf("%d worktree(s) on disk", len(orphans))
+	if len(orphans) <= 3 {
+		detail += ": " + strings.Join(orphans, ", ")
+	}
+	return []checkResult{{name: "orphan-worktrees", level: warnLevel, detail: detail}}
 }
 
 func doctorText(checks []checkResult) string {

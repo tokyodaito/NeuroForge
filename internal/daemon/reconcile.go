@@ -57,11 +57,20 @@ type Reconciler interface {
 var ErrConcurrentDaemon = errors.New("daemon: another daemon owns this runtime dir")
 
 // DefaultReconcilers returns the M0 set: runtime-file ownership + DB health.
+// Milestones may add extra reconcilers at startup via [WithExtraReconcilers].
 func DefaultReconcilers() []Reconciler {
 	return []Reconciler{
 		&runtimeFilesReconciler{},
 		&databaseHealthReconciler{},
 	}
+}
+
+// WithExtraReconcilers appends additional reconcilers (e.g. the workspace
+// reconciler from M3) to the default set. It returns a new slice; the original
+// is not modified.
+func WithExtraReconcilers(extra ...Reconciler) []Reconciler {
+	base := DefaultReconcilers()
+	return append(base, extra...)
 }
 
 // Reconcile runs every reconciler in order, audits each decision, and returns

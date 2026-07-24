@@ -45,6 +45,18 @@ Implemented commands:
   task pause <id>     Pause a task
   task cancel <id>    Cancel a task
 
+  workspace create -t <task>   Create an isolated Git worktree (--wp, --base, --json)
+  workspace list [-t <task>]   List workspaces (--project, --json)
+  workspace show <id>          Show workspace details (--json)
+  workspace run <id>           Run the fake agent in the workspace (--engine)
+  workspace checkpoint <id>    Create a checkpoint commit (--moment, --message)
+  workspace result <id>        Create the local result branch (forge/result/<task>)
+  workspace review <id> -a X   Review result: keep | reject | ask (--json)
+  workspace diff <id>          Show the diff (base..HEAD)
+  workspace patch <id>         Export the result as a patch
+  workspace delete <id>        Delete workspace (worktree only; never user data)
+  workspace checkpoints <id>   List checkpoints (--json)
+
   plugin test <exe>   Run the §13.3 coding-agent conformance suite against a
                       plugin executable (--json supported)
   plugin list         List registered plugins
