@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"neuroforge/internal/daemon"
-	"neuroforge/internal/version"
+	"neuroforge/internal/transport"
+
+	"golang.org/x/term"
 )
 
 // Options configures a TUI run.
@@ -22,9 +24,8 @@ type Options struct {
 	Dirs  daemon.Dirs
 }
 
-// Run opens the full-screen TUI shell and blocks until the user quits (q, Ctrl-C
-// or EOF) or ctx is cancelled. On a non-terminal output it degrades to a plain
-// notice (it never corrupts a piped stream with escape codes).
+// Run opens the full-screen TUI and blocks until the user quits or ctx is
+// cancelled. On a non-terminal output it degrades to a plain notice.
 func Run(ctx context.Context, opts Options) error {
 	out := opts.Out
 	if out == nil {
@@ -38,95 +39,396 @@ func Run(ctx context.Context, opts Options) error {
 	if !opts.IsTTY {
 		fmt.Fprintln(out, "NeuroForge TUI requires an interactive terminal.")
 		fmt.Fprintln(out, "Run 'forge help' for the list of CLI commands.")
-		fmt.Fprintln(out, "(this is the M0 TUI shell; full screens arrive in later milestones.)")
 		return nil
 	}
 
-	// Catch Ctrl-C so we can restore the screen and exit cleanly.
+	fd := getFD(in)
+
+	// Double-check that the input is actually a terminal (opts.IsTTY is a hint
+	// from the CLI; the real check uses term.IsTerminal to handle tests/pipes).
+	if !term.IsTerminal(fd) {
+		fmt.Fprintln(out, "NeuroForge TUI requires an interactive terminal.")
+		fmt.Fprintln(out, "Run 'forge help' for the list of CLI commands.")
+		return nil
+	}
+
+	// Save and restore terminal state.
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return fmt.Errorf("tui: enter raw mode: %w", err)
+	}
+	defer func() {
+		_ = term.Restore(fd, oldState)
+	}()
+
+	// Enable mouse tracking (SGR mode + button events).
+	fmt.Fprint(out, "\x1b[?1049h\x1b[?1006h\x1b[?1000h\x1b[2J\x1b[H")
+	defer fmt.Fprint(out, "\x1b[?1000l\x1b[?1006l\x1b[?1049l")
+
+	// Catch Ctrl-C at the OS level as a fallback.
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
-	enterAlt(out)
-	defer leaveAlt(out)
+	m := InitialModel()
 
-	render(out, opts)
+	// Try to connect to the daemon for live data.
+	client, daemonErr := daemon.Connect(sigCtx, opts.Dirs)
+	if daemonErr == nil {
+		m.DaemonRunning = true
+	}
 
-	// Input loop: quit on 'q', Ctrl-D (EOF) or context cancel.
-	doneCh := make(chan struct{})
+	// Initial refresh.
+	m, _ = Update(m, Msg{Type: MsgInit})
+	if client != nil {
+		m = fetchAndApply(sigCtx, client, m)
+	}
+
+	render(out, m)
+
+	// SSE subscription for live refresh.
+	eventCh := subscribeEvents(sigCtx, client)
+
+	// Keyboard input goroutine.
+	keyCh := readKeys(in)
+
+	// Periodic refresh ticker.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sigCtx.Done():
+			return nil
+		case key := <-keyCh:
+			if key == "" {
+				continue
+			}
+			var effect Effect
+			m, effect = Update(m, Msg{Type: MsgKey, Key: key})
+			if effect == EffectQuit {
+				return nil
+			}
+			m = executeEffect(sigCtx, client, m, effect, out)
+			render(out, m)
+
+		case evt, ok := <-eventCh:
+			if !ok {
+				eventCh = nil
+				continue
+			}
+			var effect Effect
+			m, effect = Update(m, Msg{Type: MsgDaemonEvent, Event: evt})
+			m = executeEffect(sigCtx, client, m, effect, out)
+			render(out, m)
+
+		case <-ticker.C:
+			if client != nil {
+				m = fetchAndApply(sigCtx, client, m)
+				render(out, m)
+			}
+		}
+	}
+}
+
+// getFD extracts the file descriptor from an io.Reader (must be *os.File).
+func getFD(in io.Reader) int {
+	if f, ok := in.(*os.File); ok {
+		return int(f.Fd())
+	}
+	return int(os.Stdin.Fd())
+}
+
+// render draws one frame.
+func render(w io.Writer, m Model) {
+	_, _ = io.WriteString(w, View(m))
+}
+
+// fetchAndApply loads projects and tasks from the daemon and applies them to
+// the model.
+func fetchAndApply(ctx context.Context, client *transport.Client, m Model) Model {
+	if client == nil {
+		return m
+	}
+	projects, err := client.ListProjects(ctx)
+	if err == nil {
+		m, _ = Update(m, Msg{Type: MsgProjectsLoaded, Projects: projects})
+	} else {
+		m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "fetch projects: " + err.Error()})
+	}
+
+	if m.ActiveProjectID != "" {
+		tasks, err := client.ListTasks(ctx, m.ActiveProjectID)
+		if err == nil {
+			m, _ = Update(m, Msg{Type: MsgTasksLoaded, Tasks: tasks})
+		}
+	}
+	return m
+}
+
+// executeEffect performs side effects requested by Update.
+func executeEffect(ctx context.Context, client *transport.Client, m Model, effect Effect, out io.Writer) Model {
+	if effect == EffectNone {
+		return m
+	}
+	if client == nil {
+		m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "daemon not connected"})
+		return m
+	}
+
+	switch effect {
+	case EffectRefreshProjects:
+		projects, err := client.ListProjects(ctx)
+		if err != nil {
+			m, _ = Update(m, Msg{Type: MsgError, Err: err})
+		} else {
+			m, _ = Update(m, Msg{Type: MsgProjectsLoaded, Projects: projects})
+		}
+
+	case EffectRefreshTasks:
+		pid := m.ActiveProjectID
+		if m.Screen == ScreenProjects && len(m.Projects) > 0 {
+			pid = m.Projects[m.SelectedProject].ID
+		}
+		tasks, err := client.ListTasks(ctx, pid)
+		if err != nil {
+			m, _ = Update(m, Msg{Type: MsgError, Err: err})
+		} else {
+			m.ActiveProjectID = pid
+			m, _ = Update(m, Msg{Type: MsgTasksLoaded, Tasks: tasks})
+		}
+
+	case EffectStartProject:
+		if len(m.Projects) > 0 {
+			id := m.Projects[m.SelectedProject].ID
+			p, err := client.StartProject(ctx, id)
+			if err != nil {
+				m, _ = Update(m, Msg{Type: MsgError, Err: err})
+			} else {
+				m.Projects[m.SelectedProject] = p
+				m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "Project " + id + " started"})
+			}
+		}
+
+	case EffectPauseProject:
+		if len(m.Projects) > 0 {
+			id := m.Projects[m.SelectedProject].ID
+			p, err := client.PauseProject(ctx, id)
+			if err != nil {
+				m, _ = Update(m, Msg{Type: MsgError, Err: err})
+			} else {
+				m.Projects[m.SelectedProject] = p
+				m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "Project " + id + " paused"})
+			}
+		}
+
+	case EffectStopProject:
+		if len(m.Projects) > 0 {
+			id := m.Projects[m.SelectedProject].ID
+			p, err := client.StopProject(ctx, id)
+			if err != nil {
+				m, _ = Update(m, Msg{Type: MsgError, Err: err})
+			} else {
+				m.Projects[m.SelectedProject] = p
+				m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "Project " + id + " stopped"})
+			}
+		}
+
+	case EffectPauseTask:
+		if len(m.Tasks) > 0 {
+			id := m.Tasks[m.SelectedTask].ID
+			t, err := client.PauseTask(ctx, id)
+			if err != nil {
+				m, _ = Update(m, Msg{Type: MsgError, Err: err})
+			} else {
+				m.Tasks[m.SelectedTask] = t
+				m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "Task " + id + " paused"})
+			}
+		}
+
+	case EffectCancelTask:
+		if len(m.Tasks) > 0 {
+			id := m.Tasks[m.SelectedTask].ID
+			t, err := client.CancelTask(ctx, id)
+			if err != nil {
+				m, _ = Update(m, Msg{Type: MsgError, Err: err})
+			} else {
+				m.Tasks[m.SelectedTask] = t
+				m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "Task " + id + " cancelled"})
+			}
+		}
+
+	case EffectShowProjectDetail:
+		if len(m.Projects) > 0 {
+			m.DetailID = m.Projects[m.SelectedProject].ID
+		}
+
+	case EffectShowTaskDetail:
+		if len(m.Tasks) > 0 {
+			m.DetailID = m.Tasks[m.SelectedTask].ID
+		}
+
+	case EffectStartProjectAdd:
+		m, _ = Update(m, Msg{Type: MsgStatus, StatusMsg: "Use 'forge project add <path>' to add a project"})
+	}
+
+	return m
+}
+
+// subscribeEvents opens the SSE stream and returns a channel of events. Returns
+// nil if the client is nil.
+func subscribeEvents(ctx context.Context, client *transport.Client) <-chan transport.Event {
+	if client == nil {
+		return nil
+	}
+	ch, err := client.Stream(ctx)
+	if err != nil {
+		return nil
+	}
+	return ch
+}
+
+// ---- keyboard input parsing ----
+
+// readKeys reads raw bytes from r and produces human-readable key names on a
+// channel. Handles escape sequences for arrow keys, function keys, etc.
+func readKeys(r io.Reader) <-chan string {
+	out := make(chan string, 16)
 	go func() {
-		defer close(doneCh)
-		reader := bufio.NewReader(in)
+		defer close(out)
+		reader := bufio.NewReader(r)
 		for {
 			b, err := reader.ReadByte()
 			if err != nil {
 				return
 			}
-			switch b {
-			case 'q', 'Q', 0x03 /* Ctrl-C */, 0x04 /* Ctrl-D */, 0x1b /* Esc */ :
-				return
-			case '\r', '\n':
-				// re-render to refresh status on Enter
-				render(out, opts)
+
+			key := parseKey(b, reader)
+			if key != "" {
+				select {
+				case out <- key:
+				default:
+				}
 			}
 		}
 	}()
+	return out
+}
 
-	select {
-	case <-doneCh:
-	case <-sigCtx.Done():
-	case <-ctx.Done():
+// parseKey interprets a byte (possibly followed by more bytes) as a key name.
+func parseKey(b byte, reader *bufio.Reader) string {
+	switch {
+	case b == 0x1b: // ESC — could be Esc alone or an escape sequence
+		// Try to peek at the next byte (non-blocking).
+		next, err := reader.Peek(1)
+		if err != nil || len(next) == 0 {
+			return "esc"
+		}
+		c := next[0]
+		if c == '[' {
+			// CSI sequence: read until we get a final byte.
+			reader.ReadByte() // consume '['
+			return parseCSI(reader)
+		}
+		if c == 'O' {
+			// SS3 sequence (some function keys).
+			reader.ReadByte() // consume 'O'
+			fb, err := reader.ReadByte()
+			if err != nil {
+				return "esc"
+			}
+			return parseSS3(fb)
+		}
+		// Esc followed by something else: treat as Alt+key.
+		return "esc"
+
+	case b == 0x0d || b == 0x0a: // Enter
+		return "enter"
+
+	case b == 0x09: // Tab
+		return "tab"
+
+	case b == 0x7f || b == 0x08: // Backspace
+		return "backspace"
+
+	case b == 0x03: // Ctrl-C
+		return "ctrl+c"
+
+	case b >= 0x01 && b <= 0x1a: // Ctrl+A to Ctrl+Z
+		return "ctrl+" + string('a'+b-1)
+
+	case b >= 0x20 && b <= 0x7e: // Printable ASCII
+		return string(b)
 	}
-	return nil
+
+	return ""
 }
 
-// enterAlt/leaveAlt switch the terminal to/from the alternate screen buffer so
-// the TUI does not clobber the user's scrollback.
-func enterAlt(w io.Writer) {
-	fmt.Fprint(w, "\x1b[?1049h\x1b[2J\x1b[H") // alt screen, clear, home
-}
-
-func leaveAlt(w io.Writer) {
-	fmt.Fprint(w, "\x1b[?1049l") // restore main screen
-}
-
-// render draws a single full-screen frame.
-func render(w io.Writer, opts Options) {
-	v := version.Current()
-	var b strings.Builder
-	b.WriteString("\x1b[H\x1b[2J") // home + clear
-	b.WriteString(bold("NeuroForge") + "  " + dim(v.Version) + "  " + dim(time.Now().Format("15:04")) + "\n\n")
-	b.WriteString("PROJECTS\n\n")
-	b.WriteString(dim("  (no projects yet — use 'forge project add' in M1)") + "\n\n")
-	b.WriteString("ACTIVE RUNS\n\n")
-	b.WriteString(dim("  (no active runs)") + "\n\n")
-	b.WriteString("DAEMON\n  ")
-	b.WriteString(daemonLine(opts))
-	b.WriteString("\n\n")
-	b.WriteString("--------------------------------------------------------------------------------\n")
-	b.WriteString(dim("M0 shell — no business functionality yet.") + "\n")
-	b.WriteString("keys: " + key("q") + "/" + key("Esc") + " quit  ·  " + key("Enter") + " refresh status\n")
-	_, _ = io.WriteString(w, b.String())
-}
-
-func daemonLine(opts Options) string {
-	if opts.Dirs.Root == "" {
-		return dim("runtime dir not configured")
-	}
-	st := daemon.GetStatus(context.Background(), opts.Dirs)
-	switch st.State {
-	case daemon.StatusRunning:
-		return ok("running") + "  pid=" + fmt.Sprintf("%d", st.PID) + "  " + dim(st.Addr)
-	case daemon.StatusUnhealthy:
-		return warn("unhealthy") + "  " + dim(st.Note)
-	case daemon.StatusStale, daemon.StatusCorrupted:
-		return warn(string(st.State)) + "  " + dim(st.Note)
-	default:
-		return dim("not running — start with 'forge daemon start'")
+// parseCSI reads a CSI escape sequence (after \x1b[) and returns the key name.
+func parseCSI(reader *bufio.Reader) string {
+	var params strings.Builder
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			return "esc"
+		}
+		if b >= '@' && b <= '~' {
+			return interpretCSI(params.String(), b)
+		}
+		params.WriteByte(b)
 	}
 }
 
-func bold(s string) string { return "\x1b[1m" + s + "\x1b[0m" }
-func dim(s string) string  { return "\x1b[2m" + s + "\x1b[0m" }
-func ok(s string) string   { return "\x1b[32m" + s + "\x1b[0m" }
-func warn(s string) string { return "\x1b[33m" + s + "\x1b[0m" }
-func key(s string) string  { return "\x1b[7m " + s + " \x1b[0m" }
+func interpretCSI(params string, final byte) string {
+	switch final {
+	case 'A':
+		return "up"
+	case 'B':
+		return "down"
+	case 'C':
+		return "right"
+	case 'D':
+		return "left"
+	case 'Z':
+		return "shift+tab"
+	case 'M':
+		// Mouse event (SGGR format handled in parseMouse)
+		return ""
+	case '~':
+		switch params {
+		case "1", "7":
+			return "home"
+		case "4", "8":
+			return "end"
+		case "3":
+			return "delete"
+		case "5":
+			return "pageup"
+		case "6":
+			return "pagedown"
+		}
+	}
+	return ""
+}
+
+// parseSS3 interprets an SS3 escape sequence (after \x1b0).
+func parseSS3(b byte) string {
+	switch b {
+	case 'P':
+		return "f1"
+	case 'Q':
+		return "f2"
+	case 'R':
+		return "f3"
+	case 'S':
+		return "f4"
+	case 'A':
+		return "up"
+	case 'B':
+		return "down"
+	case 'C':
+		return "right"
+	case 'D':
+		return "left"
+	}
+	return ""
+}
