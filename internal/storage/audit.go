@@ -36,13 +36,24 @@ const defaultAuditLimit = 1000
 // AppendAuditEvent inserts one audit row, returning its assigned id. The
 // timestamp is set to now (UTC, RFC3339Nano) if e.Timestamp is empty.
 func (d *DB) AppendAuditEvent(ctx context.Context, e AuditEvent) (int64, error) {
-	if strings.TrimSpace(e.Timestamp) == "" {
-		e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	return appendAuditEvent(ctx, d.db, e)
+}
+
+// AppendAuditEvent inserts one audit row as part of tx, so an audit event can
+// share the same SQLite transaction as the state mutation it records (spec
+// §11.4, ADR-0003).
+func (t *Tx) AppendAuditEvent(ctx context.Context, e AuditEvent) (int64, error) {
+	return appendAuditEvent(ctx, t.tx, e)
+}
+
+func appendAuditEvent(ctx context.Context, e executor, ev AuditEvent) (int64, error) {
+	if strings.TrimSpace(ev.Timestamp) == "" {
+		ev.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	res, err := d.db.ExecContext(ctx, `
+	res, err := e.ExecContext(ctx, `
 INSERT INTO audit_events (ts, scope, scope_id, event_type, actor, payload)
 VALUES (?, ?, ?, ?, ?, ?)`,
-		e.Timestamp, e.Scope, e.ScopeID, e.Type, e.Actor, e.Payload)
+		ev.Timestamp, ev.Scope, ev.ScopeID, ev.Type, ev.Actor, ev.Payload)
 	if err != nil {
 		return 0, fmt.Errorf("storage: append audit event: %w", err)
 	}

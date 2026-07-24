@@ -315,3 +315,90 @@ func TestRegistry_StatePersists(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestRegistry_AddCommitsStateAndAuditTogether is a regression test for MAJOR-1
+// ("state mutation + audit recording are separate calls; no SQLite tx
+// boundary"). It asserts that a registered project is durable together with its
+// audit event: there is no window in which the project exists but its audit
+// trail does not (spec §11.4, ADR-0003).
+func TestRegistry_AddCommitsStateAndAuditTogether(t *testing.T) {
+	db, rec := testDB(t)
+	reg := NewRegistry(db, rec, nil)
+	ctx := context.Background()
+
+	p, err := reg.Add(ctx, AddRequest{Path: makeGitRepo(t)})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// State row is durable.
+	sp, err := db.GetProject(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("project not durable: %v", err)
+	}
+	if sp.State != string(StateDisabled) {
+		t.Errorf("state=%s, want DISABLED", sp.State)
+	}
+
+	// Audit event for the same mutation is durable in the same commit.
+	events, err := db.ListAuditEvents(ctx, storage.AuditFilter{ScopeID: p.ID, Type: "project.added"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("project.added audit events=%d, want 1 (state+audit must commit together)", len(events))
+	}
+}
+
+// TestRegistry_TransitionCommitsStateAndAuditTogether asserts that a lifecycle
+// transition persists the new state and its audit event atomically.
+func TestRegistry_TransitionCommitsStateAndAuditTogether(t *testing.T) {
+	db, rec := testDB(t)
+	reg := NewRegistry(db, rec, nil)
+	ctx := context.Background()
+
+	p, _ := reg.Add(ctx, AddRequest{Path: makeGitRepo(t)})
+	if _, err := reg.Start(ctx, p.ID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	sp, err := db.GetProject(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if sp.State != string(StateIdle) {
+		t.Fatalf("state=%s, want IDLE", sp.State)
+	}
+	events, err := db.ListAuditEvents(ctx, storage.AuditFilter{ScopeID: p.ID, Type: "project.state_changed"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("state_changed audit events=%d, want 1", len(events))
+	}
+}
+
+// TestRegistry_RemoveCommitsStateAndAuditTogether asserts that removing a
+// project deletes the row and records the audit event atomically: after Remove,
+// the row is gone and exactly one project.removed audit event exists.
+func TestRegistry_RemoveCommitsStateAndAuditTogether(t *testing.T) {
+	db, rec := testDB(t)
+	reg := NewRegistry(db, rec, nil)
+	ctx := context.Background()
+
+	p, _ := reg.Add(ctx, AddRequest{Path: makeGitRepo(t)})
+	if err := reg.Remove(ctx, p.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, err := db.GetProject(ctx, p.ID); err == nil {
+		t.Fatal("project row should be deleted after Remove")
+	}
+	events, err := db.ListAuditEvents(ctx, storage.AuditFilter{ScopeID: p.ID, Type: "project.removed"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("project.removed audit events=%d, want 1", len(events))
+	}
+}

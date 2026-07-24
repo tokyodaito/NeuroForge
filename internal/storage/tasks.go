@@ -31,7 +31,16 @@ type TaskAttachment struct {
 
 // CreateTask inserts a new task row.
 func (d *DB) CreateTask(ctx context.Context, t Task) error {
-	_, err := d.db.ExecContext(ctx, `
+	return createTask(ctx, d.db, t)
+}
+
+// CreateTask inserts a new task row as part of tx.
+func (t *Tx) CreateTask(ctx context.Context, task Task) error {
+	return createTask(ctx, t.tx, task)
+}
+
+func createTask(ctx context.Context, e executor, t Task) error {
+	_, err := e.ExecContext(ctx, `
 INSERT INTO tasks (id, project_id, title, description, priority, state, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ProjectID, t.Title, t.Description, t.Priority, t.State,
@@ -100,7 +109,17 @@ FROM tasks ORDER BY created_at`)
 
 // UpdateTaskState updates the state and updated_at timestamp of a task.
 func (d *DB) UpdateTaskState(ctx context.Context, id, state, updatedAt string) error {
-	res, err := d.db.ExecContext(ctx,
+	return updateTaskState(ctx, d.db, id, state, updatedAt)
+}
+
+// UpdateTaskState updates the state and updated_at timestamp of a task as part
+// of tx.
+func (t *Tx) UpdateTaskState(ctx context.Context, id, state, updatedAt string) error {
+	return updateTaskState(ctx, t.tx, id, state, updatedAt)
+}
+
+func updateTaskState(ctx context.Context, e executor, id, state, updatedAt string) error {
+	res, err := e.ExecContext(ctx,
 		`UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?`,
 		state, updatedAt, id)
 	if err != nil {
@@ -136,7 +155,16 @@ func (d *DB) CountTasksByProject(ctx context.Context, projectID string) (int, er
 
 // CreateAttachment inserts a task attachment metadata row.
 func (d *DB) CreateAttachment(ctx context.Context, a TaskAttachment) error {
-	_, err := d.db.ExecContext(ctx, `
+	return createAttachment(ctx, d.db, a)
+}
+
+// CreateAttachment inserts a task attachment metadata row as part of tx.
+func (t *Tx) CreateAttachment(ctx context.Context, a TaskAttachment) error {
+	return createAttachment(ctx, t.tx, a)
+}
+
+func createAttachment(ctx context.Context, e executor, a TaskAttachment) error {
+	_, err := e.ExecContext(ctx, `
 INSERT INTO task_attachments (task_id, hash, filename, mime_type, size, role, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		a.TaskID, a.Hash, a.Filename, a.MimeType, a.Size, a.Role, a.CreatedAt)

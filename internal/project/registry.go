@@ -115,7 +115,16 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Project, error) {
 		UpdatedAt: now,
 	}
 
-	if err := r.db.CreateProject(ctx, storage.Project{
+	// Persist the project and its audit event inside one SQLite transaction so
+	// the registration is durable (and audited) atomically before any external
+	// action (spec §11.4, ADR-0003).
+	tx, err := r.db.BeginTx(ctx)
+	if err != nil {
+		return Project{}, fmt.Errorf("project: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.CreateProject(ctx, storage.Project{
 		ID:        p.ID,
 		Name:      p.Name,
 		Path:      p.Path,
@@ -128,8 +137,14 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Project, error) {
 		return Project{}, fmt.Errorf("project: persist: %w", err)
 	}
 
-	r.auditProject(ctx, p.ID, "project.added", audit.Payload(
-		"path", p.Path, "remote", p.Remote, "profile", string(p.Profile)))
+	if err := r.auditProjectTx(ctx, tx, p.ID, "project.added", audit.Payload(
+		"path", p.Path, "remote", p.Remote, "profile", string(p.Profile))); err != nil {
+		return Project{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Project{}, fmt.Errorf("project: commit: %w", err)
+	}
 
 	r.logger.Info("project registered", "id", p.ID, "path", p.Path)
 	return p, nil
@@ -165,10 +180,23 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := r.db.DeleteProject(ctx, id); err != nil {
+	// Delete the registration and record the audit event atomically (spec
+	// §11.4, ADR-0003).
+	tx, err := r.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("project: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.DeleteProject(ctx, id); err != nil {
 		return err
 	}
-	r.auditProject(ctx, id, "project.removed", audit.Payload("path", p.Path))
+	if err := r.auditProjectTx(ctx, tx, id, "project.removed", audit.Payload("path", p.Path)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("project: commit: %w", err)
+	}
 	r.logger.Info("project removed", "id", id)
 	return nil
 }
@@ -189,15 +217,29 @@ func (r *Registry) Transition(ctx context.Context, id string, action Action) (Pr
 	}
 
 	now := r.now().Format(time.RFC3339Nano)
-	if err := r.db.UpdateProjectState(ctx, id, string(newState), now); err != nil {
+	// Persist the new state and the audit event atomically (spec §11.4,
+	// ADR-0003): the intended next state is durable before any external action.
+	tx, err := r.db.BeginTx(ctx)
+	if err != nil {
+		return Project{}, fmt.Errorf("project: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.UpdateProjectState(ctx, id, string(newState), now); err != nil {
 		return Project{}, err
 	}
 
-	r.auditProject(ctx, id, "project.state_changed", audit.Payload(
+	if err := r.auditProjectTx(ctx, tx, id, "project.state_changed", audit.Payload(
 		"action", string(action),
 		"from", string(current),
 		"to", string(newState),
-	))
+	)); err != nil {
+		return Project{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Project{}, fmt.Errorf("project: commit: %w", err)
+	}
 
 	r.logger.Info("project state changed", "id", id,
 		"action", action, "from", current, "to", newState)
@@ -238,19 +280,23 @@ func (r *Registry) uniqueID(ctx context.Context, base string) string {
 	return id
 }
 
-func (r *Registry) auditProject(ctx context.Context, id, eventType string, payload map[string]any) {
+// auditProjectTx records one project-scoped audit event into tx. Because it
+// shares the caller's transaction, an audit failure aborts the whole mutation
+// (spec §29.4: audit is mandatory; §11.4: state + audit are atomic).
+func (r *Registry) auditProjectTx(ctx context.Context, a audit.AuditAppender, id, eventType string, payload map[string]any) error {
 	if r.audit == nil {
-		return
+		return nil
 	}
-	if _, err := r.audit.Record(ctx, audit.Event{
+	if _, err := r.audit.RecordTx(ctx, a, audit.Event{
 		Type:    eventType,
 		Scope:   audit.ScopeProject,
 		ScopeID: id,
 		Actor:   audit.ActorUser,
 		Payload: payload,
 	}); err != nil {
-		r.logger.Warn("audit record failed", "type", eventType, "err", err)
+		return fmt.Errorf("project: audit %s: %w", eventType, err)
 	}
+	return nil
 }
 
 func fromStorage(sp storage.Project) Project {

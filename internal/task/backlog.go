@@ -154,7 +154,16 @@ func (b *Backlog) Add(ctx context.Context, req AddRequest) (Task, error) {
 		UpdatedAt:   now,
 	}
 
-	if err := b.db.CreateTask(ctx, storage.Task{
+	// Persist the task, its attachments, and the audit event inside one SQLite
+	// transaction so the backlog mutation is durable atomically before any
+	// external action (spec §11.4, ADR-0003).
+	tx, err := b.db.BeginTx(ctx)
+	if err != nil {
+		return Task{}, fmt.Errorf("task: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.CreateTask(ctx, storage.Task{
 		ID:          t.ID,
 		ProjectID:   t.ProjectID,
 		Title:       t.Title,
@@ -168,7 +177,7 @@ func (b *Backlog) Add(ctx context.Context, req AddRequest) (Task, error) {
 	}
 
 	for _, a := range attachments {
-		if err := b.db.CreateAttachment(ctx, storage.TaskAttachment{
+		if err := tx.CreateAttachment(ctx, storage.TaskAttachment{
 			TaskID:    t.ID,
 			Hash:      a.Hash,
 			Filename:  a.Filename,
@@ -188,12 +197,18 @@ func (b *Backlog) Add(ctx context.Context, req AddRequest) (Task, error) {
 		}
 	}
 
-	b.auditTask(ctx, t.ID, "task.created", audit.Payload(
+	if err := b.auditTaskTx(ctx, tx, t.ID, "task.created", audit.Payload(
 		"project", t.ProjectID,
 		"title", t.Title,
 		"priority", string(t.Priority),
 		"attachments", attSummary,
-	))
+	)); err != nil {
+		return Task{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("task: commit: %w", err)
+	}
 
 	b.logger.Info("task created", "id", t.ID, "project", t.ProjectID,
 		"attachments", len(attachments))
@@ -264,15 +279,29 @@ func (b *Backlog) Transition(ctx context.Context, id string, action Action) (Tas
 	}
 
 	now := b.now().Format(time.RFC3339Nano)
-	if err := b.db.UpdateTaskState(ctx, id, string(newState), now); err != nil {
+	// Persist the new state and the audit event atomically (spec §11.4,
+	// ADR-0003).
+	tx, err := b.db.BeginTx(ctx)
+	if err != nil {
+		return Task{}, fmt.Errorf("task: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.UpdateTaskState(ctx, id, string(newState), now); err != nil {
 		return Task{}, err
 	}
 
-	b.auditTask(ctx, id, "task.state_changed", audit.Payload(
+	if err := b.auditTaskTx(ctx, tx, id, "task.state_changed", audit.Payload(
 		"action", string(action),
 		"from", string(current),
 		"to", string(newState),
-	))
+	)); err != nil {
+		return Task{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("task: commit: %w", err)
+	}
 
 	b.logger.Info("task state changed", "id", id,
 		"action", action, "from", current, "to", newState)
@@ -383,19 +412,23 @@ func (b *Backlog) nextID(projectID string) string {
 	return fmt.Sprintf("%s-%d", projectID, n)
 }
 
-func (b *Backlog) auditTask(ctx context.Context, id, eventType string, payload map[string]any) {
+// auditTaskTx records one task-scoped audit event into tx. Because it shares
+// the caller's transaction, an audit failure aborts the whole mutation (spec
+// §29.4: audit is mandatory; §11.4: state + audit are atomic).
+func (b *Backlog) auditTaskTx(ctx context.Context, a audit.AuditAppender, id, eventType string, payload map[string]any) error {
 	if b.audit == nil {
-		return
+		return nil
 	}
-	if _, err := b.audit.Record(ctx, audit.Event{
+	if _, err := b.audit.RecordTx(ctx, a, audit.Event{
 		Type:    eventType,
 		Scope:   audit.ScopeTask,
 		ScopeID: id,
 		Actor:   audit.ActorUser,
 		Payload: payload,
 	}); err != nil {
-		b.logger.Warn("audit record failed", "type", eventType, "err", err)
+		return fmt.Errorf("task: audit %s: %w", eventType, err)
 	}
+	return nil
 }
 
 func fromStorage(st storage.Task) Task {

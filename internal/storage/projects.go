@@ -21,7 +21,16 @@ type Project struct {
 // CreateProject inserts a new project row. The caller is responsible for
 // generating the id and validating the path.
 func (d *DB) CreateProject(ctx context.Context, p Project) error {
-	_, err := d.db.ExecContext(ctx, `
+	return createProject(ctx, d.db, p)
+}
+
+// CreateProject inserts a new project row as part of tx.
+func (t *Tx) CreateProject(ctx context.Context, p Project) error {
+	return createProject(ctx, t.tx, p)
+}
+
+func createProject(ctx context.Context, e executor, p Project) error {
+	_, err := e.ExecContext(ctx, `
 INSERT INTO projects (id, name, path, remote, state, profile, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Path, p.Remote, p.State, p.Profile, p.CreatedAt, p.UpdatedAt)
@@ -83,7 +92,17 @@ FROM projects ORDER BY name`)
 
 // UpdateProjectState updates the state and updated_at timestamp of a project.
 func (d *DB) UpdateProjectState(ctx context.Context, id, state, updatedAt string) error {
-	res, err := d.db.ExecContext(ctx,
+	return updateProjectState(ctx, d.db, id, state, updatedAt)
+}
+
+// UpdateProjectState updates the state and updated_at timestamp of a project as
+// part of tx.
+func (t *Tx) UpdateProjectState(ctx context.Context, id, state, updatedAt string) error {
+	return updateProjectState(ctx, t.tx, id, state, updatedAt)
+}
+
+func updateProjectState(ctx context.Context, e executor, id, state, updatedAt string) error {
+	res, err := e.ExecContext(ctx,
 		`UPDATE projects SET state = ?, updated_at = ? WHERE id = ?`,
 		state, updatedAt, id)
 	if err != nil {
@@ -100,7 +119,16 @@ func (d *DB) UpdateProjectState(ctx context.Context, id, state, updatedAt string
 // project's files on disk (spec §8: "удалить регистрацию проекта без удаления
 // файлов"). The ON DELETE CASCADE on tasks ensures tasks are removed too.
 func (d *DB) DeleteProject(ctx context.Context, id string) error {
-	res, err := d.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+	return deleteProject(ctx, d.db, id)
+}
+
+// DeleteProject removes a project registration by id as part of tx.
+func (t *Tx) DeleteProject(ctx context.Context, id string) error {
+	return deleteProject(ctx, t.tx, id)
+}
+
+func deleteProject(ctx context.Context, e executor, id string) error {
+	res, err := e.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("storage: delete project: %w", err)
 	}

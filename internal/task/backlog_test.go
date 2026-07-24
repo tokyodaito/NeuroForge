@@ -259,3 +259,81 @@ func TestBacklog_AuditRecorded(t *testing.T) {
 		t.Error("task.created audit event not found")
 	}
 }
+
+// TestBacklog_AddCommitsTaskAttachmentAndAuditTogether is a regression test for
+// MAJOR-1: a task with an attachment persists the task row, its attachment row,
+// and the audit event as one atomic unit (spec §11.4, ADR-0003). There is no
+// window in which the task exists without its audit trail or vice-versa.
+func TestBacklog_AddCommitsTaskAttachmentAndAuditTogether(t *testing.T) {
+	db, rec, artDir := testDB(t)
+	bl := NewBacklog(db, rec, artDir, nil)
+	ctx := context.Background()
+
+	attDir := t.TempDir()
+	attPath := filepath.Join(attDir, "spec.png")
+	if err := os.WriteFile(attPath, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := bl.Add(ctx, AddRequest{
+		ProjectID:   "test-proj",
+		Description: "atomic add",
+		Attachments: []AttachmentInput{{Path: attPath}},
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Task row durable.
+	st, err := db.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("task not durable: %v", err)
+	}
+	if st.State != string(StateNew) {
+		t.Errorf("state=%s, want NEW", st.State)
+	}
+	// Attachment row durable in the same commit.
+	atts, err := db.ListAttachments(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(atts) != 1 {
+		t.Fatalf("attachments=%d, want 1 (task+attachment must commit together)", len(atts))
+	}
+	// Audit event durable in the same commit.
+	events, err := db.ListAuditEvents(ctx, storage.AuditFilter{ScopeID: task.ID, Type: "task.created"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("task.created audit events=%d, want 1 (task+audit must commit together)", len(events))
+	}
+}
+
+// TestBacklog_TransitionCommitsStateAndAuditTogether asserts that a task
+// lifecycle transition persists the new state and its audit event atomically.
+func TestBacklog_TransitionCommitsStateAndAuditTogether(t *testing.T) {
+	db, rec, artDir := testDB(t)
+	bl := NewBacklog(db, rec, artDir, nil)
+	ctx := context.Background()
+
+	task, _ := bl.Add(ctx, AddRequest{ProjectID: "test-proj", Description: "x"})
+	if _, err := bl.Transition(ctx, task.ID, ActionIngest); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	st, err := db.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if st.State != string(StateIngested) {
+		t.Fatalf("state=%s, want INGESTED", st.State)
+	}
+	events, err := db.ListAuditEvents(ctx, storage.AuditFilter{ScopeID: task.ID, Type: "task.state_changed"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("state_changed audit events=%d, want 1", len(events))
+	}
+}

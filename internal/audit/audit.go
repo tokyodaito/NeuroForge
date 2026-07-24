@@ -41,10 +41,17 @@ type Recorder struct {
 	logger *slog.Logger
 }
 
+// AuditAppender is the write capability of an [AuditStore]. Both *storage.DB
+// and *storage.Tx satisfy it, so an audit event can be appended as part of a
+// caller's storage transaction (spec §11.4, ADR-0003).
+type AuditAppender interface {
+	AppendAuditEvent(ctx context.Context, e storage.AuditEvent) (int64, error)
+}
+
 // AuditStore is the subset of storage that the recorder depends on. *storage.DB
 // satisfies it.
 type AuditStore interface {
-	AppendAuditEvent(ctx context.Context, e storage.AuditEvent) (int64, error)
+	AuditAppender
 	ListAuditEvents(ctx context.Context, f storage.AuditFilter) ([]storage.AuditEvent, error)
 }
 
@@ -59,6 +66,22 @@ func NewRecorder(store AuditStore, logger *slog.Logger) *Recorder {
 // Record appends one event, filling defaults for scope/scope_id/actor/ts. It
 // returns the assigned sequence id.
 func (r *Recorder) Record(ctx context.Context, e Event) (int64, error) {
+	return r.recordInto(ctx, r.store, e)
+}
+
+// RecordTx appends one event into the provided [AuditAppender] (typically a
+// *storage.Tx) instead of the recorder's own store, so the audit append shares
+// the caller's SQLite transaction. This keeps a state mutation and the audit
+// event that records it atomic: both commit together or roll back together
+// (spec §11.4, ADR-0003).
+func (r *Recorder) RecordTx(ctx context.Context, a AuditAppender, e Event) (int64, error) {
+	if a == nil {
+		a = r.store
+	}
+	return r.recordInto(ctx, a, e)
+}
+
+func (r *Recorder) recordInto(ctx context.Context, a AuditAppender, e Event) (int64, error) {
 	if e.Type == "" {
 		return 0, fmt.Errorf("audit: event type is required")
 	}
@@ -85,7 +108,7 @@ func (r *Recorder) Record(ctx context.Context, e Event) (int64, error) {
 		payload = string(b)
 	}
 
-	id, err := r.store.AppendAuditEvent(ctx, storage.AuditEvent{
+	id, err := a.AppendAuditEvent(ctx, storage.AuditEvent{
 		Timestamp: ts.Format(time.RFC3339Nano),
 		Scope:     e.Scope,
 		ScopeID:   e.ScopeID,
