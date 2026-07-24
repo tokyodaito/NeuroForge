@@ -1,15 +1,20 @@
-// Package codingagent defines the coding-agent adapter protocol and registry.
+// Package codingagent defines the coding-agent adapter interface and registry.
 //
-// STATUS: scaffold — not implemented (planned for milestone M2; concrete adapters
-// in M4/M5).
+// The protocol data structures (the versioned stability boundary) live in the
+// sibling [neuroforge/internal/adapter/codingagent/protocol] package at version
+// [protocol.ProtocolVersion] (currently 1, stabilised in M2). This package adds
+// the [CodingAgentAdapter] interface, the [EventSink] abstraction, the adapter
+// [Registry], and the shared [DefaultClassify] failure classifier.
 //
-// Scope (docs/spec/NEUROFORGE_SPEC.md §12, §13): the CodingAgentAdapter interface
-// (Detect/Version/Health/Capabilities/ListModels/InspectQuota/Start/Resume/
-// SendMessage/Cancel/ClassifyFailure), normalized events (§12.4), the declarative
-// command adapter, and the native JSON-RPC plugin protocol. Adding an agent must
-// not require changes to scheduler, schema, dashboard or routing core (§13.3).
-// See ADR-0005.
+// Adding a coding agent must not require changes to the scheduler, the database
+// schema, the dashboard, or the routing core (spec §13.3). There are two
+// registration paths, both implemented here as [CodingAgentAdapter] values:
 //
-// Boundaries: adapters never decide routes, never persist durable state, and never
-// receive merge credentials. The agent engine is distinct from the model (§12.1).
+//   - the declarative command adapter (spec §13.1, subpackage [declarative]);
+//   - the native JSON-RPC plugin (spec §13.2, subpackage [plugin]).
+//
+// The supervisor is the only core consumer of adapters. Adapters never decide
+// routes, never persist durable state, and never receive merge credentials
+// (spec §29.2, AC-28). The fake coding agent (spec §33.1) lives in the
+// test-only [fake] subpackage and the cmd/fake-coding-agent binary.
 package codingagent

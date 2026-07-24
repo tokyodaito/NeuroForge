@@ -4,6 +4,9 @@
 - **Date:** 2026-07-24
 - **Spec refs:** §12 (engines + adapter interface), §13 (extensibility), §22
   (token optimization), §33 (fake agent)
+- **Realised in:** milestone M2; see [ADR-0012](0012-versioned-coding-agent-protocol.md)
+  for the concrete v1 realisation (versioned `protocol` package, `run.event`
+  streaming notification, zero-dependency manifest parser).
 
 ## Context
 

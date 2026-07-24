@@ -1,0 +1,39 @@
+# Example declarative command coding-agent adapter (spec §13.1).
+#
+# A new CLI coding engine is registered from this YAML file with NO Go code
+# changes (AC-6). See docs/adapter-dev-guide.md and
+# internal/adapter/codingagent/declarative for the loader. This manifest wires
+# the §33.1 fake coding agent executable as a declarative adapter so it doubles
+# as a worked example and a conformance target.
+api_version: neuroforge/v1
+kind: command-coding-agent
+
+id: example-fake-agent
+
+detect:
+  command:
+    - fake-coding-agent
+    - --version
+
+run:
+  command:
+    - fake-coding-agent
+    - --mode
+    - command
+    - --scenario
+    - success
+    - --workspace
+    - "{{ workspace }}"
+    - --model
+    - "{{ model }}"
+    - --run-id
+    - "{{ run_id }}"
+    - "{{ prompt_file }}"
+
+capabilities:
+  headless_mode: true
+  streaming_events: true
+  structured_output: true
+  model_selection: true
+  usage_reporting: true
+  cached_usage_reporting: true

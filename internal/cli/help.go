@@ -45,6 +45,10 @@ Implemented commands:
   task pause <id>     Pause a task
   task cancel <id>    Cancel a task
 
+  plugin test <exe>   Run the §13.3 coding-agent conformance suite against a
+                      plugin executable (--json supported)
+  plugin list         List registered plugins
+
   dashboard           Open the interactive TUI (same as 'forge' with no args)
 
   Aliases:
@@ -59,7 +63,6 @@ Not implemented (planned, by milestone):
   forge model ... / route ...  M6
   forge image-provider ...     M9
   forge quota / usage / cost   M6
-  forge plugin ...             M2
   forge audit                  M1+
   forge emergency-stop         M1+
   forge init / update          M13

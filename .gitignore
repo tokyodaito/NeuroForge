@@ -1,6 +1,8 @@
 # Built binary and dist artifacts
 /forge
 /forge.exe
+/fake-coding-agent
+/fake-coding-agent.exe
 /dist/
 /bin/
 

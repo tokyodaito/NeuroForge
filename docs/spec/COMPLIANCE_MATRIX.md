@@ -22,8 +22,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-2 | Manage projects/tasks without CLI | done (M1: TUI screens for projects and tasks; add project, navigate, start/pause/stop, pause/cancel tasks) | M1 | M1-6 | `internal/tui`, `internal/project` |
 | AC-3 | Create a task with free-form text (no template) | done (M1: `forge task add` + TUI; description can be the only user field) | M1 | M1-5 | `internal/task` |
 | AC-4 | Attach an image to a task | done (M1: `-a`/`--attach` flag; content-addressed SHA-256 storage under `~/.neuroforge/artifacts/`) | M1 | M1-5 | `internal/task` |
-| AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | planned | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent` |
-| AC-6 | A 7th agent via plugin, no core changes | planned | M2 | M2-7 | `internal/adapter/codingagent` |
+| AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | planned (M2: stable protocol + conformance suite ready; concrete engines M4–M5) | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent` |
+| AC-6 | A 7th agent via plugin, no core changes | done (M2: versioned `protocol` package v1 + declarative + native JSON-RPC plugin + `forge plugin test` conformance suite; the fake agent passes all 9 checks via plugin with no core changes) | M2 | M2-7 | `internal/adapter/codingagent/{protocol,declarative,plugin,conformance}` |
 | AC-7 | LOCAL_REVIEW performs no Git network ops | partial (M0: structurally enforced in `internal/policy` network lock; wire enforcement via Merge Governor in M11) | M0/M11 | M0-7, M11-7 | `internal/policy`, `internal/adapter/vcs` |
 | AC-8 | Code saved in a separate local result branch | planned | M3 | M3-5 | `internal/workspace` |
 | AC-9 | Open diff and worktree from TUI | planned | M3 | M3-5 | `internal/tui`, `internal/workspace` |
@@ -78,7 +78,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | `forge agent ...` / `forge model ...` / `forge route ...` | planned | M2, M6 |
 | `forge image-provider ...` | planned | M9 |
 | `forge quota` / `usage` / `cost` | planned | M6 |
-| `forge plugin ...` | planned | M2-7 |
+| `forge plugin ...` | done (M2: `forge plugin test <exe>` runs the §13.3 conformance suite; `forge plugin list` stub) | M2-7 |
 | `forge audit` | partial (read-only `/audit` API available; `forge audit` CLI command in M1+) | M0/M1+ |
 | `forge emergency-stop` / `forge cleanup` | planned | M1+ |
 | `forge init` / `update` | planned | M13 |
@@ -90,10 +90,10 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 1–2 | Modular monolith, not microservices / one giant package | done — ADR-0001 + package layout |
 | 3 | No Kubernetes | done — not used |
 | 4 | No web UI before TUI | done — TUI-first in plan |
-| 5 | No real paid models in CI | planned — fake agents (M2-6), fake image provider (M9-2) |
-| 6 | Fake coding agent first | planned — M2-6 |
-| 7 | Stabilise adapter protocol, then adapters | planned — M2 before M4/M5 |
-| 8 | No hard-coded model names in core | planned — catalog M6-1 (enforced by review) |
+| 5 | No real paid models in CI | done (M2) — fake coding agent (§33.1) drives all orchestration/conformance tests; no AI/network calls |
+| 6 | Fake coding agent first | done (M2) — `internal/adapter/codingagent/fake` + `cmd/fake-coding-agent`, 13 scenarios |
+| 7 | Stabilise adapter protocol, then adapters | done (M2) — protocol v1 stabilised; concrete engines in M4/M5 |
+| 8 | No hard-coded model names in core | done (M2) — enforced by `TestCoreHasNoHardcodedModelNames`; models are provider-supplied |
 | 9 | Separate coding agents from image providers | done (structure) — ADR-0005/0006 |
 | 10 | Quota not reported as exact unless provider says so | planned — M6-6 |
 | 11 | No full repo in prompt | planned — M12-3 |
@@ -223,6 +223,67 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
   restart daemon → verify persistence → audit trail). Plus duplicate-project
   rejection, nonexistent-repo rejection, and local API invalid-transition tests.
   All run under `go test -race` and `make check`.
+
+## Milestone M2 — what is implemented
+
+- **Versioned protocol (§12, §13, ADR-0005/0012)** — `internal/adapter/codingagent/protocol`:
+  `ProtocolVersion == 1` (the stability boundary), `AgentCapabilities` (§12.3),
+  `AgentRunRequest`/`ResumeRequest`/`RunHandle` (engine ≠ model, §12.1),
+  `Account` (name-only — no credentials, AC-28), `ModelDescriptor`/quota types
+  (§20.1 confidence levels), the §12.4 normalized event set, the §32 failure
+  taxonomy with bounded `DefaultPolicy`, and the JSON-RPC 2.0 envelope + method
+  constants + handshake/version-negotiation types.
+- **Adapter interface + registry (§12.2)** — `internal/adapter/codingagent`:
+  `Adapter` (`CodingAgentAdapter`), `EventSink` (+ `SliceSink`/`ChannelSink`/
+  `TeeSink`/`SinkFunc`), `Registry` (purely-additive registration, AC-6), and
+  `DefaultClassify` (deterministic exit-code/events/stderr → §32 class, no LLM).
+- **Fake coding agent (§33.1)** — `internal/adapter/codingagent/fake` +
+  `cmd/fake-coding-agent`: deterministic, network-free; 13 scenarios (success,
+  quota before/after edits, rate limit, auth failure, malformed JSON, timeout,
+  crash, partial output, resume, cancellation, scope violation, usage events).
+  One scenario script drives the in-process adapter, the JSONL command mode and
+  the JSON-RPC plugin mode identically.
+- **Declarative command adapter (§13.1)** — `internal/adapter/codingagent/declarative`:
+  zero-dependency YAML-subset manifest parser (flow + block sequences), template
+  substitution, JSONL streaming with process-group spawn, malformed-output
+  capture to artifacts + classification, cancellation that kills the whole
+  group. Ships a worked `example.yaml`.
+- **Native JSON-RPC plugin (§13.2)** — `internal/adapter/codingagent/plugin`:
+  client spawns the plugin, handshakes with version negotiation, exposes it as
+  an `Adapter`, routes `run.event` notifications to per-run sinks, reaps the
+  process group on close. Reference server in the fake package.
+- **Process-group termination** — `internal/adapter/codingagent/proctree`:
+  setpgid (unix) / new process group (windows) + tree kill, so cancellation ends
+  the whole group (spec requirement).
+- **Conformance suite (§13.3)** — `internal/adapter/codingagent/conformance` +
+  `forge plugin test`: handshake, version compatibility, event ordering,
+  malformed output, cancellation, timeout, quota failure, resume, process crash.
+  Passes against both the in-process fake adapter and the fake plugin.
+- **`forge plugin test` CLI** — runs the suite against any plugin executable
+  (text + `--json`), all 9 checks green against the fake agent. AC-6 satisfied.
+- **Invariants** — `internal/adapter/codingagent/invariants_test.go`: no
+  credential fields cross the boundary (AC-28), no hard-coded model names in core
+  (§36.8), engine ≠ model (§12.1), protocol pinned to v1, §12.4 event set exact.
+- **Docs** — `docs/architecture/ADAPTER_DEV_GUIDE.md` (3 adapter paths), ADR-0012,
+  updated ADR-0005 + this matrix + the implementation plan.
+- **Tests** — protocol (events/failure/caps/version/handshake round-trips),
+  adapter (registry/event-sinks/classifier, table-driven), fake (all scenarios),
+  declarative (manifest parsing incl. flow sequences, end-to-end runs, malformed
+  capture, crash synthesis, cancellation kills group, no creds in env,
+  concurrency), plugin (handshake/metadata/run/cancel/resume/quota/malformed/
+  usage/process-group reaping), conformance (suite vs in-process fake + fake
+  plugin), CLI (`forge plugin test` text/JSON/usage/missing-exe), invariants.
+  All run under `go test -race` and `make check`.
+
+### Remaining in M2
+
+- **AC-5** (concrete Codex/Claude/Gemini/Grok/Kimi/OpenCode adapters) is
+  **planned for M4/M5** — deliberately not implemented (rule §36.7: stabilise the
+  protocol first).
+- **M2-8 supervisor** (consume adapters, enforce turn limits, checkpoints) and
+  **M2-9 demonstrable scenario** depend on M3 workspaces; left to the M2-8/M3
+  follow-up. The protocol, registry and conformance suite — the M2 acceptance
+  surface (AC-6) — are complete and tested.
 
 ## Bootstrap (original scaffold) — context
 

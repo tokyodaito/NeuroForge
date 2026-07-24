@@ -24,3 +24,5 @@ an ADR with a new one rather than rewriting it.
 | [0008](0008-local-review-security-model.md) | LOCAL_REVIEW security model | Accepted | §3.2, §29 |
 | [0009](0009-deterministic-merge-governor.md) | Deterministic Merge Governor | Accepted | §28 |
 | [0010](0010-sqlite-driver-modernc.md) | Pure-Go SQLite driver (modernc.org/sqlite) | Accepted | §10, §31 |
+| [0011](0011-terminal-raw-mode-golang-x-term.md) | Terminal raw-mode via golang.org/x/term | Accepted | §6, M1 |
+| [0012](0012-versioned-coding-agent-protocol.md) | Versioned coding-agent protocol package (v1) | Accepted | §12–§13, §32, §33.1 |

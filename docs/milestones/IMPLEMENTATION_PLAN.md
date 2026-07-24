@@ -245,58 +245,74 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 > Spec §12–§13, §33.1. Goal: stabilise the adapter contract; add the fake coding
 > agent; run a task end-to-end against the fake. No real engines yet.
 
-### M2-1 — Core interfaces & types
+### M2-1 — Core interfaces & types `[DONE]`
 - **Goal:** `CodingAgentAdapter`, `AgentRunRequest`, `RunHandle`, capabilities
   (§12.2/§12.3).
 - **Allowed:** `internal/adapter/codingagent/**`.
 - **Forbidden:** scheduler, router, storage schema changes.
-- **Depends on:** M0-1. **AC:** AC-5/AC-6 (enabler). **Related ADR:** 0005.
+- **Depends on:** M0-1. **AC:** AC-5/AC-6 (enabler). **Related ADR:** 0005, 0012.
 - **Acceptance:** interfaces compile; capabilities struct complete.
 - **Checks:** compile + type tests.
+  — Done: versioned `protocol` package (`ProtocolVersion == 1`) holds all stable
+  types; `Adapter` interface + `EventSink` + `Registry` in the parent package.
 
-### M2-2 — Normalized events + EventSink
+### M2-2 — Normalized events + EventSink `[DONE]`
 - **Goal:** the §12.4 event set, typed, ordered.
 - **Allowed:** `internal/adapter/codingagent/**`.
 - **Depends on:** M2-1.
 - **Acceptance:** every §12.4 event representable; sink ordered.
 - **Checks:** unit tests on event ordering.
+  — Done: `NormalizedEvent` + payloads + `ParseEventLine` (robust to
+  malformed/unknown events) + `SliceSink`/`ChannelSink`/`TeeSink`.
 
-### M2-3 — Failure classification (§32)
+### M2-3 — Failure classification (§32) `[DONE]`
 - **Goal:** `ClassifyFailure` taxonomy + policies (retry/cooldown/failover/…).
 - **Allowed:** `internal/adapter/codingagent/**`, `internal/quota` (states).
 - **Depends on:** M2-2.
 - **Acceptance:** every §32 class maps to a policy; no infinite retry.
 - **Checks:** table-driven classification tests.
+  — Done: §32 `FailureClass` taxonomy + bounded `DefaultPolicy` + `DefaultClassify`
+  (exit-code/events/stderr heuristics). Retryable classes carry `MaxRetries`.
 
-### M2-4 — Declarative command adapter (§13.1)
+### M2-4 — Declarative command adapter (§13.1) `[DONE]`
 - **Goal:** YAML-defined CLI adapter, no Go changes.
 - **Allowed:** `internal/adapter/codingagent/**`, loader.
 - **Depends on:** M2-1.
 - **Acceptance:** a YAML agent registers and runs via template substitution.
 - **Checks:** conformance subset.
+  — Done: `declarative` package (zero-dep YAML-subset parser, flow + block
+  sequences, template substitution, JSONL streaming, malformed capture, group
+  cancel) + worked `example.yaml`.
 
-### M2-5 — Native plugin JSON-RPC (§13.2)
+### M2-5 — Native plugin JSON-RPC (§13.2) `[DONE]`
 - **Goal:** stdin/stdout JSON-RPC 2.0 with mandatory methods.
 - **Allowed:** `internal/adapter/codingagent/**`.
 - **Depends on:** M2-1..M2-2.
 - **Acceptance:** all mandatory methods handshake; protocol errors handled.
 - **Checks:** plugin round-trip tests.
+  — Done: `plugin` client (handshake + version negotiation, `run.event`
+  streaming, process-group spawn/reap) + reference server in `fake`.
 
-### M2-6 — Fake coding agent
+### M2-6 — Fake coding agent `[DONE]`
 - **Goal:** §33.1 scenarios (success, quota before/after edits, rate limit,
   malformed JSON, timeout, crash, scope violation, resume).
 - **Allowed:** test-only adapter package.
 - **Depends on:** M2-1..M2-3.
 - **Acceptance:** each scenario reproducible & deterministic.
 - **Checks:** scenario tests.
+  — Done: `fake` package (in-process adapter) + `cmd/fake-coding-agent`
+  (command + jsonrpc modes); 13 scenarios, one shared script per surface.
 
-### M2-7 — Conformance suite (`forge plugin test`)
+### M2-7 — Conformance suite (`forge plugin test`) `[DONE]`
 - **Goal:** §13.3 checks (handshake/order/malformed/cancel/timeout/quota/resume/
   crash/version).
 - **Allowed:** `internal/cli` (plugin test cmd), conformance harness.
 - **Depends on:** M2-1..M2-5. **AC:** AC-6.
 - **Acceptance:** 7th agent passes conformance without core changes.
 - **Checks:** run suite against the fake adapter.
+  — Done: `conformance` package (9 checks) + `forge plugin test <exe>`
+  (text/`--json`); passes against the in-process fake adapter AND the fake plugin
+  with no core changes.
 
 ### M2-8 — Supervisor: run/resume/cancel + streaming
 - **Goal:** consume adapters, enforce turn limits (§22.7), capture checkpoints.
@@ -305,9 +321,13 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 - **Acceptance:** run lifecycle emits events; checkpoints created; cancellation
   propagates.
 - **Checks:** supervisor unit + integration vs fake.
+  — **Pending:** blocked on M3 workspaces; the M2 protocol/registry surface is
+  complete and is what the supervisor will consume.
 
 ### M2-9 — M2 demonstrable scenario
 - **Depends on:** M2-1..M2-8. End-to-end fake run; AC-6 (plugin agent) demoable.
+  — AC-6 is demonstrable now via `forge plugin test`; the full end-to-end run
+  lands with M2-8/M3.
 
 ---
 
