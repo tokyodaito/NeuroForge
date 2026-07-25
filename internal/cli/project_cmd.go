@@ -59,12 +59,13 @@ func (a *App) projectAdd(args []string) int {
 	fs := flag.NewFlagSet("project add", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	name := fs.String("name", "", "display name (defaults to directory basename)")
+	profile := fs.String("profile", "", "autonomy profile: LOCAL_REVIEW|REMOTE_REVIEW|AUTONOMOUS (default LOCAL_REVIEW)")
 	jsonOut := fs.Bool("json", false, "emit machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
 		return ExitErr
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(a.Err, "Usage: forge project add <path> [--name NAME] [--json]")
+		fmt.Fprintln(a.Err, "Usage: forge project add <path> [--name NAME] [--profile PROFILE] [--json]")
 		return ExitErr
 	}
 	path := fs.Arg(0)
@@ -78,7 +79,7 @@ func (a *App) projectAdd(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	p, err := cli.AddProject(ctx, transport.AddProjectRequest{Path: path, Name: *name})
+	p, err := cli.AddProject(ctx, transport.AddProjectRequest{Path: path, Name: *name, Profile: *profile})
 	if err != nil {
 		if *jsonOut {
 			fmt.Fprintln(a.Out, jsonError(err))

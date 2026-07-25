@@ -85,6 +85,10 @@ func (a *App) Run(args []string) int {
 		return a.runRoute(args[1:])
 	case "image-provider":
 		return a.runImageProvider(args[1:])
+	case "memory":
+		return a.runMemory(args[1:])
+	case "quality":
+		return a.runQuality(args[1:])
 	case "init":
 		return a.runInit(args[1:])
 	case "update":
