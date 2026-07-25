@@ -73,6 +73,8 @@ func (a *App) Run(args []string) int {
 		return a.runTask(args[1:])
 	case "workspace":
 		return a.runWorkspace(args[1:])
+	case "run":
+		return a.runRunCmd(args[1:])
 	case "plugin":
 		return a.runPlugin(args[1:])
 	case "quota":

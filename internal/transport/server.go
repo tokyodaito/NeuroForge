@@ -39,6 +39,9 @@ type Config struct {
 	// SchedulerAPI, if set, backs the scheduler / post-merge / quality / memory
 	// endpoints. Nil makes those endpoints return 503.
 	SchedulerAPI SchedulerAPI
+	// RunAppAPI, if set, backs the user-facing POST /projects/{id}/run
+	// endpoint (the minimal reliable run). Nil makes the endpoint return 503.
+	RunAppAPI RunAppAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -118,6 +121,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	s.registerAPIRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerSchedulerRoutes(mux)
+	s.registerRunAppRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{

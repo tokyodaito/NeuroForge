@@ -207,19 +207,32 @@ func (s *Supervisor) Run(ctx context.Context, req RunRequest, workspacePath stri
 // waitForTerminal polls the sink for a terminal event. The fake adapter runs
 // Start asynchronously (it launches a goroutine), so we poll until we see a
 // terminal event or the context expires.
+//
+// STATE_MACHINE.md §1.3 cancellation precedence: when both a hard deadline
+// and a sink terminal are observable at the same instant, the deadline wins
+// (TIMEOUT beats CANCELLED). We therefore check ctx.Err() FIRST inside the
+// poll loop, so a fake adapter that emits run.cancelled in response to the
+// context cancellation cannot mask a TIMEOUT (KF-09 cousin).
 func (s *Supervisor) waitForTerminal(ctx context.Context, sink *codingagent.SliceSink, timeout time.Duration) protocol.NormalizedEvent {
 	// Give the run a grace period beyond the adapter timeout for event delivery.
 	deadline := time.Now().Add(timeout + 5*time.Second)
 	for {
-		for _, ev := range sink.Events() {
-			if ev.Type.IsTerminal() {
-				return ev
-			}
-		}
+		// Check ctx.Err() FIRST so a hard timeout always classifies as TIMEOUT
+		// (STATE_MACHINE.md §1.3), even if the sink already holds a
+		// run.cancelled from the adapter's cancellation-response path.
 		if ctx.Err() != nil {
 			// Scan once more (the terminal event may have landed just as ctx expired).
 			for _, ev := range sink.Events() {
 				if ev.Type.IsTerminal() {
+					// TIMEOUT beats everything except an explicit adapter
+					// run.failed(TIMEOUT). If the deadline fired, force TIMEOUT.
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) &&
+						ev.Type != protocol.EventRunFailed {
+						return protocol.NormalizedEvent{
+							Type:    protocol.EventRunFailed,
+							Failure: &protocol.FailurePayload{Class: "TIMEOUT", Reason: "run timed out"},
+						}
+					}
 					return ev
 				}
 			}
@@ -230,6 +243,11 @@ func (s *Supervisor) waitForTerminal(ctx context.Context, sink *codingagent.Slic
 				}
 			}
 			return protocol.NormalizedEvent{Type: protocol.EventRunCancelled}
+		}
+		for _, ev := range sink.Events() {
+			if ev.Type.IsTerminal() {
+				return ev
+			}
 		}
 		if time.Now().After(deadline) {
 			return protocol.NormalizedEvent{

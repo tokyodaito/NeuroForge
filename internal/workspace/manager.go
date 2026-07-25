@@ -32,6 +32,11 @@ const (
 	// StateFailed: the agent run failed; the workspace is retained for
 	// inspection.
 	StateFailed State = "failed"
+	// StateCancelled: the user cancelled the run; terminal (STATE_MACHINE.md §3.1).
+	StateCancelled State = "cancelled"
+	// StateTimedOut: the hard wall-clock deadline fired; terminal
+	// (STATE_MACHINE.md §3.1).
+	StateTimedOut State = "timed_out"
 	// StateWaitingQuota: every route in the chain is quota-exhausted; the work
 	// package is parked until an account resets (spec §15.5, §20.3, §32
 	// PROVIDER_QUOTA). It is NOT terminal — it resumes automatically.
@@ -355,6 +360,50 @@ func (m *Manager) refreshHead(ctx context.Context, ws Workspace) (string, error)
 func (m *Manager) updateState(ctx context.Context, id string, state State, headSHA, runID, sessionID string) error {
 	now := m.now().Format(time.RFC3339Nano)
 	return m.db.UpdateWorkspaceState(ctx, id, string(state), headSHA, runID, sessionID, now)
+}
+
+// UpdateStateTx transitions a workspace inside an existing storage transaction
+// (so the state write shares the caller's atomic commit with audit/task/etc.).
+// headSHA, resultBranch and resultSHA are also updated; pass empty strings to
+// leave the corresponding column unchanged (the runapp service uses this for
+// the finalize step, STATE_MACHINE.md §3.4).
+//
+// This method is the tx-backed counterpart of updateState; it does not enforce
+// the state machine on its own — the caller (runapp) owns the transition
+// legality check.
+func (m *Manager) UpdateStateTx(ctx context.Context, tx *storage.Tx, id string, state State, headSHA, resultBranch, resultSHA string) error {
+	if tx == nil {
+		return errors.New("workspace: UpdateStateTx requires a non-nil tx")
+	}
+	now := m.now().Format(time.RFC3339Nano)
+	// Update state + head_sha + run_id/session_id (kept) + timestamps in one
+	// statement. We re-read the row's run_id/session_id so we do not clobber
+	// them with empty strings.
+	ws, err := m.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := tx.UpdateWorkspaceState(ctx, id, string(state), headSHA, ws.RunID, ws.SessionID, now); err != nil {
+		return fmt.Errorf("workspace: update state (tx): %w", err)
+	}
+	// Persist result_branch/result_sha if provided. result_sha uses headSHA
+	// (the actual HEAD) when set; otherwise keep the existing value.
+	if resultBranch != "" || resultSHA != "" {
+		rb := resultBranch
+		if rb == "" {
+			rb = ws.ResultBranch
+		}
+		rs := resultSHA
+		if rs == "" {
+			rs = ws.ResultSHA
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE workspaces SET result_branch = ?, result_sha = ?, updated_at = ? WHERE id = ?`,
+			rb, rs, now, id); err != nil {
+			return fmt.Errorf("workspace: set result_branch/result_sha (tx): %w", err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) auditEvent(ctx context.Context, scopeID, eventType string, payload map[string]any) error {
