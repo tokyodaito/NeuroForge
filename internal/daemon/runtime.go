@@ -76,6 +76,37 @@ func cleanRuntimeFiles(dirs Dirs) {
 	}
 }
 
+// reclaimStaleRuntime removes the PID/token/addr files ONLY when they provably
+// belong to a dead or unparseable owner (BF-F-01 / I2). It is the safe
+// replacement for an unconditional cleanRuntimeFiles during startup: it never
+// touches the files of a live process, so a still-starting or momentarily
+// unhealthy daemon never has its socket/PID/token clobbered out from under it.
+//
+// Decision table (PID = value parsed from dirs.PIDFile):
+//
+//	no PID file              → nothing to reclaim (clean state)
+//	PID file unparseable     → corrupted → reclaim (no identifiable live owner)
+//	PID present, process dead→ stale      → reclaim (R-2.4)
+//	PID present, process live→ DO NOT reclaim; a live owner may be mid-start.
+//	                           The caller's health check governs the decision.
+func reclaimStaleRuntime(dirs Dirs) {
+	pid, err := readPID(dirs)
+	if err != nil {
+		// Corrupted PID file: no live owner can be identified; safe to clear so
+		// the next daemon writes clean metadata.
+		cleanRuntimeFiles(dirs)
+		return
+	}
+	if pid > 0 && processAlive(pid) {
+		// A process owns this PID right now. Even if it is momentarily
+		// unhealthy, it may be a daemon still binding. Touching its files would
+		// mint a second owner; leave them in place.
+		return
+	}
+	// PID absent or provably dead: stale state, safe to reclaim.
+	cleanRuntimeFiles(dirs)
+}
+
 // CleanRuntimeFiles is the exported form of cleanRuntimeFiles for CLI use.
 func CleanRuntimeFiles(dirs Dirs) { cleanRuntimeFiles(dirs) }
 

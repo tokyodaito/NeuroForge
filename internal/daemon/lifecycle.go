@@ -22,20 +22,29 @@ const DefaultStopTimeout = 8 * time.Second
 // Start spawns a detached daemon process (via `forge daemon run`) if no healthy
 // daemon is already running. It is idempotent: a repeated Start against a live,
 // healthy daemon returns ErrAlreadyRunning and never launches a second process.
-// Stale or corrupted runtime files are reclaimed first.
 //
-// BF-05 / R-2.3 (dual-daemon race): the liveness check is RETRIED a few times
-// before we conclude the daemon is down. Under heavy concurrent load a live
-// daemon's Health endpoint can be momentarily slow; without the retry, two CLIs
-// could each decide the daemon is dead, clobber its runtime files
-// (cleanRuntimeFiles), and spawn a second daemon. The retry makes the decision
-// authoritative so cleanRuntimeFiles never runs against a live daemon.
+// BF-F-01 / R-2.3 (cold-start single-daemon guarantee): Start is the spawn half
+// of the startup ownership protocol. The CLI caller holds the autostart.lock
+// (properly exclusive — see autostart_lock.go) across the whole probe→reclaim→
+// spawn→readiness sequence, so at most one process can be here for a given home
+// at a time. Two invariants are enforced here:
+//
+//   - I2 (non-destructive reclaim): runtime files are removed ONLY when they
+//     provably belong to a dead owner (reclaimStaleRuntime). A live-but-unhealthy
+//     PID is never cleaned, so a still-starting daemon never has its socket/PID
+//     clobbered out from under it.
+//   - I4 (parent–child handshake / no orphans): if the spawned child does not
+//     become ready within DefaultReadyTimeout, Start kills and reaps it before
+//     returning an error. A failed start therefore leaves zero daemon processes
+//     behind, so the next owner starts from a clean slate instead of racing a
+//     stray orphan that later binds and mints a second owner.
 func Start(ctx context.Context, dirs Dirs) error {
 	if isReachableAndHealthyRetried(ctx, dirs, 4, 150*time.Millisecond) {
 		return ErrAlreadyRunning
 	}
-	// Reclaim stale/corrupted runtime so the new start is clean.
-	cleanRuntimeFiles(dirs)
+	// Reclaim ONLY provably-stale runtime state (dead/corrupted owner). Never
+	// remove the files of a live PID, which could be a still-starting daemon.
+	reclaimStaleRuntime(dirs)
 	if err := dirs.Ensure(); err != nil {
 		return err
 	}
@@ -79,13 +88,20 @@ func Start(ctx context.Context, dirs Dirs) error {
 	}
 	// The child holds its own dup of the log fd; close the parent's copy.
 	_ = logf.Close()
-	// Fully release the child: we intentionally do not Wait on it, so the
-	// daemon survives this CLI process exiting.
-	_ = cmd.Process.Release()
 
-	if err := waitForReady(ctx, dirs, DefaultReadyTimeout); err != nil {
-		return err
+	// I4: do NOT Release the child yet. If it fails readiness we must be able
+	// to kill + reap it so no orphan daemon outlives this call and later binds
+	// as a second owner.
+	if werr := waitForReady(ctx, dirs, DefaultReadyTimeout); werr != nil {
+		// Reap the orphan: the child did not become healthy. Kill it and wait
+		// for the kernel to reap the exit so it cannot bind afterwards.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return werr
 	}
+	// Healthy: the daemon is the authoritative owner. Release the child handle
+	// so it survives this CLI process exiting (we intentionally do not Wait).
+	_ = cmd.Process.Release()
 	return nil
 }
 

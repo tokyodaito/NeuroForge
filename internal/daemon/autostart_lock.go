@@ -46,16 +46,27 @@ func lockFile(ctx context.Context, lockPath string) (func(), error) {
 		deadline = time.Now().Add(15 * time.Second)
 	}
 	for {
-		if err := flockTry(f.Fd()); err == nil {
+		// BF-F-01 / R-2.3: the lock acquisition MUST use a single scoped
+		// error so the retry decision is made on the actual flockTry result,
+		// not on a stale outer `err` (the os.OpenFile error, which is nil
+		// after a successful open). The previous form
+		//   `if err := flockTry(...); err == nil { ... }`
+		// followed by `if !errors.Is(err, ...)` referenced OpenFile's nil err,
+		// so the very first EAGAIN fell into the no-op fallback branch and the
+		// loop never retried — every concurrent process received a no-op lock
+		// and proceeded in parallel, producing dual daemons. Keeping the try
+		// error in scope (`lerr`) closes that window.
+		lerr := flockTry(f.Fd())
+		if lerr == nil {
 			return func() {
 				_ = flockUnlock(f.Fd())
 				_ = f.Close()
 			}, nil
 		}
-		if !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EWOULDBLOCK) {
-			_ = f.Close()
+		if !errors.Is(lerr, syscall.EAGAIN) && !errors.Is(lerr, syscall.EWOULDBLOCK) {
 			// Platforms without flock support: no-op lock (the daemon-side
 			// bind re-check still guards against dual daemons).
+			_ = f.Close()
 			return func() {}, nil
 		}
 		if time.Now().After(deadline) {
