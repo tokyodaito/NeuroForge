@@ -2,6 +2,7 @@ package runapp_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -36,6 +37,9 @@ func (f *faultWM) DeleteResultRef(ctx context.Context, ws workspace.Workspace) e
 	f.deleteCalled.Add(1)
 	return f.inner.DeleteResultRef(ctx, ws)
 }
+func (f *faultWM) ResolveResultRef(ctx context.Context, taskID, dir string) (string, error) {
+	return f.inner.ResolveResultRef(ctx, taskID, dir)
+}
 func (f *faultWM) UpdateStateTx(ctx context.Context, tx *storage.Tx, id string, state workspace.State, headSHA, resultBranch, resultSHA string) error {
 	if f.failUpdateState.Load() {
 		return errInjectedFault
@@ -61,30 +65,25 @@ func isMinimalTerminal(s workspace.State) bool {
 }
 
 // TestFinalize_Atomicity_CompensatesRefOnTxFailure (BF-07 / STATE_MACHINE.md
-// §3.4): when the result ref is created BEFORE the SQLite transaction and the
-// transaction then FAILS, finalize MUST remove the just-created ref (compensating
-// delete) so git and DB stay consistent — no orphan ref pointing at a result the
-// DB never recorded. The workspace must remain non-terminal (rolled back). A
-// retry with a healthy tx then succeeds and re-creates the ref.
+// §3.4): models process crash after result ref is created and before the
+// terminal SQLite commit. Finalize leaves a durable intent + the ref. The
+// workspace stays non-terminal (no false success). A retry RESUMES from the
+// intent, commits the terminal state, and keeps exactly one result ref.
 //
-// This is a real fault-injection test against real SQLite + real Git refs
-// (not a mock): the ref lands in the worktree's shared object DB and is verified
-// via for-each-ref.
+// Real SQLite + real Git refs (not a mock).
 func TestFinalize_Atomicity_CompensatesRefOnTxFailure(t *testing.T) {
 	f := newFinalizeFixture(t)
 	ctx := context.Background()
 
-	// Agent committed in the worktree → completed-with-commit → ref is created.
 	newHEAD := f.commitInWorktree("src/a.go", "package a\n", "feat: a")
 	ins := workspace.Inspection{ActualHEAD: newHEAD, StatusPorcelain: "", ChangedFiles: []string{"src/a.go"}}
 
-	wm := &faultWM{inner: f.wm}
-	wm.failUpdateState.Store(true) // force the tx to fail after the ref is created
 	svc := runapp.NewService(runapp.Options{
-		Workspaces: wm, Tasks: f.bk, Audit: audit.NewRecorder(f.db, nil), DB: f.db,
+		Workspaces: f.wm, Tasks: f.bk, Audit: audit.NewRecorder(f.db, nil), DB: f.db,
 	})
+	// Crash after ref, before terminal DB commit (loss of process state).
+	svc.SetTestHooks(nil, func() error { return errCrashAfterRef })
 
-	// Finalize must fail (injected tx fault) AND compensate the ref.
 	_, err := svc.Finalize(ctx, runapp.FinalizeRequest{
 		WorkspaceID:   f.ws.ID,
 		TaskID:        "task-1",
@@ -92,29 +91,31 @@ func TestFinalize_Atomicity_CompensatesRefOnTxFailure(t *testing.T) {
 		Inspection:    ins,
 		Engine:        "opencode", Model: "m",
 	})
-	if err == nil {
-		t.Fatalf("finalize unexpectedly succeeded with injected fault")
+	if !errors.Is(err, errCrashAfterRef) {
+		t.Fatalf("finalize err = %v, want crash-after-ref", err)
 	}
 
-	// The compensating DeleteResultRef must have run.
-	if got := wm.deleteCalled.Load(); got != 1 {
-		t.Fatalf("compensating DeleteResultRef called %d times, want 1 (orphan ref left?)", got)
+	intent, ierr := f.db.GetFinalizeIntent(ctx, f.ws.ID)
+	if ierr != nil {
+		t.Fatalf("finalize intent missing after crash: %v", ierr)
 	}
-	// The ref must NOT exist (git and DB agree: no result recorded).
+	if intent.Phase != storage.FinalizePhaseRefReady {
+		t.Errorf("intent phase = %s, want ref_ready", intent.Phase)
+	}
 	refSHA, _ := f.wm.ResolveResultRef(ctx, f.ws.TaskID, f.ws.Path)
-	if refSHA != "" {
-		t.Errorf("orphan result ref survived tx failure: resolves to %q (must be deleted)", refSHA)
+	if refSHA != newHEAD {
+		t.Errorf("result ref after crash = %q, want %q (kept for resume)", refSHA, newHEAD)
 	}
-	// The workspace must still be non-terminal (the tx rolled back).
 	wsAfter, _ := f.wm.Get(ctx, f.ws.ID)
 	if isMinimalTerminal(wsAfter.State) {
-		t.Errorf("workspace state = %s after failed tx, want non-terminal (rolled back)", wsAfter.State)
+		t.Errorf("workspace state = %s after crash, want non-terminal", wsAfter.State)
 	}
 
-	// Retry with a healthy tx: finalize succeeds and re-creates the ref
-	// (recovery to a consistent terminal state).
-	wm.failUpdateState.Store(false)
-	res, err := svc.Finalize(ctx, runapp.FinalizeRequest{
+	// Fresh service = process restart; resume completes.
+	svc2 := runapp.NewService(runapp.Options{
+		Workspaces: f.wm, Tasks: f.bk, Audit: audit.NewRecorder(f.db, nil), DB: f.db,
+	})
+	res, err := svc2.Finalize(ctx, runapp.FinalizeRequest{
 		WorkspaceID:   f.ws.ID,
 		TaskID:        "task-1",
 		TerminalEvent: terminalEvent(protocol.EventRunCompleted, ""),
@@ -128,23 +129,20 @@ func TestFinalize_Atomicity_CompensatesRefOnTxFailure(t *testing.T) {
 		t.Errorf("retry outcome = %s, want completed-with-commit", res.Outcome)
 	}
 	refSHA2, _ := f.wm.ResolveResultRef(ctx, f.ws.TaskID, f.ws.Path)
-	if refSHA2 == "" {
-		t.Errorf("result ref missing after successful retry finalize")
+	if refSHA2 != newHEAD {
+		t.Errorf("result ref after retry = %q, want %q", refSHA2, newHEAD)
+	}
+	if _, err := f.db.GetFinalizeIntent(ctx, f.ws.ID); !errors.Is(err, storage.ErrFinalizeIntentNotFound) {
+		t.Errorf("intent should be cleared after successful commit, got %v", err)
 	}
 
-	// Idempotency: a third finalize on the now-terminal workspace is a no-op
-	// that does NOT call the compensating delete and does not error.
-	before := wm.deleteCalled.Load()
-	if _, err := svc.Finalize(ctx, runapp.FinalizeRequest{
+	if _, err := svc2.Finalize(ctx, runapp.FinalizeRequest{
 		WorkspaceID:   f.ws.ID,
 		TaskID:        "task-1",
 		TerminalEvent: terminalEvent(protocol.EventRunCompleted, ""),
 		Inspection:    ins,
 	}); err != nil {
 		t.Errorf("idempotent re-finalize errored: %v", err)
-	}
-	if got := wm.deleteCalled.Load(); got != before {
-		t.Errorf("idempotent re-finalize triggered compensating delete (%d -> %d)", before, got)
 	}
 }
 
@@ -196,6 +194,9 @@ func (r *refFailWM) EnsureResultRef(context.Context, workspace.Workspace, string
 }
 func (r *refFailWM) DeleteResultRef(ctx context.Context, ws workspace.Workspace) error {
 	return r.inner.DeleteResultRef(ctx, ws)
+}
+func (r *refFailWM) ResolveResultRef(ctx context.Context, taskID, dir string) (string, error) {
+	return r.inner.ResolveResultRef(ctx, taskID, dir)
 }
 func (r *refFailWM) UpdateStateTx(ctx context.Context, tx *storage.Tx, id string, state workspace.State, headSHA, resultBranch, resultSHA string) error {
 	return r.inner.UpdateStateTx(ctx, tx, id, state, headSHA, resultBranch, resultSHA)

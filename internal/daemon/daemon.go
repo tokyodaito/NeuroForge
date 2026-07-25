@@ -101,6 +101,8 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		reconcilers = WithExtraReconcilers(
 			&workspaceReconciler{wm: wsManager},
 			&attemptReconciler{wm: wsManager}, // M7: recover in-flight attempts (AC-27)
+			// BF-07: resume partial finalizations (intent without terminal commit).
+			newFinalizeIntentReconciler(db, recorder, wsManager, logger),
 		)
 	}
 	if _, err := Reconcile(runCtx, ReconcileTx{

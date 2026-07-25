@@ -2,6 +2,7 @@ package runapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -12,6 +13,31 @@ import (
 	"neuroforge/internal/task"
 	"neuroforge/internal/workspace"
 )
+
+// Finalization protocol (BF-07 / S3) — crash-consistent, retry-safe.
+//
+// Git refs and SQLite cannot share one physical transaction. Consistency is
+// achieved via durable intent + reconciliation/compensation:
+//
+//  1. inspect Git          (caller-provided Inspection)
+//  2. classify             (pure)
+//  3. record finalize intent (phase=pending) in SQLite
+//  4. create/verify result ref when applicable
+//  5. advance intent       (phase=ref_ready)
+//  6. atomically persist terminal workspace + task + audit; delete intent
+//  7. mark finalization complete (intent row gone)
+//
+// Recovery after any crash point:
+//   - intent pending, no ref  → resume: create ref, commit terminal
+//   - intent ref_ready, ref ok → resume: commit terminal
+//   - intent + ref wrong SHA  → conflict (never silent overwrite)
+//   - terminal already set    → idempotent return
+//   - same-process tx failure after ref → leave intent+ref; retry resumes
+//     (no orphan: either complete or explicit compensate on abort paths
+//     that never wrote intent)
+//
+// Concurrent finalizers for the same workspace: SQLite serializes intent
+// upsert + terminal commit; the loser observes terminal/idempotent result.
 
 // FinalizeRequest is the input to [Service.Finalize]. It carries everything
 // the atomic finalize step needs: the workspace id, the terminal adapter
@@ -85,6 +111,14 @@ type Service struct {
 	// (the unit tests) leave these nil and never call Run.
 	creator WorkspaceCreator
 	sup     SupervisorRunner
+
+	// testHookAfterIntent, if non-nil, is invoked after the intent row is
+	// persisted and before the result ref is ensured. Tests use it to model
+	// a process crash (loss of in-memory state) without killing the process.
+	testHookAfterIntent func() error
+	// testHookAfterRef, if non-nil, is invoked after the result ref is
+	// ensured and before the terminal DB transaction. Models crash-after-ref.
+	testHookAfterRef func() error
 }
 
 // WorkspaceManager is the subset of *workspace.Manager the runapp service
@@ -96,6 +130,7 @@ type WorkspaceManager interface {
 	InspectWorktree(ctx context.Context, ws workspace.Workspace) (workspace.Inspection, error)
 	EnsureResultRef(ctx context.Context, ws workspace.Workspace, headSHA string) (resultBranch string, err error)
 	DeleteResultRef(ctx context.Context, ws workspace.Workspace) error
+	ResolveResultRef(ctx context.Context, taskID, dir string) (string, error)
 }
 
 // TaskBacklog is the subset of *task.Backlog the runapp service consumes.
@@ -110,12 +145,13 @@ type TaskStateReader interface {
 	Get(ctx context.Context, id string) (task.Task, error)
 }
 
-// RefCreator creates/updates the local result ref, and removes it as the
-// compensating action when the finalize transaction fails after the ref was
-// created (BF-07). Implemented by *workspace.Manager.
+// RefCreator creates/updates the local result ref, resolves it, and removes
+// it as a compensating action when aborting before intent was durable (BF-07).
+// Implemented by *workspace.Manager.
 type RefCreator interface {
 	EnsureResultRef(ctx context.Context, ws workspace.Workspace, headSHA string) (resultBranch string, err error)
 	DeleteResultRef(ctx context.Context, ws workspace.Workspace) error
+	ResolveResultRef(ctx context.Context, taskID, dir string) (string, error)
 }
 
 // UsageSink durably persists one usage event. Reused from the scheduler.
@@ -169,6 +205,13 @@ func NewService(opts Options) *Service {
 	}
 }
 
+// SetTestHooks installs crash-injection hooks used only by fault-injection
+// tests (BF-07). Production code never calls this.
+func (s *Service) SetTestHooks(afterIntent, afterRef func() error) {
+	s.testHookAfterIntent = afterIntent
+	s.testHookAfterRef = afterRef
+}
+
 // ErrIllegalTransition is returned by Finalize when the workspace state
 // machine refuses the requested transition (e.g. a terminal workspace being
 // re-finalized into a non-terminal state, which is forbidden by
@@ -189,25 +232,30 @@ func (e *ErrIllegalTransition) Error() string {
 // error; this typed error is for callers that need to distinguish.
 var ErrAlreadyTerminal = errors.New("runapp: workspace already terminal")
 
+// ErrResultRefConflict is returned when the result ref exists at an unexpected
+// SHA and must not be overwritten (BF-07 B6).
+type ErrResultRefConflict struct {
+	WorkspaceID string
+	TaskID      string
+	Ref         string
+	Existing    string
+	Want        string
+}
+
+func (e *ErrResultRefConflict) Error() string {
+	return fmt.Sprintf("runapp: result ref conflict for workspace %s task %s: %s at %s, want %s",
+		e.WorkspaceID, e.TaskID, e.Ref, e.Existing, e.Want)
+}
+
 // Finalize is the single atomic chokepoint where the minimal run records its
-// terminal state (STATE_MACHINE.md §3.4, §4.2). It opens one SQLite
-// transaction that:
-//
-//   - persists the workspace state (terminal, matching the outcome),
-//     head_sha (the actual HEAD from FR-9), result_branch/result_sha when
-//     applicable;
-//   - persists the task state (COMPLETED / FAILED / CANCELLED per outcome);
-//   - appends one run.outcome_decided audit event carrying the full
-//     OUTCOME_CONTRACT.md §1.4 payload.
-//
-// If any of these fail the whole transaction is rolled back — there is no
-// "state written, audit forgotten" path. Illegal transitions (e.g.
-// terminal→active) return a typed error and roll back.
+// terminal state (STATE_MACHINE.md §3.4, §4.2). See the package-level
+// finalization protocol comment above for the crash-consistent order.
 //
 // Finalize is idempotent (OUTCOME_CONTRACT.md §6, S4): a second call on an
 // already-terminal workspace returns the recorded outcome without creating a
 // duplicate result ref or a second run.outcome_decided event (at most one
-// run.finalize_idempotent notice).
+// run.finalize_idempotent notice). A call that finds a durable finalize
+// intent resumes the protocol from the recorded phase (BF-07 recovery).
 func (s *Service) Finalize(ctx context.Context, req FinalizeRequest) (FinalizeResult, error) {
 	if s.db == nil {
 		return FinalizeResult{}, errors.New("runapp: nil storage")
@@ -238,39 +286,14 @@ func (s *Service) Finalize(ctx context.Context, req FinalizeRequest) (FinalizeRe
 
 	// ---- idempotent short-circuit (S4) ----
 	if isWorkspaceTerminal(ws.State) {
-		// The workspace is already in a terminal state. Return the recorded
-		// outcome; emit at most one dedup notice (no second result ref, no
-		// second run.outcome_decided).
-		rec := FinalizeResult{
-			Outcome:       outcomeForTerminalState(ws.State, outcome),
-			WorkspaceID:   ws.ID,
-			TaskID:        ws.TaskID,
-			WorkspacePath: ws.Path,
-			BaseSHA:       ws.BaseSHA,
-			ActualHEAD:    req.Inspection.ActualHEAD,
-			CommitSHA:     ws.ResultSHA,
-			ResultBranch:  ws.ResultBranch,
-			ChangedFiles:  req.Inspection.ChangedFiles,
-			Engine:        req.Engine,
-			Model:         req.Model,
-			RunID:         req.RunID,
-			Idempotent:    true,
-		}
-		// Best-effort dedup notice; never fails the call.
-		if s.audit != nil {
-			_, _ = s.audit.Record(ctx, audit.Event{
-				Type:    "run.finalize_idempotent",
-				Scope:   audit.ScopeTask,
-				ScopeID: ws.ID,
-				Actor:   audit.ActorDaemon,
-				Payload: audit.Payload(
-					"workspace", ws.ID,
-					"state", string(ws.State),
-					"outcome", string(rec.Outcome),
-					"run_id", req.RunID),
-			})
-		}
-		return rec, nil
+		return s.idempotentResult(ctx, ws, req, outcome)
+	}
+
+	// ---- resume from durable intent if present (BF-07 recovery) ----
+	if existing, gerr := s.db.GetFinalizeIntent(ctx, ws.ID); gerr == nil {
+		return s.resumeFromIntent(ctx, ws, existing, req)
+	} else if !errors.Is(gerr, storage.ErrFinalizeIntentNotFound) {
+		return FinalizeResult{}, fmt.Errorf("runapp: load finalize intent: %w", gerr)
 	}
 
 	// ---- illegal transition guard ----
@@ -281,109 +304,246 @@ func (s *Service) Finalize(ctx context.Context, req FinalizeRequest) (FinalizeRe
 		}
 	}
 
-	// ---- create result ref BEFORE the tx (S5) ----
-	// The ref is a git operation (filesystem), not a DB write, so it cannot
-	// roll back inside the SQLite tx. We perform it first; if it succeeds the
-	// tx records the matching result_branch/result_sha. If the tx fails, the
-	// compensating delete below (BF-07) removes the just-created ref so git and
-	// DB stay consistent (no orphan ref pointing at an unrecorded result).
+	// ---- task transition target ----
+	taskAction := task.ActionForOutcome(string(outcome))
+	t, terr := s.tasks.Get(ctx, req.TaskID)
+	if terr != nil {
+		return FinalizeResult{}, fmt.Errorf("runapp: load task: %w", terr)
+	}
+	taskTo, taskTransitionErr := taskTransitionFor(ctx, s.tasks, t, taskAction)
+	if taskTransitionErr != nil {
+		return FinalizeResult{}, fmt.Errorf("runapp: compute task transition: %w", taskTransitionErr)
+	}
+
 	resultBranch := ""
 	resultSHA := ""
 	commitSHA := ""
-	createdRef := false
 	if outcome.CreatesResultRef() {
-		ref, err := s.refs.EnsureResultRef(ctx, ws, req.Inspection.ActualHEAD)
-		if err != nil {
-			return FinalizeResult{}, fmt.Errorf("runapp: ensure result ref: %w", err)
-		}
-		resultBranch = ref
+		resultBranch = workspace.FullyQualifiedResultBranch(ws.TaskID)
 		resultSHA = req.Inspection.ActualHEAD
-		createdRef = true
-		// OUTCOME_CONTRACT.md §3.1: commit_sha is the actual HEAD when the
-		// outcome is *-with-commit. For completed-with-uncommitted-changes
-		// there is NO commit — commit_sha stays empty/null so the result is
-		// never disguised as a commit (invariant I.6).
 		if outcome == OutcomeCompletedWithCommit {
 			commitSHA = req.Inspection.ActualHEAD
 		}
 	}
 
-	// ---- task transition (inside the tx) ----
-	taskAction := task.ActionForOutcome(string(outcome))
-	// Load the task to capture its current state for the audit payload.
-	t, terr := s.tasks.Get(ctx, req.TaskID)
-	if terr != nil {
-		return FinalizeResult{}, fmt.Errorf("runapp: load task: %w", terr)
+	changedJSON, _ := json.Marshal(req.Inspection.ChangedFiles)
+	if changedJSON == nil {
+		changedJSON = []byte("[]")
+	}
+	now := s.now().Format(time.RFC3339Nano)
+	intent := storage.FinalizeIntent{
+		WorkspaceID:     ws.ID,
+		TaskID:          req.TaskID,
+		Outcome:         string(outcome),
+		RunTerminal:     string(in.Terminal),
+		RunID:           req.RunID,
+		Engine:          req.Engine,
+		Model:           req.Model,
+		BaseSHA:         ws.BaseSHA,
+		ActualHeadSHA:   req.Inspection.ActualHEAD,
+		ExpectedRefSHA:  resultSHA,
+		ResultBranch:    resultBranch,
+		CommitSHA:       commitSHA,
+		GitStatusEmpty:  req.Inspection.StatusPorcelain == "",
+		ChangedFiles:    string(changedJSON),
+		TargetWSState:   string(targetState),
+		TargetTaskState: string(taskTo),
+		Phase:           storage.FinalizePhasePending,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
-	// ---- open the atomic tx ----
+	// Step 3: durable finalization intent (survives process crash).
+	if err := s.db.UpsertFinalizeIntent(ctx, intent); err != nil {
+		return FinalizeResult{}, fmt.Errorf("runapp: record finalize intent: %w", err)
+	}
+
+	if s.testHookAfterIntent != nil {
+		if herr := s.testHookAfterIntent(); herr != nil {
+			return FinalizeResult{}, herr
+		}
+	}
+
+	// Step 4–5: result ref + phase=ref_ready (or skip when no ref).
+	if err := s.ensureRefForIntent(ctx, ws, &intent); err != nil {
+		return FinalizeResult{}, err
+	}
+
+	if s.testHookAfterRef != nil {
+		if herr := s.testHookAfterRef(); herr != nil {
+			return FinalizeResult{}, herr
+		}
+	}
+
+	// Step 6–7: terminal DB commit + clear intent.
+	return s.commitTerminal(ctx, ws, intent, req.Inspection.ChangedFiles)
+}
+
+// resumeFromIntent continues a partial finalization after crash/retry (BF-07).
+func (s *Service) resumeFromIntent(ctx context.Context, ws workspace.Workspace, intent storage.FinalizeIntent, req FinalizeRequest) (FinalizeResult, error) {
+	// If the workspace became terminal out-of-band, clear stale intent and
+	// return the recorded outcome.
+	if isWorkspaceTerminal(ws.State) {
+		_ = s.db.DeleteFinalizeIntent(ctx, ws.ID)
+		return s.idempotentResult(ctx, ws, req, Outcome(intent.Outcome))
+	}
+
+	// Conflict: intent expects a specific ref SHA but git has another.
+	if intent.ExpectedRefSHA != "" {
+		existing, err := s.refs.ResolveResultRef(ctx, ws.TaskID, ws.Path)
+		if err != nil {
+			return FinalizeResult{}, fmt.Errorf("runapp: resolve result ref: %w", err)
+		}
+		if existing != "" && existing != intent.ExpectedRefSHA {
+			return FinalizeResult{}, &ErrResultRefConflict{
+				WorkspaceID: ws.ID,
+				TaskID:      ws.TaskID,
+				Ref:         intent.ResultBranch,
+				Existing:    existing,
+				Want:        intent.ExpectedRefSHA,
+			}
+		}
+	}
+
+	if intent.Phase == storage.FinalizePhasePending {
+		if err := s.ensureRefForIntent(ctx, ws, &intent); err != nil {
+			return FinalizeResult{}, err
+		}
+	}
+
+	var changed []string
+	if intent.ChangedFiles != "" {
+		_ = json.Unmarshal([]byte(intent.ChangedFiles), &changed)
+	}
+	return s.commitTerminal(ctx, ws, intent, changed)
+}
+
+// ensureRefForIntent creates/verifies the result ref and advances phase to
+// ref_ready. No-op (phase advance only) when the outcome creates no ref.
+func (s *Service) ensureRefForIntent(ctx context.Context, ws workspace.Workspace, intent *storage.FinalizeIntent) error {
+	if intent.ExpectedRefSHA != "" {
+		ref, err := s.refs.EnsureResultRef(ctx, ws, intent.ExpectedRefSHA)
+		if err != nil {
+			var conf *workspace.ErrResultRefConflict
+			if errors.As(err, &conf) {
+				return &ErrResultRefConflict{
+					WorkspaceID: ws.ID,
+					TaskID:      ws.TaskID,
+					Ref:         conf.Ref,
+					Existing:    conf.Existing,
+					Want:        conf.Want,
+				}
+			}
+			return fmt.Errorf("runapp: ensure result ref: %w", err)
+		}
+		intent.ResultBranch = ref
+	}
+	now := s.now().Format(time.RFC3339Nano)
+	intent.Phase = storage.FinalizePhaseRefReady
+	intent.UpdatedAt = now
+	if err := s.db.UpsertFinalizeIntent(ctx, *intent); err != nil {
+		return fmt.Errorf("runapp: advance finalize intent to ref_ready: %w", err)
+	}
+	return nil
+}
+
+// commitTerminal persists workspace + task + audit in one SQLite transaction
+// and deletes the finalize intent (BF-07 step 6–7).
+//
+// Concurrency (BF-07 B4): the terminal claim is a conditional UPDATE
+// `WHERE state = 'active'`. Exactly one concurrent finalizer wins the claim;
+// losers roll back and return the idempotent recorded outcome. This guarantees
+// a single run.outcome_decided audit and a single terminal decision.
+func (s *Service) commitTerminal(ctx context.Context, ws workspace.Workspace, intent storage.FinalizeIntent, changed []string) (FinalizeResult, error) {
+	idempotentReq := FinalizeRequest{
+		WorkspaceID: ws.ID, TaskID: intent.TaskID,
+		Engine: intent.Engine, Model: intent.Model, RunID: intent.RunID,
+		Inspection: workspace.Inspection{
+			ActualHEAD: intent.ActualHeadSHA, ChangedFiles: changed,
+		},
+	}
+
+	// Fast path outside the tx (common after a concurrent winner finished).
+	fresh, err := s.wm.Get(ctx, ws.ID)
+	if err != nil {
+		return FinalizeResult{}, fmt.Errorf("runapp: reload workspace: %w", err)
+	}
+	if isWorkspaceTerminal(fresh.State) {
+		_ = s.db.DeleteFinalizeIntent(ctx, ws.ID)
+		return s.idempotentResult(ctx, fresh, idempotentReq, Outcome(intent.Outcome))
+	}
+
 	tx, err := s.db.BeginTx(ctx)
 	if err != nil {
-		// tx failed to open: if we created a ref, compensate now (BF-07).
-		if createdRef {
-			_ = s.refs.DeleteResultRef(ctx, ws)
-		}
 		return FinalizeResult{}, fmt.Errorf("runapp: begin tx: %w", err)
 	}
 	committed := false
 	defer func() {
-		_ = tx.Rollback()
-		// BF-07 atomicity: if the tx did not commit and we created a result ref
-		// before it, that ref is now an orphan pointing at a result the DB
-		// never recorded. Remove it so git and DB agree. Best-effort: a
-		// compensating-delete failure must never mask the original tx error.
-		if !committed && createdRef {
-			_ = s.refs.DeleteResultRef(ctx, ws)
+		if !committed {
+			_ = tx.Rollback()
 		}
 	}()
 
-	// 1. workspace state (terminal) + head_sha + result_branch + result_sha.
-	if err := s.wm.UpdateStateTx(ctx, tx, ws.ID, targetState,
-		req.Inspection.ActualHEAD, resultBranch, resultSHA); err != nil {
-		return FinalizeResult{}, fmt.Errorf("runapp: update workspace state: %w", err)
+	now := s.now().Format(time.RFC3339Nano)
+	targetState := intent.TargetWSState
+
+	// Single-owner terminal claim: only the first UPDATE from active wins.
+	res, err := tx.Exec(ctx, `
+UPDATE workspaces
+   SET state = ?,
+       head_sha = ?,
+       result_branch = CASE WHEN ? != '' THEN ? ELSE result_branch END,
+       result_sha = CASE WHEN ? != '' THEN ? ELSE result_sha END,
+       engine = COALESCE(NULLIF(?, ''), engine),
+       model  = COALESCE(NULLIF(?, ''), model),
+       run_id = COALESCE(NULLIF(?, ''), run_id),
+       updated_at = ?
+ WHERE id = ? AND state = 'active'`,
+		targetState,
+		intent.ActualHeadSHA,
+		intent.ResultBranch, intent.ResultBranch,
+		intent.ExpectedRefSHA, intent.ExpectedRefSHA,
+		intent.Engine, intent.Model, intent.RunID,
+		now, ws.ID)
+	if err != nil {
+		return FinalizeResult{}, fmt.Errorf("runapp: claim terminal workspace: %w", err)
 	}
-	// Also persist engine/model/run_id if not yet set (so the row is
-	// self-describing after finalize). This is best-effort inside the tx.
-	if _, err := tx.Exec(ctx,
-		`UPDATE workspaces
-		    SET engine = COALESCE(NULLIF(?, ''), engine),
-		        model  = COALESCE(NULLIF(?, ''), model),
-		        run_id = COALESCE(NULLIF(?, ''), run_id)
-		  WHERE id = ?`,
-		req.Engine, req.Model, req.RunID, ws.ID); err != nil {
-		return FinalizeResult{}, fmt.Errorf("runapp: stamp engine/model/run_id: %w", err)
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// Lost the race — another finalizer already committed terminal state.
+		_ = tx.Rollback()
+		committed = true // prevent double-rollback
+		fresh2, gerr := s.wm.Get(ctx, ws.ID)
+		if gerr != nil {
+			return FinalizeResult{}, fmt.Errorf("runapp: reload after lost claim: %w", gerr)
+		}
+		_ = s.db.DeleteFinalizeIntent(ctx, ws.ID)
+		return s.idempotentResult(ctx, fresh2, idempotentReq, Outcome(intent.Outcome))
 	}
 
-	// 2. task state (terminal, matching outcome). The task state machine
-	// validates the transition; an illegal transition aborts the whole tx.
-	taskTo, taskTransitionErr := taskTransitionFor(ctx, s.tasks, t, taskAction)
-	if taskTransitionErr != nil {
-		return FinalizeResult{}, fmt.Errorf("runapp: compute task transition: %w", taskTransitionErr)
-	}
-	// Persist via the same tx so it shares the atomic commit with the
-	// workspace state + audit. We write directly via storage to keep this in
-	// the tx (the backlog's Transition would open its own tx).
-	if err := tx.UpdateTaskState(ctx, req.TaskID, string(taskTo),
-		s.now().Format(time.RFC3339Nano)); err != nil {
+	// Task transition only for the winning finalizer. Conditional on non-terminal
+	// task state so a concurrent loser cannot revive a terminal task either.
+	if _, err := tx.Exec(ctx, `
+UPDATE tasks SET state = ?, updated_at = ?
+ WHERE id = ? AND state NOT IN ('COMPLETED','FAILED','CANCELLED','REJECTED')`,
+		intent.TargetTaskState, now, intent.TaskID); err != nil {
 		return FinalizeResult{}, fmt.Errorf("runapp: update task state: %w", err)
 	}
 
-	// 3. one run.outcome_decided audit event carrying OUTCOME_CONTRACT.md
-	// §1.4 payload.
 	if s.audit != nil {
 		payload := audit.Payload(
-			"outcome", string(outcome),
-			"run_terminal", string(in.Terminal),
-			"base_sha", ws.BaseSHA,
-			"actual_head_sha", req.Inspection.ActualHEAD,
-			"git_status_empty", req.Inspection.StatusPorcelain == "",
-			"commit_sha", commitSHA,
-			"result_branch", resultBranch,
-			"engine", req.Engine,
-			"model", req.Model,
-			"run_id", req.RunID,
+			"outcome", intent.Outcome,
+			"run_terminal", intent.RunTerminal,
+			"base_sha", intent.BaseSHA,
+			"actual_head_sha", intent.ActualHeadSHA,
+			"git_status_empty", intent.GitStatusEmpty,
+			"commit_sha", intent.CommitSHA,
+			"result_branch", intent.ResultBranch,
+			"engine", intent.Engine,
+			"model", intent.Model,
+			"run_id", intent.RunID,
 			"workspace_id", ws.ID,
-			"task_id", req.TaskID,
+			"task_id", intent.TaskID,
 		)
 		if _, err := s.audit.RecordTx(ctx, tx, audit.Event{
 			Type:    "run.outcome_decided",
@@ -396,25 +556,120 @@ func (s *Service) Finalize(ctx context.Context, req FinalizeRequest) (FinalizeRe
 		}
 	}
 
+	// Clear intent inside the same tx so a crash after commit never re-applies.
+	if err := tx.DeleteFinalizeIntent(ctx, ws.ID); err != nil {
+		return FinalizeResult{}, fmt.Errorf("runapp: clear finalize intent: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return FinalizeResult{}, fmt.Errorf("runapp: commit finalize tx: %w", err)
 	}
 	committed = true
 
 	return FinalizeResult{
-		Outcome:       outcome,
+		Outcome:       Outcome(intent.Outcome),
 		WorkspaceID:   ws.ID,
-		TaskID:        req.TaskID,
+		TaskID:        intent.TaskID,
+		WorkspacePath: ws.Path,
+		BaseSHA:       intent.BaseSHA,
+		ActualHEAD:    intent.ActualHeadSHA,
+		CommitSHA:     intent.CommitSHA,
+		ResultBranch:  intent.ResultBranch,
+		ChangedFiles:  changed,
+		Engine:        intent.Engine,
+		Model:         intent.Model,
+		RunID:         intent.RunID,
+	}, nil
+}
+
+func (s *Service) idempotentResult(ctx context.Context, ws workspace.Workspace, req FinalizeRequest, outcome Outcome) (FinalizeResult, error) {
+	rec := FinalizeResult{
+		Outcome:       outcomeForTerminalState(ws.State, outcome),
+		WorkspaceID:   ws.ID,
+		TaskID:        ws.TaskID,
 		WorkspacePath: ws.Path,
 		BaseSHA:       ws.BaseSHA,
 		ActualHEAD:    req.Inspection.ActualHEAD,
-		CommitSHA:     commitSHA,
-		ResultBranch:  resultBranch,
+		CommitSHA:     ws.ResultSHA,
+		ResultBranch:  ws.ResultBranch,
 		ChangedFiles:  req.Inspection.ChangedFiles,
 		Engine:        req.Engine,
 		Model:         req.Model,
 		RunID:         req.RunID,
-	}, nil
+		Idempotent:    true,
+	}
+	// Prefer durable result fields when the inspection is empty (late event).
+	if rec.ActualHEAD == "" {
+		rec.ActualHEAD = ws.HeadSHA
+	}
+	if rec.CommitSHA == "" && rec.Outcome == OutcomeCompletedWithCommit {
+		rec.CommitSHA = ws.ResultSHA
+	}
+	if s.audit != nil {
+		_, _ = s.audit.Record(ctx, audit.Event{
+			Type:    "run.finalize_idempotent",
+			Scope:   audit.ScopeTask,
+			ScopeID: ws.ID,
+			Actor:   audit.ActorDaemon,
+			Payload: audit.Payload(
+				"workspace", ws.ID,
+				"state", string(ws.State),
+				"outcome", string(rec.Outcome),
+				"run_id", req.RunID,
+				"late_event", string(req.TerminalEvent.Type),
+			),
+		})
+	}
+	return rec, nil
+}
+
+// RecoverPendingFinalizations resumes every durable finalize intent left by a
+// crashed process (BF-07). Called from the daemon startup reconciler before
+// the listener binds. Each intent is resumed independently; failures are
+// collected but do not abort other recoveries.
+func (s *Service) RecoverPendingFinalizations(ctx context.Context) ([]FinalizeResult, []error) {
+	if s.db == nil {
+		return nil, []error{errors.New("runapp: nil storage")}
+	}
+	intents, err := s.db.ListFinalizeIntents(ctx)
+	if err != nil {
+		return nil, []error{err}
+	}
+	var results []FinalizeResult
+	var errs []error
+	for _, intent := range intents {
+		ws, gerr := s.wm.Get(ctx, intent.WorkspaceID)
+		if gerr != nil {
+			errs = append(errs, fmt.Errorf("workspace %s: %w", intent.WorkspaceID, gerr))
+			continue
+		}
+		if isWorkspaceTerminal(ws.State) {
+			_ = s.db.DeleteFinalizeIntent(ctx, ws.ID)
+			continue
+		}
+		var changed []string
+		_ = json.Unmarshal([]byte(intent.ChangedFiles), &changed)
+		req := FinalizeRequest{
+			WorkspaceID: ws.ID,
+			TaskID:      intent.TaskID,
+			Engine:      intent.Engine,
+			Model:       intent.Model,
+			RunID:       intent.RunID,
+			Inspection: workspace.Inspection{
+				ActualHEAD: intent.ActualHeadSHA, ChangedFiles: changed,
+			},
+			// TerminalEvent is reconstructed only for the idempotent path;
+			// resume uses the intent payload.
+			TerminalEvent: protocol.NormalizedEvent{Type: protocol.EventRunCompleted},
+		}
+		res, rerr := s.resumeFromIntent(ctx, ws, intent, req)
+		if rerr != nil {
+			errs = append(errs, fmt.Errorf("resume %s: %w", intent.WorkspaceID, rerr))
+			continue
+		}
+		results = append(results, res)
+	}
+	return results, errs
 }
 
 // taskTransitionFor validates the requested task transition against the state
@@ -499,15 +754,27 @@ func allowedTransition(from, to workspace.State) bool {
 func outcomeForTerminalState(s workspace.State, fallback Outcome) Outcome {
 	switch s {
 	case workspace.StateCompleted:
-		return fallback
+		// Prefer the recorded completed-* variant from the classifier when it
+		// still classifies as completed-*; otherwise keep completed-with-commit
+		// as a safe default for a completed workspace.
+		switch fallback {
+		case OutcomeCompletedWithCommit, OutcomeCompletedWithUncommittedChanges:
+			return fallback
+		}
+		return OutcomeCompletedWithCommit
 	case workspace.StateCancelled:
 		return OutcomeCancelled
 	case workspace.StateTimedOut:
 		return OutcomeTimedOut
 	case workspace.StateFailed:
 		// Could be failed/no-changes/interrupted — keep what the classifier
-		// produced; that is the recorded intent.
-		return fallback
+		// produced only when it maps to a failed-family outcome; otherwise
+		// preserve failed (late completed event must not revive).
+		switch fallback {
+		case OutcomeFailed, OutcomeCompletedNoChanges, OutcomeInterrupted:
+			return fallback
+		}
+		return OutcomeFailed
 	}
 	return fallback
 }

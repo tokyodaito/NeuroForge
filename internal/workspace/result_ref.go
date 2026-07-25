@@ -15,16 +15,33 @@ func FullyQualifiedResultBranch(taskID string) string {
 	return "refs/heads/forge/result/" + sanitizeBranchSegment(taskID)
 }
 
-// EnsureResultRef creates or updates the local result ref at the
-// fully-qualified path refs/heads/forge/result/<task-id> so it points at
-// headSHA. It is idempotent (re-running moves the ref to the new HEAD; a
-// second call does not error and does not create a duplicate). It performs no
-// network operation (AC-7) and never modifies the user's currently checked-out
-// branch (§17.1, §36.14). Existing non-standard refs are never deleted.
+// ErrResultRefConflict is returned when refs/heads/forge/result/<task-id>
+// already exists and points at a SHA other than the one finalize expects.
+// Callers must not silently overwrite or delete the foreign ref (BF-07 B6).
+type ErrResultRefConflict struct {
+	Ref      string
+	Existing string
+	Want     string
+	TaskID   string
+}
+
+func (e *ErrResultRefConflict) Error() string {
+	return fmt.Sprintf("workspace: result ref conflict %s exists at %s, want %s (task %s)",
+		e.Ref, e.Existing, e.Want, e.TaskID)
+}
+
+// EnsureResultRef creates the local result ref at the fully-qualified path
+// refs/heads/forge/result/<task-id> so it points at headSHA, or is a no-op
+// when the ref already points at headSHA.
 //
-// The implementation passes the literal fully-qualified ref name to
-// `git update-ref`, pinning the explicit refs/heads/forge/result/<task-id>
-// form the spec requires (KF-08).
+// Conflict policy (BF-07 B6): if the ref already exists and points at a
+// *different* SHA, this method returns [*ErrResultRefConflict] and does NOT
+// overwrite or delete the foreign ref. A new task id produces a new ref path,
+// so cross-run overwrite is not needed for the minimal run (OUTCOME_CONTRACT
+// §5 — each forge run creates a new task id).
+//
+// It performs no network operation (AC-7) and never modifies the user's
+// currently checked-out branch (§17.1, §36.14).
 func (m *Manager) EnsureResultRef(ctx context.Context, ws Workspace, headSHA string) (string, error) {
 	if ws.Path == "" {
 		return "", errors.New("workspace: no worktree path for result ref")
@@ -33,6 +50,20 @@ func (m *Manager) EnsureResultRef(ctx context.Context, ws Workspace, headSHA str
 		return "", errors.New("workspace: headSHA is required for result ref")
 	}
 	ref := FullyQualifiedResultBranch(ws.TaskID)
+
+	// Conflict check before any mutation.
+	existing, err := m.ResolveResultRef(ctx, ws.TaskID, ws.Path)
+	if err != nil {
+		return "", err
+	}
+	if existing != "" && existing != headSHA {
+		return "", &ErrResultRefConflict{
+			Ref: ref, Existing: existing, Want: headSHA, TaskID: ws.TaskID,
+		}
+	}
+	if existing == headSHA {
+		return ref, nil // already correct — idempotent
+	}
 
 	// Use the worktree's own object database. The workspace shares the
 	// primary checkout's object DB (git worktree), so update-ref writes to

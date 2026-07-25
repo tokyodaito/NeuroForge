@@ -275,6 +275,41 @@ FROM tasks t
 GROUP BY t.project_id;
 `,
 	},
+	{
+		Version:     7,
+		Description: "create finalize_intents for crash-consistent run finalization (BF-07)",
+		Up: `
+-- Finalize intents: durable finalization protocol state (BF-07).
+-- Git refs and SQLite cannot share one physical transaction; recovery after a
+-- crash between "create result ref" and "commit terminal DB state" is driven
+-- by this intent row. Phases:
+--   pending   — classification recorded; result ref not yet ensured
+--   ref_ready — result ref created/verified at expected_sha (or N/A)
+--   (row deleted on successful terminal commit)
+CREATE TABLE IF NOT EXISTS finalize_intents (
+	workspace_id      TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+	task_id           TEXT NOT NULL,
+	outcome           TEXT NOT NULL,
+	run_terminal      TEXT NOT NULL DEFAULT '',
+	run_id            TEXT NOT NULL DEFAULT '',
+	engine            TEXT NOT NULL DEFAULT '',
+	model             TEXT NOT NULL DEFAULT '',
+	base_sha          TEXT NOT NULL DEFAULT '',
+	actual_head_sha   TEXT NOT NULL DEFAULT '',
+	expected_ref_sha  TEXT NOT NULL DEFAULT '',
+	result_branch     TEXT NOT NULL DEFAULT '',
+	commit_sha        TEXT NOT NULL DEFAULT '',
+	git_status_empty  INTEGER NOT NULL DEFAULT 1,
+	changed_files     TEXT NOT NULL DEFAULT '[]',
+	target_ws_state   TEXT NOT NULL DEFAULT '',
+	target_task_state TEXT NOT NULL DEFAULT '',
+	phase             TEXT NOT NULL DEFAULT 'pending',
+	created_at        TEXT NOT NULL,
+	updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_finalize_intents_phase ON finalize_intents (phase);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running

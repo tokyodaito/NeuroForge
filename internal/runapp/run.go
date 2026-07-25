@@ -187,6 +187,13 @@ func (s *wsManagerShim) DeleteResultRef(ctx context.Context, ws workspace.Worksp
 	return s.manager.DeleteResultRef(ctx, ws)
 }
 
+func (s *wsManagerShim) ResolveResultRef(ctx context.Context, taskID, dir string) (string, error) {
+	if s.manager == nil {
+		return "", errors.New("runapp: workspace manager not wired")
+	}
+	return s.manager.ResolveResultRef(ctx, taskID, dir)
+}
+
 // Run drives one attempt end-to-end (FR-5, FR-8, S7). It is the single owner
 // of the sequence:
 //
