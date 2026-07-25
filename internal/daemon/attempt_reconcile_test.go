@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"neuroforge/internal/audit"
@@ -130,4 +131,70 @@ func TestAttemptReconciler_ActiveNoPack_MarkedStale(t *testing.T) {
 	if updated.State != workspace.StateFailed {
 		t.Errorf("state = %s, want failed", updated.State)
 	}
+}
+
+// TestAttemptReconciler_InterruptedTransitionsTaskAndAudits verifies BF-03 /
+// STATE_MACHINE.md §5.1 + §4.3 + OUTCOME_CONTRACT.md §1.1: when the reconciler
+// finds an active workspace whose run was interrupted by the daemon restart, it
+// (1) marks the workspace failed, (2) moves the owning RUNNING task to FAILED
+// (task and workspace agree), and (3) records a durable `interrupted`
+// run.outcome_decided audit event. Re-reconciling is idempotent: the task is
+// not revived and no second interrupted event is required.
+func TestAttemptReconciler_InterruptedTransitionsTaskAndAudits(t *testing.T) {
+	wm, db, rec, ws, _ := newAttemptFixture(t)
+
+	// The task was seeded NEW; an in-flight run would have it RUNNING.
+	now := "2026-07-25T00:00:00Z"
+	mustExecDaemonTest(t, db, `UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?`, "RUNNING", now, ws.TaskID)
+
+	r := &attemptReconciler{wm: wm}
+	tx := ReconcileTx{DB: db, Audit: rec, Logger: quietLogger2()}
+	if _, err := r.Reconcile(context.Background(), tx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Workspace -> failed.
+	updated, _ := wm.Get(context.Background(), ws.ID)
+	if updated.State != workspace.StateFailed {
+		t.Fatalf("workspace state = %s, want failed", updated.State)
+	}
+	// Task -> FAILED (agrees with the terminal workspace; never revived).
+	tk, err := db.GetTask(context.Background(), ws.TaskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if tk.State != "FAILED" {
+		t.Errorf("task state = %s, want FAILED (must agree with terminal workspace)", tk.State)
+	}
+
+	// An interrupted outcome audit event exists.
+	events, err := db.ListAuditEvents(context.Background(), storage.AuditFilter{ScopeID: ws.ID})
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	foundInterrupted := false
+	for _, e := range events {
+		if e.Type == "run.outcome_decided" && auditContains(e.Payload, `"outcome":"interrupted"`) {
+			foundInterrupted = true
+		}
+	}
+	if !foundInterrupted {
+		t.Errorf("no run.outcome_decided interrupted audit event recorded")
+	}
+
+	// Idempotency: re-reconcile does not revive the task and keeps the
+	// workspace failed.
+	if _, err := r.Reconcile(context.Background(), tx); err != nil {
+		t.Fatalf("re-reconcile: %v", err)
+	}
+	tk2, _ := db.GetTask(context.Background(), ws.TaskID)
+	if tk2.State != "FAILED" {
+		t.Errorf("after re-reconcile task state = %s, want FAILED (revived?)", tk2.State)
+	}
+}
+
+// auditContains is a substring check on the JSON payload (stable enough for the
+// test's injected event).
+func auditContains(payload, want string) bool {
+	return strings.Contains(payload, want)
 }
