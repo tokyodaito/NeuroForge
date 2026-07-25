@@ -265,6 +265,10 @@ func (a *App) workspaceRun(args []string) int {
 		a.errf("connect to daemon: %v", err)
 		return ExitErr
 	}
+	// Agent runs are long-lived (minutes); the default 10s HTTP client timeout
+	// would abort them before the agent finishes. Disable the client-level
+	// timeout and rely on the context deadline below for cancellation.
+	cli.HTTP.Timeout = 0
 	// Long timeout — agent runs may take a while.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
