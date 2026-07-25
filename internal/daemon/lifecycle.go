@@ -23,8 +23,15 @@ const DefaultStopTimeout = 8 * time.Second
 // daemon is already running. It is idempotent: a repeated Start against a live,
 // healthy daemon returns ErrAlreadyRunning and never launches a second process.
 // Stale or corrupted runtime files are reclaimed first.
+//
+// BF-05 / R-2.3 (dual-daemon race): the liveness check is RETRIED a few times
+// before we conclude the daemon is down. Under heavy concurrent load a live
+// daemon's Health endpoint can be momentarily slow; without the retry, two CLIs
+// could each decide the daemon is dead, clobber its runtime files
+// (cleanRuntimeFiles), and spawn a second daemon. The retry makes the decision
+// authoritative so cleanRuntimeFiles never runs against a live daemon.
 func Start(ctx context.Context, dirs Dirs) error {
-	if isReachableAndHealthy(ctx, dirs) {
+	if isReachableAndHealthyRetried(ctx, dirs, 4, 150*time.Millisecond) {
 		return ErrAlreadyRunning
 	}
 	// Reclaim stale/corrupted runtime so the new start is clean.
@@ -56,6 +63,15 @@ func Start(ctx context.Context, dirs Dirs) error {
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	detach(cmd) // detach: new session on unix, survives parent exit
+
+	// Final defence against a dual-spawn (BF-05): a daemon may have become
+	// healthy while we prepared the spawn. Re-check immediately before
+	// launching the process and bail out if so, never clobbering a live
+	// daemon's runtime files with a second instance.
+	if isReachableAndHealthyRetried(ctx, dirs, 2, 100*time.Millisecond) {
+		_ = logf.Close()
+		return ErrAlreadyRunning
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = logf.Close()

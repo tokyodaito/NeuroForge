@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"time"
 
 	"neuroforge/internal/audit"
 	"neuroforge/internal/quality"
@@ -46,6 +48,17 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		logger = newLogger(os.Stderr)
 	}
 	logger = logger.With("component", "daemon", "pid", os.Getpid())
+
+	// BF-05 / R-2.3 (dual-daemon guard): if a healthy daemon is ALREADY serving
+	// this home, this process is a redundant spawn (a concurrent CLI lost the
+	// autostart race's timing window). Exit cleanly instead of binding a second
+	// listener and clobbering the runtime files. This is the daemon-side
+	// backstop behind the CLI's autostart lock; it makes dual-daemon creation
+	// impossible even under adverse scheduling.
+	if isReachableAndHealthyRetried(ctx, cfg.Dirs, 3, 100*time.Millisecond) {
+		logger.Info("daemon already running for this home; exiting without binding")
+		return nil
+	}
 
 	// Derive a cancellable context that signals and /shutdown can trigger.
 	runCtx, cancel := context.WithCancel(ctx)
@@ -160,6 +173,14 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	schedSvc := NewSchedulerService(wsManager, sup, services.Tasks, services.Projects, db, recorder, accounting, statistics, logger, resolveProject)
 	schedAdapter := schedSvc
 
+	// 4c-2. RunApp service (stabilization track): the user-facing `forge run`
+	// endpoint. Bypasses the scheduler/failover/postmerge/review/merge
+	// subsystems (NFR-7) and drives one production adapter end-to-end via
+	// runapp.Service.Run, with the post-run Git inspection, classifier,
+	// atomic terminal persistence and idempotent result ref (FR-1..FR-14).
+	runAppSvc := NewRunAppService(wsManager, sup, services.Tasks, services.Projects, db, recorder, accounting, logger)
+	runAppAdapter := runAppSvc
+
 	token := cfg.Token
 	if token == "" {
 		token, err = transport.GenerateToken()
@@ -180,6 +201,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		TaskAPI:           apiAdapter,
 		WorkspaceAPI:      wsAdapter,
 		SchedulerAPI:      schedAdapter,
+		RunAppAPI:         runAppAdapter,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)
@@ -188,16 +210,36 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 
 	// 5. Bind the loopback listener BEFORE writing runtime files, so the
 	// address advertised to clients is real.
+	//
+	// BF-05 / R-2.3 (dual-daemon guard): the bind + runtime-file write is the
+	// atomic "I am THE daemon for this home" claim. Serialize it across daemon
+	// processes with a dedicated bind.lock so two concurrently-spawned daemons
+	// cannot both bind. Under the lock we re-check liveness one final time; a
+	// daemon that became healthy while we waited causes this redundant process
+	// to exit without binding. The lock is released immediately after the
+	// runtime files are written.
+	bindUnlock, berr := lockFile(runCtx, filepath.Join(cfg.Dirs.Root, "bind.lock"))
+	if berr != nil {
+		return fmt.Errorf("acquire bind lock: %w", berr)
+	}
+	if isReachableAndHealthyRetried(runCtx, cfg.Dirs, 3, 100*time.Millisecond) {
+		bindUnlock()
+		logger.Info("daemon became healthy while waiting for bind lock; exiting without binding")
+		return nil
+	}
 	addr, err := srv.Listen()
 	if err != nil {
+		bindUnlock()
 		return fmt.Errorf("transport listen: %w", err)
 	}
 	baseURL := "http://" + addr.String()
 
 	// 6. Write runtime files (mode 0o600) so the CLI/TUI can reach us.
 	if err := writeRuntimeFiles(cfg.Dirs, os.Getpid(), token, baseURL); err != nil {
+		bindUnlock()
 		return fmt.Errorf("write runtime files: %w", err)
 	}
+	bindUnlock()
 	defer func() {
 		// Remove runtime files on exit so a crashed-next-time start is clean.
 		cleanRuntimeFiles(cfg.Dirs)

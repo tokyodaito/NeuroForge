@@ -54,6 +54,24 @@ func (e *jsonlEmitter) write(_ context.Context, rel, content string) error {
 	return fileWrite(e.workspace, rel, content)
 }
 
+// gitAddAll runs `git add -A` inside the executable's workspace. Used by the
+// write-commit scenario.
+func (e *jsonlEmitter) gitAddAll(_ context.Context) error {
+	if e.workspace == "" {
+		return nil
+	}
+	return gitInWorkspace(e.workspace, "add", "-A")
+}
+
+// gitCommit runs `git commit` inside the executable's workspace.
+func (e *jsonlEmitter) gitCommit(_ context.Context, msg string) error {
+	if e.workspace == "" {
+		return nil
+	}
+	return gitInWorkspace(e.workspace, "commit", "-m", msg,
+		"--author=NeuroForge Fake <fake@neuroforge.local>")
+}
+
 // RunCommand runs the fake agent in declarative command (JSONL) mode: it replays
 // the scenario, writing normalized events as JSONL to stdout, malformed lines
 // verbatim, and stderr for failures. It returns the process exit code. This is

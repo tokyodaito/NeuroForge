@@ -157,6 +157,28 @@ func isReachableAndHealthy(ctx context.Context, dirs Dirs) bool {
 	return probeStatus(ctx, dirs).State == StatusRunning
 }
 
+// isReachableAndHealthyRetried polls liveness a few times so a live-but-momentarily-slow
+// daemon is not mistaken for dead (BF-05 dual-daemon race). It returns true as
+// soon as the daemon is reachable+healthy, or false after `tries` attempts.
+func isReachableAndHealthyRetried(ctx context.Context, dirs Dirs, tries int, interval time.Duration) bool {
+	for i := 0; i < tries; i++ {
+		if isReachableAndHealthy(ctx, dirs) {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		if i < tries-1 {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(interval):
+			}
+		}
+	}
+	return false
+}
+
 // ReadLogs returns the contents of the daemon log file. If n > 0, only the last
 // n bytes are returned (tail). Missing file -> empty (no error).
 func ReadLogs(dirs Dirs, n int64) ([]byte, error) {

@@ -37,6 +37,18 @@ const (
 	ScenarioCancellation     Scenario = "cancellation"
 	ScenarioScopeViolation   Scenario = "scope-violation"
 	ScenarioUsageEvents      Scenario = "usage-events"
+	// ScenarioNoChange emits run.started + run.completed with no file writes.
+	// Used by the minimal-run black-box tests to drive the
+	// `completed-no-changes` outcome (KF-01 regression).
+	ScenarioNoChange Scenario = "no-change"
+	// ScenarioWriteCommit writes RESULT.md and commits it inside the
+	// workspace, then emits run.completed. Used by the minimal-run black-box
+	// tests to drive the `completed-with-commit` outcome (the happy path).
+	ScenarioWriteCommit Scenario = "write-commit"
+	// ScenarioWriteNoCommit writes a file but does not commit it. Used by the
+	// minimal-run tests to drive `completed-with-uncommitted-changes`.
+	// (Alias of ScenarioSuccess; explicit name keeps the test intent clear.)
+	ScenarioWriteNoCommit Scenario = "write-no-commit"
 )
 
 // AllScenarios is the full, ordered scenario catalogue (spec §33.1 + task list).
@@ -54,6 +66,9 @@ var AllScenarios = []Scenario{
 	ScenarioCancellation,
 	ScenarioScopeViolation,
 	ScenarioUsageEvents,
+	ScenarioNoChange,
+	ScenarioWriteCommit,
+	ScenarioWriteNoCommit,
 }
 
 // IsValidScenario reports whether s is a known scenario.
@@ -83,6 +98,12 @@ type step struct {
 	// exitBeforeTerminal exits the executable immediately without a terminal
 	// event (crash / partial-output). The exitCode/outcome are used.
 	exitBeforeTerminal bool
+	// gitAdd, when true, runs `git add -A` inside the workspace (in-process
+	// only). Used by the write-commit scenario to produce a real commit.
+	gitAdd bool
+	// gitCommit, when non-empty, runs `git commit -m <gitCommit>` inside the
+	// workspace (in-process only). Used by the write-commit scenario.
+	gitCommit string
 }
 
 // scriptEvent is a fully-resolved event to emit. Kind selects the payload.
@@ -255,6 +276,42 @@ func resolveScenario(s Scenario, req runParams) script {
 				{event: usageEvent(100, 50, 0, 0, 0.0001, "PROVIDER_REPORTED")},
 				{event: usageEvent(150, 90, 40, 10, 0.0002, "PROVIDER_REPORTED")},
 				{event: usageEvent(160, 120, 80, 10, 0.0003, "PROVIDER_REPORTED")},
+			},
+			outcome: outcome{terminal: "run.completed", exitCode: 0, sessionID: base.sessionID},
+		}
+	case ScenarioNoChange:
+		// run.started → run.completed, no file writes. Drives the
+		// `completed-no-changes` outcome (KF-01 regression).
+		return script{
+			steps: []step{
+				{event: &scriptEvent{kind: "run.started"}},
+				{event: &scriptEvent{kind: "message.delta", text: "nothing to do"}},
+			},
+			outcome: outcome{terminal: "run.completed", exitCode: 0, sessionID: base.sessionID},
+		}
+	case ScenarioWriteCommit:
+		// Write RESULT.md, git add + commit it, then run.completed. Drives
+		// the `completed-with-commit` outcome (the happy path). The commit
+		// runs inside the workspace path; the workspace manager's git runner
+		// is allowlisted for `add`/`commit` (git.go).
+		return script{
+			steps: []step{
+				{event: &scriptEvent{kind: "run.started"}},
+				{writePath: "RESULT.md", writeContent: "hello\n", event: fileEvent("RESULT.md", "created", true)},
+				{event: &scriptEvent{kind: "message.delta", text: "done"}},
+				{gitAdd: true},
+				{gitCommit: "agent work"},
+			},
+			outcome: outcome{terminal: "run.completed", exitCode: 0, sessionID: base.sessionID},
+		}
+	case ScenarioWriteNoCommit:
+		// Write a file but do not commit. Drives
+		// `completed-with-uncommitted-changes`. Alias of ScenarioSuccess with
+		// a clearer name for the minimal-run tests.
+		return script{
+			steps: []step{
+				{event: &scriptEvent{kind: "run.started"}},
+				{writePath: "uncommitted.txt", writeContent: "dirty\n", event: fileEvent("uncommitted.txt", "created", true)},
 			},
 			outcome: outcome{terminal: "run.completed", exitCode: 0, sessionID: base.sessionID},
 		}

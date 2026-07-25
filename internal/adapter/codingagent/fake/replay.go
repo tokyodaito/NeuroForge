@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"neuroforge/internal/adapter/codingagent/protocol"
@@ -21,6 +23,13 @@ type emitter interface {
 	emitRaw(ctx context.Context, line string) error
 	// write writes a file inside the workspace (simulates an agent edit).
 	write(ctx context.Context, path, content string) error
+	// gitAddAll runs `git add -A` inside the workspace (in-process only). Used
+	// by the write-commit scenario to produce a real commit. Implementations
+	// that have no workspace (e.g. tests without a worktree) return nil.
+	gitAddAll(ctx context.Context) error
+	// gitCommit runs `git commit -m <msg>` inside the workspace (in-process
+	// only). Used by the write-commit scenario.
+	gitCommit(ctx context.Context, msg string) error
 }
 
 // ErrReplayCancelled is returned by [replay] when the run was cancelled mid-play.
@@ -63,6 +72,19 @@ func replay(ctx context.Context, sc script, p runParams, em emitter) (outcome, e
 		}
 		if st.exitBeforeTerminal {
 			return sc.outcome, nil
+		}
+		// In-process git side effects (write-commit scenario). The executable
+		// ignores these; the in-process adapter performs them against the
+		// worktree.
+		if st.gitAdd {
+			if err := em.gitAddAll(ctx); err != nil {
+				return sc.outcome, err
+			}
+		}
+		if st.gitCommit != "" {
+			if err := em.gitCommit(ctx, st.gitCommit); err != nil {
+				return sc.outcome, err
+			}
 		}
 		if st.hang {
 			// Block until cancelled. The cancellation scenario then emits its
@@ -167,4 +189,17 @@ func fileWrite(workspace, rel, content string) error {
 		return err
 	}
 	return os.WriteFile(abs, []byte(content), 0o644)
+}
+
+// gitInWorkspace runs git with the given args inside the workspace. It is the
+// in-process counterpart of the executable's git-commit step (used by the
+// write-commit scenario so the fake adapter can produce a real commit). All
+// subcommands are local git operations — no network (AC-7).
+func gitInWorkspace(workspace string, args ...string) error {
+	full := append([]string{"-C", workspace}, args...)
+	cmd := exec.CommandContext(context.Background(), "git", full...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return errors.New("fake: git " + strings.Join(args, " ") + ": " + err.Error() + ": " + string(out))
+	}
+	return nil
 }
