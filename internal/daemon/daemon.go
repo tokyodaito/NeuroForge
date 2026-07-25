@@ -9,8 +9,6 @@ import (
 	"os"
 	"os/signal"
 
-	"neuroforge/internal/adapter/codingagent"
-	"neuroforge/internal/adapter/codingagent/fake"
 	"neuroforge/internal/audit"
 	"neuroforge/internal/quality"
 	"neuroforge/internal/storage"
@@ -122,10 +120,16 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// The supervisor runs agents with an allowlisted environment (AC-28).
 	leaseManager := workgraph.NewLeaseManager(db)
 
-	// Register the fake coding agent so the supervisor can run it (rule §36.6).
-	adapterRegistry := codingagent.Default()
-	if !hasAdapter(adapterRegistry, "fake") {
-		adapterRegistry.MustRegister(fake.New(fake.AdapterOptions{Installed: true}), 0)
+	// Register the coding-agent engines the supervisor can dispatch. Every
+	// first-party production adapter (codex, claude, gemini, kimi, grok,
+	// opencode) is registered via the shared builtin registry, then the fake
+	// agent is layered on top (rule §36.6: build the fake first; the six
+	// production engines are surfaced from one place so the core never
+	// references a provider by name — spec §13.3). A fresh registry is built
+	// per daemon so repeated in-process starts (tests) never double-register.
+	adapterRegistry, err := buildAdapterRegistry()
+	if err != nil {
+		return fmt.Errorf("register coding-agent adapters: %w", err)
 	}
 
 	sup := supervisor.New(supervisor.Options{
