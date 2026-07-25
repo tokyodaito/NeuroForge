@@ -364,10 +364,23 @@ func (a *Adapter) supervise(ctx context.Context, st *runState, runID, engine, mo
 	// Stream ended (EOF) before/after a terminal event. Wait for the process to
 	// collect its exit code + captured stderr, then synthesize a terminal event
 	// if the agent did not emit one itself (e.g. a crash).
-	_ = readerDone
+	//
+	// KF-09 / invariant I.9: a cancel/timeout cause was recorded BEFORE the kill
+	// that induced this EOF, so check it first. A kill-induced EOF must never
+	// synthesize a non-cancelled/non-timeout terminal from the SIGKILL exit
+	// code. Priority: timeout > cancellation > natural exit.
+	<-readerDone
 	waitErr := st.proc.Wait()
 	exitCode := exitCodeFrom(waitErr)
 	if sawTerminal {
+		return
+	}
+	switch st.currentCause() {
+	case cancelTimeout:
+		_ = sink.OnEvent(context.Background(), mkTimeoutTerminal(mk))
+		return
+	case cancelUser:
+		_ = sink.OnEvent(context.Background(), mkCancelTerminal(mk))
 		return
 	}
 	stderr := redact(st.stderr.String())
@@ -381,6 +394,21 @@ func (a *Adapter) supervise(ctx context.Context, st *runState, runID, engine, mo
 		term.Failure = &protocol.FailurePayload{Class: fc.Class, Reason: fc.Reason, ExitCode: exitCode}
 	}
 	_ = sink.OnEvent(context.Background(), term)
+}
+
+// mkCancelTerminal builds the run.cancelled terminal for the post-EOF path.
+func mkCancelTerminal(mk func(protocol.EventType) protocol.NormalizedEvent) protocol.NormalizedEvent {
+	term := mk(protocol.EventRunCancelled)
+	term.Failure = &protocol.FailurePayload{Class: protocol.FailureCancelled, Reason: "cancelled by caller"}
+	return term
+}
+
+// mkTimeoutTerminal builds the run.failed(TIMEOUT) terminal for the post-EOF
+// path.
+func mkTimeoutTerminal(mk func(protocol.EventType) protocol.NormalizedEvent) protocol.NormalizedEvent {
+	term := mk(protocol.EventRunFailed)
+	term.Failure = &protocol.FailurePayload{Class: protocol.FailureTimeout, Reason: "claude: run exceeded its wall-clock timeout", ExitCode: 0}
+	return term
 }
 
 // abortRun kills the process group and waits for the reader goroutine to

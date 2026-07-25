@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"neuroforge/internal/adapter/codingagent"
@@ -45,11 +46,37 @@ type Adapter struct {
 }
 
 // runState tracks one live run for cancellation and process-tree cleanup.
+//
+// Terminal arbitration (KF-09 / invariant I.9): cancel/timeout intents are
+// recorded before the process group is killed, so a kill-induced EOF can never
+// be observed before the intent is visible.
 type runState struct {
 	cmd      *exec.Cmd
 	cancel   context.CancelFunc
 	timedOut *bool // shared flag: true when the run ended due to req.Timeout
 	mu       sync.Mutex
+
+	cancelOnce      sync.Once
+	cancelRequested atomic.Bool
+}
+
+// requestCancel records the cancel intent, cancels the run context, and kills
+// the process group — once, idempotently. Intent is set BEFORE the kill.
+func (st *runState) requestCancel() {
+	st.cancelOnce.Do(func() {
+		st.cancelRequested.Store(true)
+		if st.cancel != nil {
+			st.cancel()
+		}
+		_ = proctree.KillGroup(st.cmd, proctree.SigKill)
+	})
+}
+
+// isTimedOut reports whether the hard timeout fired, under the state lock.
+func (st *runState) isTimedOut() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.timedOut != nil && *st.timedOut
 }
 
 // New returns a Kimi adapter configured by opts.
@@ -196,8 +223,10 @@ func (a *Adapter) Cancel(_ context.Context, handle protocol.RunHandle) error {
 	if !ok {
 		return fmt.Errorf("kimi: unknown run %q", handle.RunID)
 	}
-	st.cancel()
-	return proctree.KillGroup(st.cmd, proctree.SigKill)
+	// Record the cancel intent BEFORE the kill so a kill-induced EOF cannot
+	// produce a non-cancelled terminal (KF-09 / invariant I.9).
+	st.requestCancel()
+	return nil
 }
 
 // ClassifyFailure implements codingagent.Adapter.
@@ -443,7 +472,30 @@ func (a *Adapter) supervise(ctx context.Context, runID string, st *runState, std
 	}
 
 	if !sawTerminal {
-		_ = sink.OnEvent(context.Background(), a.synthesizeTerminal(runID, exitCode, stderr))
+		// KF-09 / invariant I.9: single terminal decision. A cancel/timeout
+		// intent was recorded BEFORE the kill that induced this EOF, so honour
+		// it here — never synthesize a non-cancelled terminal from the SIGKILL
+		// exit code. Priority: timeout > cancellation > natural exit.
+		_ = sink.OnEvent(context.Background(), a.decideTerminal(runID, st, exitCode, stderr))
+	}
+}
+
+// decideTerminal picks the single terminal event for a run from the recorded
+// intents (set before any kill) or, failing those, from the exit code.
+func (a *Adapter) decideTerminal(runID string, st *runState, exitCode int, stderr string) protocol.NormalizedEvent {
+	switch {
+	case st.isTimedOut():
+		return protocol.NormalizedEvent{
+			Type: protocol.EventRunFailed, Timestamp: time.Now(), RunID: runID, Engine: "kimi",
+			Failure: &protocol.FailurePayload{Class: protocol.FailureTimeout, Reason: "kimi: run exceeded its wall-clock timeout", ExitCode: exitCode},
+		}
+	case st.cancelRequested.Load():
+		return protocol.NormalizedEvent{
+			Type: protocol.EventRunCancelled, Timestamp: time.Now(), RunID: runID, Engine: "kimi",
+			Failure: &protocol.FailurePayload{Class: protocol.FailureCancelled, Reason: "cancelled by caller", ExitCode: exitCode},
+		}
+	default:
+		return a.synthesizeTerminal(runID, exitCode, stderr)
 	}
 }
 

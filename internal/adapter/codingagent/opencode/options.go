@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"neuroforge/internal/adapter/codingagent/protocol"
@@ -75,6 +76,12 @@ func New(opts Options) *Adapter {
 }
 
 // runState tracks one live run for cancellation and timeout.
+//
+// Terminal arbitration (KF-09 / invariant I.9): cancel/timeout intents are
+// recorded in [runState.cancelRequested]/[runState.timedOut] BEFORE the process
+// group is killed, so a kill-induced EOF can never be observed by supervise
+// before the intent is visible. This makes the terminal decision deterministic
+// (single-owner, decided once in supervise).
 type runState struct {
 	proc     runProcess
 	cancel   context.CancelFunc // cancels the run's supervision context
@@ -83,6 +90,25 @@ type runState struct {
 	model    string
 	timeout  time.Duration
 	isResume bool
+
+	cancelOnce      sync.Once
+	cancelRequested atomic.Bool
+	timedOut        atomic.Bool
+}
+
+// requestCancel records the cancel intent, cancels the supervision context, and
+// kills the process group — exactly once, idempotently. The intent flag is set
+// BEFORE the kill so a kill-induced EOF cannot race ahead of the decision.
+func (st *runState) requestCancel() {
+	st.cancelOnce.Do(func() {
+		st.cancelRequested.Store(true)
+		if st.cancel != nil {
+			st.cancel()
+		}
+		if st.proc != nil {
+			_ = st.proc.Kill()
+		}
+	})
 }
 
 // detection is the internal, cached form of [protocol.DetectionResult].
