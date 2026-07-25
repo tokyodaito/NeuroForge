@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"neuroforge/internal/audit"
@@ -93,7 +92,6 @@ type Backlog struct {
 	logger       *slog.Logger
 	artifactsDir string
 	now          func() time.Time
-	seq          atomic.Int64
 }
 
 // NewBacklog creates a Backlog backed by db. Attachments are stored
@@ -139,8 +137,24 @@ func (b *Backlog) Add(ctx context.Context, req AddRequest) (Task, error) {
 		priority = PriorityNormal
 	}
 
-	id := b.nextID(req.ProjectID)
 	now := b.now()
+
+	// Persist the task, its attachments, and the audit event inside one SQLite
+	// transaction so the backlog mutation is durable atomically before any
+	// external action (spec §11.4, ADR-0003). The task id's per-project
+	// sequence is reserved inside this same transaction so it is
+	// restart-safe and concurrency-safe (no collision after daemon restart,
+	// no reuse of a deleted task's id).
+	tx, err := b.db.BeginTx(ctx)
+	if err != nil {
+		return Task{}, fmt.Errorf("task: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	id, err := b.nextID(ctx, tx, req.ProjectID)
+	if err != nil {
+		return Task{}, err
+	}
 
 	t := Task{
 		ID:          id,
@@ -153,15 +167,6 @@ func (b *Backlog) Add(ctx context.Context, req AddRequest) (Task, error) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-
-	// Persist the task, its attachments, and the audit event inside one SQLite
-	// transaction so the backlog mutation is durable atomically before any
-	// external action (spec §11.4, ADR-0003).
-	tx, err := b.db.BeginTx(ctx)
-	if err != nil {
-		return Task{}, fmt.Errorf("task: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	if err := tx.CreateTask(ctx, storage.Task{
 		ID:          t.ID,
@@ -406,10 +411,17 @@ func mimeTypeFor(filename string) string {
 	return mt
 }
 
-// nextID generates a task id. Format: <projectID>-<seq>.
-func (b *Backlog) nextID(projectID string) string {
-	n := b.seq.Add(1)
-	return fmt.Sprintf("%s-%d", projectID, n)
+// nextID generates a task id. Format: <projectID>-<seq>. The sequence is
+// reserved transactionally via [storage.Tx.NextTaskSeq] so it survives daemon
+// restarts and concurrent task creation without colliding (blocker fix:
+// persistent sequence). tx must be the same transaction the task row is
+// inserted under.
+func (b *Backlog) nextID(ctx context.Context, tx *storage.Tx, projectID string) (string, error) {
+	seq, err := tx.NextTaskSeq(ctx, projectID)
+	if err != nil {
+		return "", fmt.Errorf("task: reserve id: %w", err)
+	}
+	return fmt.Sprintf("%s-%d", projectID, seq), nil
 }
 
 // auditTaskTx records one task-scoped audit event into tx. Because it shares

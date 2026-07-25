@@ -240,6 +240,41 @@ CREATE TABLE IF NOT EXISTS project_memory (
 CREATE INDEX IF NOT EXISTS idx_memory_project ON project_memory (project_id, category);
 `,
 	},
+	{
+		Version:     6,
+		Description: "create task_sequences for persistent collision-free task ids (AC: restart/concurrency safety)",
+		Up: `
+-- Persistent per-project sequence backing task id generation. Without this the
+-- task.Backlog held the sequence in an atomic counter that reset to zero on
+-- every daemon restart, producing duplicate ids (<project>-1) that failed the
+-- tasks.id UNIQUE constraint (blocker: task id collision after restart). The
+-- sequence is monotonic and never reused (deleted tasks keep their id; the
+-- counter only moves forward) — spec §11.4 durable ids.
+CREATE TABLE IF NOT EXISTS task_sequences (
+	project_id TEXT PRIMARY KEY,
+	next_seq   INTEGER NOT NULL DEFAULT 1
+);
+
+-- Backfill each project's next_seq from existing task ids so an existing
+-- database migrates without regressing and re-colliding. Only pure-numeric
+-- suffixes (the format task.Backlog emits: <project_id>-<seq>) are counted; any
+-- non-conforming id contributes 0 and is left untouched. next_seq stores the
+-- LAST issued sequence number; NextTaskSeq increments-then-returns, so seeding
+-- to the max existing suffix makes the first post-migration task id strictly
+-- greater than every existing one (no collision, no gap).
+INSERT INTO task_sequences (project_id, next_seq)
+SELECT t.project_id,
+       COALESCE(MAX(
+           CASE WHEN SUBSTR(t.id, LENGTH(t.project_id) + 2) =
+                     CAST(CAST(SUBSTR(t.id, LENGTH(t.project_id) + 2) AS INTEGER) AS TEXT)
+                THEN CAST(SUBSTR(t.id, LENGTH(t.project_id) + 2) AS INTEGER)
+                ELSE 0
+           END
+       ), 0) AS next_seq
+FROM tasks t
+GROUP BY t.project_id;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running

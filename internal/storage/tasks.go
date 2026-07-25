@@ -197,3 +197,32 @@ FROM task_attachments WHERE task_id = ? ORDER BY id`, taskID)
 
 // ErrTaskNotFound is returned when a task row is expected but absent.
 var ErrTaskNotFound = fmt.Errorf("task not found")
+
+// NextTaskSeq atomically reserves and returns the next sequence number for
+// projectID, within tx. It upserts the task_sequences row (incrementing the
+// per-project counter) and reads back the new value. Because both statements
+// share tx, and SQLite serialises writers, this is concurrency-safe and
+// restart-safe: the counter lives in durable storage and only ever moves
+// forward (deleted tasks never reuse an id).
+//
+// The caller MUST hold tx across the subsequent task insert so the reserved
+// sequence and the task row commit atomically (or roll back together).
+func (t *Tx) NextTaskSeq(ctx context.Context, projectID string) (int64, error) {
+	if projectID == "" {
+		return 0, fmt.Errorf("storage: project id is required for task sequence")
+	}
+	if _, err := t.tx.ExecContext(ctx, `
+INSERT INTO task_sequences (project_id, next_seq) VALUES (?, 1)
+ON CONFLICT(project_id) DO UPDATE SET next_seq = next_seq + 1`, projectID); err != nil {
+		return 0, fmt.Errorf("storage: reserve task sequence: %w", err)
+	}
+	var seq int64
+	if err := t.tx.QueryRowContext(ctx,
+		`SELECT next_seq FROM task_sequences WHERE project_id = ?`, projectID).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("storage: read task sequence: %w", err)
+	}
+	if seq <= 0 {
+		return 0, fmt.Errorf("storage: task sequence for %q is corrupt (got %d)", projectID, seq)
+	}
+	return seq, nil
+}
