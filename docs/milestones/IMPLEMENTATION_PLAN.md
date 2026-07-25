@@ -474,13 +474,47 @@ Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
 
 > Spec §5, §24, §25, §27.
 
-- **M8-1 — Stage toggles + dependency enforcement** (§5/§5.1). **Allowed:** `internal/policy`. **AC:** AC-11..AC-14, AC-29.
-- **M8-2 — Test engine** (progressive verification §24.3). **Allowed:** `internal/testengine` (new).
-- **M8-3 — Tests generate/run toggles + scope validator** (§24.2). **AC:** AC-11, AC-12.
-- **M8-4 — Review engine** (§25). **Allowed:** `internal/review` (new). **AC:** AC-13.
-- **M8-5 — Verification evidence linking** (§27).
-- **M8-6 — Repair loops.**
-- **M8-7 — Scenario:** no-test/no-review task; LOCAL result labels (§24.4/§25.1).
+- **M8-1 — Stage toggles + dependency enforcement** (§5/§5.1). **Allowed:** `internal/policy`. **AC:** AC-11..AC-14, AC-29. `[DONE]`
+  — Extended the policy core with the §24.1 test toggles (generate,
+  modify_existing, run_existing, run_generated, require_for_local_result,
+  require_for_remote_merge), new Actions (ActModifyExistingTests,
+  ActRunGeneratedTests, ActSecurityReview, ActArchReview), normalisation rules
+  R6 (generate=false → modify_existing=false) and R7 (generate=false →
+  run_generated=false), the §24.2 test-path scope validator (CheckTestScope /
+  CheckFileChanges — test paths forbidden when generation is off), and the
+  pipeline stage status (StageStatus / LocalResultLabels) that explicitly shows
+  skipped/locked stages and renders the §24.4/§25.1 labels.
+- **M8-2 — Test engine** (progressive verification §24.3). **Allowed:** `internal/testengine` (new). `[DONE]`
+  — Progressive verification levels (syntax → compile → targeted → module →
+  full); stops after the first failure; skips test levels entirely when tests
+  are disabled. Deterministic FakeRunner for offline testing (rule §36.5).
+- **M8-3 — Tests generate/run toggles + scope validator** (§24.2). **AC:** AC-11, AC-12. `[DONE]`
+  — testengine.ScopeValidator enforces the §24.2 rule: when generation is off,
+  test file changes are rejected. generate/modifying/run-existing/run-generated
+  are all independent toggles subject to the R6/R7 dependency rules.
+- **M8-4 — Review engine** (§25). **Allowed:** `internal/review` (new). **AC:** AC-13. `[DONE]`
+  — Three independent review roles (correctness/AI, architecture, security);
+  each toggleable; AC-29 mandatory enforcement via policy.Resolve; Finding
+  model (blocker/major/minor/info) consumed by the Merge Governor; deterministic
+  FakeReviewer.
+- **M8-5 — Verification evidence linking** (§27). `[DONE]` — `internal/evidence`
+  (new): each acceptance criterion linked to typed evidence (test/visual/static/
+  manual/review); confidence lowered when tests are disabled (§27); completeness
+  gate consumed by the Merge Governor (§28).
+- **M8-6 — Repair loops.** `[DONE]` — `internal/repair` (new): bounded repair loop
+  collecting findings from test + review engines; builds a targeted repair
+  context per §22.5 (finding + diff + failing test — NOT the full conversation);
+  bounded by MaxIterations (rule §32: no infinite retry); history recorded for
+  audit.
+- **M8-7 — Scenario:** no-test/no-review task; LOCAL result labels (§24.4/§25.1). `[DONE]`
+  — `internal/m8integration`: comprehensive table-driven integration tests for
+  all main flag combinations (full pipeline, no-test, no-review, tests-off/
+  review-on, tests-on/review-off, remote-review, autonomous with failures,
+  gen-off auto-disables run-generated, partial reviews). Plus dedicated critical
+  tests: test-paths-forbidden (§24.2), override-cannot-weaken-mandatory (AC-29),
+  automatic-merge-cannot-bypass-mandatory-checks (§24.5), pipeline-status-shows-
+  skipped-stages, repair-loop-resolves, evidence-confidence-lowered, independent
+  push/PR/merge.
 
 ---
 

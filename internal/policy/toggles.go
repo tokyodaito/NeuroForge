@@ -45,12 +45,23 @@ type DesignConfig struct {
 	VisualVerification bool
 }
 
-// TestsConfig holds the test-stage toggles (§5.tests).
+// TestsConfig holds the test-stage toggles (§5.tests, §24.1).
 type TestsConfig struct {
-	Generate              bool
-	RunExisting           bool
-	RunGenerated          bool
+	Generate bool
+	// ModifyExisting controls whether existing test files may be edited. When
+	// Generate is false, ModifyExisting is structurally forced off (§24.2: a
+	// disabled test-generation stage forbids creating OR modifying test files).
+	ModifyExisting bool
+	RunExisting    bool
+	RunGenerated   bool
+	// RequiredForCompletion is the §5.tests.required_for_completion flag.
 	RequiredForCompletion bool
+	// RequireForLocalResult mirrors §24.1 require_for_local_result: when true a
+	// local-only result may not be marked TESTED without tests having run.
+	RequireForLocalResult bool
+	// RequireForRemoteMerge mirrors §24.1 require_for_remote_merge: when true a
+	// merge requires tests (the Merge Governor consumes this, §24.5).
+	RequireForRemoteMerge bool
 }
 
 // ReviewConfig holds the review-stage toggles (§5.review).

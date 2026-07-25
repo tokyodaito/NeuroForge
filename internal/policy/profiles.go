@@ -57,12 +57,17 @@ func ProfileDefaults(p Profile) Pipeline {
 			Planning:       true,
 			Design:         DesignConfig{VisualVerification: true},
 			Implementation: false,
-			Tests:          TestsConfig{RunExisting: true, RequiredForCompletion: true},
-			Review:         ReviewConfig{AIReview: true, SecurityReview: TriAuto, ArchitectureReview: TriAuto},
-			Git:            GitConfig{LocalCheckpointCommits: false, FinalLocalCommit: false, Push: false},
-			ChangeRequest:  ChangeRequestConfig{Create: false, UpdateExisting: false},
-			Merge:          false,
-			PostMerge:      PostMergeConfig{Enabled: false, AutoRevert: false},
+			Tests: TestsConfig{
+				ModifyExisting:        false,
+				RunExisting:           true,
+				RequiredForCompletion: true,
+				RequireForRemoteMerge: true,
+			},
+			Review:        ReviewConfig{AIReview: true, SecurityReview: TriAuto, ArchitectureReview: TriAuto},
+			Git:           GitConfig{LocalCheckpointCommits: false, FinalLocalCommit: false, Push: false},
+			ChangeRequest: ChangeRequestConfig{Create: false, UpdateExisting: false},
+			Merge:         false,
+			PostMerge:     PostMergeConfig{Enabled: false, AutoRevert: false},
 		}
 
 	case ProfileLocalReview:
@@ -72,12 +77,19 @@ func ProfileDefaults(p Profile) Pipeline {
 			Planning:       true,
 			Design:         DesignConfig{VisualVerification: true},
 			Implementation: true,
-			Tests:          TestsConfig{Generate: true, RunExisting: true, RunGenerated: true, RequiredForCompletion: true},
-			Review:         ReviewConfig{AIReview: true, SecurityReview: TriAuto, ArchitectureReview: TriAuto},
-			Git:            GitConfig{LocalCheckpointCommits: true, FinalLocalCommit: true, Push: false},
-			ChangeRequest:  ChangeRequestConfig{Create: false, UpdateExisting: false},
-			Merge:          false,
-			PostMerge:      PostMergeConfig{Enabled: false, AutoRevert: false},
+			Tests: TestsConfig{
+				Generate:              true,
+				ModifyExisting:        true,
+				RunExisting:           true,
+				RunGenerated:          true,
+				RequiredForCompletion: true,
+				RequireForRemoteMerge: true,
+			},
+			Review:        ReviewConfig{AIReview: true, SecurityReview: TriAuto, ArchitectureReview: TriAuto},
+			Git:           GitConfig{LocalCheckpointCommits: true, FinalLocalCommit: true, Push: false},
+			ChangeRequest: ChangeRequestConfig{Create: false, UpdateExisting: false},
+			Merge:         false,
+			PostMerge:     PostMergeConfig{Enabled: false, AutoRevert: false},
 		}
 
 	case ProfileRemoteReview:
@@ -100,12 +112,19 @@ func ProfileDefaults(p Profile) Pipeline {
 			Planning:       true,
 			Design:         DesignConfig{VisualVerification: true},
 			Implementation: true,
-			Tests:          TestsConfig{Generate: true, RunExisting: true, RunGenerated: true, RequiredForCompletion: true},
-			Review:         ReviewConfig{AIReview: true, SecurityReview: TriAuto, ArchitectureReview: TriAuto},
-			Git:            GitConfig{LocalCheckpointCommits: true, FinalLocalCommit: true, Push: false},
-			ChangeRequest:  ChangeRequestConfig{Create: false, UpdateExisting: false},
-			Merge:          false,
-			PostMerge:      PostMergeConfig{Enabled: false, AutoRevert: false},
+			Tests: TestsConfig{
+				Generate:              true,
+				ModifyExisting:        true,
+				RunExisting:           true,
+				RunGenerated:          true,
+				RequiredForCompletion: true,
+				RequireForRemoteMerge: true,
+			},
+			Review:        ReviewConfig{AIReview: true, SecurityReview: TriAuto, ArchitectureReview: TriAuto},
+			Git:           GitConfig{LocalCheckpointCommits: true, FinalLocalCommit: true, Push: false},
+			ChangeRequest: ChangeRequestConfig{Create: false, UpdateExisting: false},
+			Merge:         false,
+			PostMerge:     PostMergeConfig{Enabled: false, AutoRevert: false},
 		}
 	}
 }

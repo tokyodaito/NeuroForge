@@ -16,14 +16,16 @@ type Adjustment struct {
 // security: it only forces downstream toggles OFF when an upstream capability is
 // off.
 //
-// Rules (spec §5.1):
+// Rules (spec §5.1, §24.2):
 //
-//	R1  git.push=false  ⇒ change_request.create=false
-//	R2  git.push=false  ⇒ merge=false
-//	R3  git.push=false  ⇒ post_merge.enabled=false
-//	R4  merge=false     ⇒ post_merge.enabled=false
-//	R5  change_request.create=false & merge=true ⇒ allowed only as a local-merge
-//	    mode (reported as an informational adjustment, not a violation).
+//	R1  git.push=false             ⇒ change_request.create=false
+//	R2  git.push=false             ⇒ merge=false
+//	R3  git.push=false             ⇒ post_merge.enabled=false
+//	R4  merge=false                ⇒ post_merge.enabled=false
+//	R5  change_request.create=false & merge=true ⇒ local-merge mode (info only)
+//	R6  tests.generate=false       ⇒ tests.modify_existing=false (§24.2: a disabled
+//	    generation stage forbids creating OR modifying test files)
+//	R7  tests.generate=false       ⇒ tests.run_generated=false (nothing to run)
 //
 // Normalize is idempotent: normalising an already-normalised pipeline is a no-op.
 func Normalize(p Pipeline) (Pipeline, []Adjustment) {
@@ -71,6 +73,27 @@ func Normalize(p Pipeline) (Pipeline, []Adjustment) {
 			Field: "merge.mode", From: "remote", To: "local-only",
 			Reason: "change_request.create=false (§5.1 R5: local merge mode)",
 		})
+	}
+
+	// R6: tests.generate=false forces modify_existing off (§24.2: a disabled
+	// generation stage forbids creating OR modifying test files; the scope
+	// validator enforces this at the path level, and the toggle is normalised
+	// here so callers see the effective value).
+	if !out.Tests.Generate && out.Tests.ModifyExisting {
+		adj = append(adj, Adjustment{
+			Field: "tests.modify_existing", From: "true", To: "false",
+			Reason: "tests.generate=false (§24.2 R6: test paths forbidden)",
+		})
+		out.Tests.ModifyExisting = false
+	}
+
+	// R7: tests.generate=false forces run_generated off (nothing generated to run).
+	if !out.Tests.Generate && out.Tests.RunGenerated {
+		adj = append(adj, Adjustment{
+			Field: "tests.run_generated", From: "true", To: "false",
+			Reason: "tests.generate=false (§24.2 R7: no generated tests to run)",
+		})
+		out.Tests.RunGenerated = false
 	}
 
 	return out, adj

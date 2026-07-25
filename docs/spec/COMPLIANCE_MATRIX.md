@@ -28,10 +28,10 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-8 | Code saved in a separate local result branch | done (M3: `forge/result/<task-id>` local branch created by workspace manager; checkpoint commits never auto-merge to main) | M3 | M3-5 | `internal/workspace` |
 | AC-9 | Open diff and worktree from TUI | done (M3: `/workspaces/{id}/diff` and workspace path exposed via API; TUI reachable through daemon transport) | M3 | M3-5 | `internal/workspace`, `internal/transport` |
 | AC-10 | Accept / reject / ask-for-changes | done (M3: keep/reject/ask review lifecycle via `POST /workspaces/{id}/review`; reject deletes only managed worktree, never user data) | M3/M11 | M3-5, M11-2 | `internal/workspace` |
-| AC-11 | Disable test generation | planned | M8 | M8-3 | `internal/policy`, `internal/testengine` |
-| AC-12 | Disable running existing tests separately | planned | M8 | M8-3 | `internal/policy`, `internal/testengine` |
-| AC-13 | Disable AI-review | planned | M8 | M8-4 | `internal/policy`, `internal/review` |
-| AC-14 | Push / PR-MR / merge switchable separately | planned | M8/M11 | M8-1, M11-6 | `internal/policy`, `internal/adapter/vcs` |
+| AC-11 | Disable test generation | done (M8: tests.generate toggle; when off, test paths become forbidden via the §24.2 scope validator and normalisation R6/R7 force modify_existing/run_generated off) | M8 | M8-1, M8-3 | `internal/policy`, `internal/testengine` |
+| AC-12 | Disable running existing tests separately | done (M8: tests.run_existing is an independent toggle; run_generated is separate; both gated by the progressive test engine) | M8 | M8-3 | `internal/policy`, `internal/testengine` |
+| AC-13 | Disable AI-review | done (M8: review.ai_review, architecture_review, security_review are independent toggles; §25.1 NOT AI-REVIEWED label when all off) | M8 | M8-4 | `internal/policy`, `internal/review` |
+| AC-14 | Push / PR-MR / merge switchable separately | done (M8: independent toggles with §5.1 dependency rules; the Merge Governor decision function returns the highest permitted delivery action) | M8/M11 | M8-1, M11-6 | `internal/policy`, `internal/merge` |
 | AC-15 | Quota failure after edits → continuation via fallback, checkpoint kept | done (M7: cross-engine failover controller writes a continuation pack at the pre-quota-switch checkpoint, opens the circuit on the primary account, selects a fallback route and continues from the current state — the fallback receives ONLY the pack, never the full conversation; completed steps are deduped so they are not repeated; bounded recovery, no infinite retry) | M7 | M7-1, M7-5 | `internal/supervisor`, `internal/workspace` |
 | AC-16 | Simple task → cheap route | done (M6: deterministic router maps C0→TINY/C1→SMALL via §19.3 base tiers; table-driven + scenario tests; exhausted accounts excluded) | M6 | M6-4 | `internal/router` |
 | AC-17 | Complex task → strong model | done (M6: C3/C4 escalate to HEAVY/FRONTIER; risk R3/R4 floors the tier; fallback chain per §21.1) | M6 | M6-4 | `internal/router` |
@@ -46,7 +46,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
 | AC-27 | Daemon resumes unfinished tasks after restart | partial→done (M0: startup reconciliation framework; M3: workspace reconciler; M7: attempt reconciler recovers in-flight attempts — an active workspace with a checkpoint + continuation pack is reconciled as resumable; an interrupted run is marked failed so it is not treated as live; the durable pack survives restart so the failover controller can resume. The framework never auto-resumes a delivery operation.) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace`, `internal/supervisor` |
 | AC-28 | Agent has no merge credentials | done (M3: supervisor builds a positive-allowlist environment that strips GITHUB_TOKEN/GITLAB_TOKEN/AWS_SECRET/etc.; AssertEnvSafe verifies no leak; tested) | M3 | M3-4 | `internal/supervisor` |
-| AC-29 | Non-disableable security policy cannot be weakened by task override | partial (M0: policy core enforces AC-29 invariant; full pipeline wiring in M8-1) | M0/M8 | M0-7, M8-1 | `internal/policy` |
+| AC-29 | Non-disableable security policy cannot be weakened by task override | done (M0: policy core enforces AC-29 invariant; M8: full pipeline wiring — scope validator, review engine, Merge Governor all consult the resolved policy which restores mandatory checks) | M0/M8 | M0-7, M8-1 | `internal/policy` |
 | AC-30 | Full task history available in audit | done (M1: project/task lifecycle events — added/removed/state_changed — all recorded in append-only audit store; `forge daemon logs -f` for live events) | M0+ | M0-6, M1-1, M1-5 | `internal/audit` |
 
 ## CLI surface (spec §30)
@@ -114,8 +114,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only |
 | 13 | No push in LOCAL_REVIEW | done (M3) — git runner allowlist structurally excludes push/fetch/pull/clone/ls-remote; integration-tested (AC-7) |
 | 14 | Never modify primary checkout | done (M3: worktree isolation verified by integration test — HEAD SHA + working tree files unchanged after workspace create/run/checkpoint/result) | ADR-0007 |
-| 15 | Agent cannot change project security policy | done (core) — `internal/policy` AC-29 enforcement; full wiring in M8-1 |
-| 16 | Agent cannot disable checks that validate its output | done (core) — `internal/policy` mandatory checks; full wiring in M8-1 |
+| 15 | Agent cannot change project security policy | done — `internal/policy` AC-29 enforcement; M8 wiring in testengine/review/merge |
+| 16 | Agent cannot disable checks that validate its output | done — `internal/policy` mandatory checks + M8 review/merge enforcement |
 | 17–18 | No silent install / privilege escalation | planned — M13-3 |
 | 19 | No provider CLI update during active run | planned — M13-5 |
 | 20 | App builds + demonstrable scenario after each milestone | enforced — `make check` gate |
@@ -584,3 +584,64 @@ adapter. The failover controller consumes the stabilized §32 taxonomy +
   polling that arrives with the scheduler wiring; the recovery classifier +
   reconciler already handle the decision correctly once a route becomes
   available.
+
+## Milestone M8 — Configurable tests and review — what is implemented
+
+- **Stage toggles + dependency enforcement** (`internal/policy`, §5/§5.1, AC-29):
+  extended the policy core with the §24.1 test toggles (generate,
+  modify_existing, run_existing, run_generated, require_for_local_result,
+  require_for_remote_merge) and new Actions. Normalisation rules R6 (generate=
+  false → modify_existing=false) and R7 (generate=false → run_generated=false)
+  enforce the §24.2 cascade. The AC-29 invariant (task override cannot weaken
+  mandatory security policy) is wired through the full pipeline.
+- **Test-path scope validator** (`internal/policy/scope.go` + `internal/testengine/
+  scope.go`, §24.2): when test generation is disabled, test file changes are
+  structurally forbidden. The validator recognises test paths across Go, JS/TS,
+  Python, Java, Ruby, and generic `test/`/`__tests__/`/`src/test/` conventions.
+- **Pipeline stage status** (`internal/policy/stages.go`): an explicit, human-
+  readable breakdown showing which stages are active, skipped, or locked. Renders
+  the §24.4/§25.1 local-result labels (IMPLEMENTED / NOT TESTED / NOT REVIEWED /
+  LOCAL BRANCH ONLY). Locked stages (push/CR/merge under LOCAL_REVIEW) are
+  distinguished from merely skipped ones.
+- **Test engine** (`internal/testengine`, §24.3, M8-2): progressive verification
+  (syntax → compile → targeted → module → full); stops after the first failure;
+  skips test levels entirely when tests are disabled; deterministic FakeRunner
+  for offline testing (rule §36.5).
+- **Review engine** (`internal/review`, §25, M8-4, AC-13): three independent
+  review roles (correctness/AI, architecture, security); each toggleable; the
+  Finding model (blocker/major/minor/info) is consumed by the Merge Governor;
+  deterministic FakeReviewer.
+- **Verification evidence** (`internal/evidence`, §27, M8-5): each acceptance
+  criterion linked to typed evidence (test/visual/static/manual/review);
+  confidence is lowered when tests are disabled (§27); completeness gate
+  consumed by the Merge Governor.
+- **Repair loop** (`internal/repair`, §22.5/§25/§16.5, M8-6): bounded loop
+  collecting findings from the test + review engines; builds a targeted repair
+  context per §22.5 (finding + diff + failing test — NOT the full conversation);
+  bounded by MaxIterations (rule §32: no infinite retry); iteration history
+  recorded for audit.
+- **Merge Governor** (`internal/merge`, §28, ADR-0009, M8-1): the deterministic
+  decision function [Decide] evaluates all §28 gates and returns one of
+  ALLOW_LOCAL_RESULT/ALLOW_PUSH/ALLOW_CHANGE_REQUEST/ALLOW_MERGE/REQUIRE_REBASE/
+  REQUIRE_REPAIR/POLICY_BLOCKED/QUARANTINE. The §24.5 enforcement: a task
+  override disabling tests cannot bypass the mandatory merge rule (tests ran but
+  failed → REQUIRE_REPAIR; tests disabled entirely → POLICY_BLOCKED).
+- **Integration tests** (`internal/m8integration`, M8-7): comprehensive table-
+  driven tests for all main flag combinations + dedicated critical-path tests
+  for §24.2 test-paths-forbidden, AC-29 override-clamp, §24.5 merge-bypass-
+  prevention, pipeline-status visibility, repair-loop resolution, evidence-
+  confidence lowering, and independent push/PR/merge toggles.
+
+### Remaining in M8 (explicitly not faked, rule §36.25)
+
+- The M8 engines are exercised in-process with deterministic fakes. They are not
+  yet wired behind daemon transport endpoints or CLI subcommands — that wiring
+  lands with the scheduler (M6 follow-up) that dispatches tasks through the full
+  pipeline. The pure decision functions and their composition are complete and
+  tested.
+- Image providers and visual verification (M9/M10) are not implemented — the
+  visual_policy_satisfied gate is an input to the Governor but is not yet
+  computed by a visual engine.
+- Remote merge (GitHub/GitLab PR providers, M11) is not implemented — the Merge
+  Governor only AUTHORISES; the actual VCS delivery adapter that holds merge
+  credentials arrives in M11.

@@ -61,9 +61,13 @@ const (
 	ActPostMergeAutoRevert Action = "post_merge.auto_revert"
 	ActImplement           Action = "implementation"
 	ActGenerateTests       Action = "tests.generate"
+	ActModifyExistingTests Action = "tests.modify_existing"
 	ActRunExistingTests    Action = "tests.run_existing"
+	ActRunGeneratedTests   Action = "tests.run_generated"
 	ActGenerateDesign      Action = "design.generate"
 	ActAIReview            Action = "review.ai_review"
+	ActSecurityReview      Action = "review.security_review"
+	ActArchReview          Action = "review.architecture_review"
 	ActLocalCheckpoint     Action = "git.local_checkpoint"
 )
 
@@ -160,9 +164,12 @@ func mergeRestrict(base, over Pipeline, vs []Violation) (Pipeline, []Violation) 
 		{"design.human_selection", base.Design.HumanSelection, over.Design.HumanSelection},
 		{"design.visual_verification", base.Design.VisualVerification, over.Design.VisualVerification},
 		{"tests.generate", base.Tests.Generate, over.Tests.Generate},
+		{"tests.modify_existing", base.Tests.ModifyExisting, over.Tests.ModifyExisting},
 		{"tests.run_existing", base.Tests.RunExisting, over.Tests.RunExisting},
 		{"tests.run_generated", base.Tests.RunGenerated, over.Tests.RunGenerated},
 		{"tests.required_for_completion", base.Tests.RequiredForCompletion, over.Tests.RequiredForCompletion},
+		{"tests.require_for_local_result", base.Tests.RequireForLocalResult, over.Tests.RequireForLocalResult},
+		{"tests.require_for_remote_merge", base.Tests.RequireForRemoteMerge, over.Tests.RequireForRemoteMerge},
 		{"review.ai_review", base.Review.AIReview, over.Review.AIReview},
 		{"git.local_checkpoint_commits", base.Git.LocalCheckpointCommits, over.Git.LocalCheckpointCommits},
 		{"git.final_local_commit", base.Git.FinalLocalCommit, over.Git.FinalLocalCommit},
@@ -191,12 +198,18 @@ func mergeRestrict(base, over Pipeline, vs []Violation) (Pipeline, []Violation) 
 			out.Design.VisualVerification = on
 		case "tests.generate":
 			out.Tests.Generate = on
+		case "tests.modify_existing":
+			out.Tests.ModifyExisting = on
 		case "tests.run_existing":
 			out.Tests.RunExisting = on
 		case "tests.run_generated":
 			out.Tests.RunGenerated = on
 		case "tests.required_for_completion":
 			out.Tests.RequiredForCompletion = on
+		case "tests.require_for_local_result":
+			out.Tests.RequireForLocalResult = on
+		case "tests.require_for_remote_merge":
+			out.Tests.RequireForRemoteMerge = on
 		case "review.ai_review":
 			out.Review.AIReview = on
 		case "git.local_checkpoint_commits":
@@ -356,12 +369,22 @@ func (r Resolved) Allows(a Action) Decision {
 		return Decision{a, p.Implementation, "implementation=" + b(p.Implementation)}
 	case ActGenerateTests:
 		return Decision{a, p.Tests.Generate, "tests.generate=" + b(p.Tests.Generate)}
+	case ActModifyExistingTests:
+		return Decision{a, p.Tests.Generate && p.Tests.ModifyExisting, "tests.generate=" + b(p.Tests.Generate) + " and tests.modify_existing=" + b(p.Tests.ModifyExisting)}
 	case ActRunExistingTests:
 		return Decision{a, p.Tests.RunExisting, "tests.run_existing=" + b(p.Tests.RunExisting)}
+	case ActRunGeneratedTests:
+		// Running generated tests requires that generated tests can exist.
+		// If generate is off there is nothing generated to run (§24 dependency).
+		return Decision{a, p.Tests.RunGenerated && p.Tests.Generate, "tests.run_generated=" + b(p.Tests.RunGenerated) + " and tests.generate=" + b(p.Tests.Generate)}
 	case ActGenerateDesign:
 		return Decision{a, p.Design.Generate, "design.generate=" + b(p.Design.Generate)}
 	case ActAIReview:
 		return Decision{a, p.Review.AIReview, "review.ai_review=" + b(p.Review.AIReview)}
+	case ActSecurityReview:
+		return Decision{a, triToBool(p.Review.SecurityReview), "review.security_review=" + p.Review.SecurityReview.String()}
+	case ActArchReview:
+		return Decision{a, triToBool(p.Review.ArchitectureReview), "review.architecture_review=" + p.Review.ArchitectureReview.String()}
 	case ActLocalCheckpoint:
 		// Checkpoint commits are allowed even without push (§5.2).
 		return Decision{a, p.Git.LocalCheckpointCommits, "git.local_checkpoint_commits=" + b(p.Git.LocalCheckpointCommits)}
@@ -375,4 +398,10 @@ func b(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// triToBool resolves a TriState to a gate decision. TriOn and TriAuto resolve to
+// true (Auto defers to "enabled by default"); only TriOff disables.
+func triToBool(t TriState) bool {
+	return t != TriOff
 }
