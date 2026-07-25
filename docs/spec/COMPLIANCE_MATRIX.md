@@ -12,6 +12,18 @@ Statuses:
 - `planned` — not started; milestone/issue assigned.
 - `n/a` — not applicable at this stage.
 
+**Proof levels** (not all "done" items carry the same weight of evidence; an
+item may cite one or more):
+
+- `unit-tested` — the pure domain function is tested in-process with deterministic
+  fakes (no real daemon, no real binary).
+- `integration-tested` — the domain packages are composed together in-process
+  (real storage + real services, but no compiled binary / no loopback transport).
+- `black-box tested` — the compiled `forge` binary is driven end-to-end through
+  the daemon loopback transport; the test has no access to internal state and
+  asserts only on observable outputs (HTTP/JSON, filesystem, Git state). This is
+  the strongest weight of evidence.
+
 The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view.
 
 ## Acceptance criteria (spec §35)
@@ -75,6 +87,11 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | `forge task show` | done (--json) | M1-5 |
 | `forge task pause` | done | M1-5 |
 | `forge task cancel` | done | M1-5 |
+| `forge task dispatch` | done (M12 wiring: dispatches through the production scheduler → dispatcher → supervisor, recording usage + memory + quality stats; --context-pack builds a token-budgeted pack; --json) | M12 |
+| `forge task post-merge` | done (M12 wiring: runs the post-merge sentinel via the daemon; inject deterministic smoke checks; --json) | M12 |
+| `forge task reopen` | done (M12 wiring: idempotent task reopen §37) | M12 |
+| `forge memory list/learn` | done (M12 wiring: read/learn structured project memory §22.9 via daemon; --json) | M12 |
+| `forge quality` | done (M12 wiring: token accounting + per-model success rates §6.1/§19.1 via daemon; --json) | M12 |
 | `forge workspace create` | done (-t/--task, --wp, --base, --json) | M3 |
 | `forge workspace list` | done (-t/--task, --project, --json) | M3 |
 | `forge workspace show` | done (--json) | M3 |
@@ -713,11 +730,34 @@ adapter. The failover controller consumes the stabilized §32 taxonomy +
 
 ### Remaining in M12 (explicitly not faked, rule §36.25)
 
-- The M12 engines are exercised in-process with deterministic fakes. They are
+- ~~The M12 engines are exercised in-process with deterministic fakes. They are
   not yet wired behind daemon transport endpoints / driven by the scheduler —
   that wiring lands with the scheduler (M2-8 follow-up) that dispatches tasks
   through the full pipeline + post-merge sentinel. The pure decision functions
-  and their composition are complete and tested.
+  and their composition are complete and tested.~~
+- **M12/M13 production wiring complete.** The scheduler package
+  (`internal/scheduler`) is the production composition root: task dispatch flows
+  scheduler → dispatcher (workspace) → supervisor, with usage events persisted
+  to SQLite (§6.1/§14.4), token-budgeted Context Packs built and prepended to
+  the agent prompt (§22.3), project memory read/updated (§22.9), and quality
+  statistics recorded (§19.1). The post-merge sentinel is wired behind the
+  daemon transport and driven after a merge through the Authority reverter path
+  (ADR-0017). New daemon endpoints: `POST /tasks/{id}/dispatch`,
+  `POST /tasks/{id}/post-merge`, `POST /tasks/{id}/reopen`,
+  `GET /projects/{id}/usage`, `GET|POST /projects/{id}/memory`,
+  `GET /quality/stats`, `GET /tasks/{id}/post-merge`. New CLI: `forge task
+  dispatch`, `forge task post-merge`, `forge task reopen`, `forge memory`, `forge
+  quality`.
+- **Proof levels now distinguished honestly:**
+  - M12 domain packages (`postmerge`, `memory`, `quality`, `repoinfo`) are
+    **unit-tested** (in-process) AND **integration-tested** (`m12integration`).
+  - The production scheduler wiring is **unit-tested** (`scheduler` package) AND
+    **black-box tested** (`m12_m13_e2e_test.go` drives the compiled `forge`
+    binary through the daemon loopback transport for all 15 required scenarios:
+    dispatch, attempt creation, adapter execution, usage persistence, Context
+    Pack, memory, quality stats, restart recovery, post-merge, sentinel,
+    auto-revert, idempotent reopen, ALERT_ONLY downgrade, LOCAL_REVIEW no-op,
+    init/update production services).
 
 ## Milestone M13 — Bootstrap — what is implemented
 
@@ -769,10 +809,18 @@ adapter. The failover controller consumes the stabilized §32 taxonomy +
 
 ### Remaining in M13 (explicitly not faked, rule §36.25)
 
+- ~~The production `guidedInstaller` prints each install step and the official
+  command; it does not silently invoke `sudo`/system package managers (a
+  deliberate safety choice).~~
 - The production `guidedInstaller` prints each install step and the official
   command; it does not silently invoke `sudo`/system package managers (a
   deliberate safety choice — a platform-specific installer that actually runs
   `brew`/`apt`/`winget` would be registered into the `Registry` when the user
-  opts in, always behind the confirmation gate). The full automated native
-  install is therefore a guided, confirmed flow, not a silent one — consistent
-  with §36.17/§36.18.
+  opts in, always behind the confirmation gate).
+- **M13 black-box proof added.** `forge init --dry-run`, `forge init --yes`,
+  `forge init --repair`, and `forge update` are now **black-box tested** against
+  the compiled `forge` binary (`TestM12_M13_E2E_InitDryRunAndRepair`): the
+  dry-run is proven to change nothing (AC-25, directory-snapshot assertion), the
+  full init writes the toolchain lock (§7.4), repair reconciles with the lock,
+  and update runs the production conformance+rollback path. These are no longer
+  only in-process/unit-tested — they are proven through the real CLI binary.
