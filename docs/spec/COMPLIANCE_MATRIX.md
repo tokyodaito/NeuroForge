@@ -42,8 +42,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-22 | Visual Verification captures a real screenshot | done (M10: VisualHarness protocol + generic command harness + first-class Android harness + §33.3 fake harness; Capture writes a content-addressed screenshot; the visual engine consumes it for §16.3 deterministic + multimodal checks) | M10 | M10-1, M10-2, M10-3 | `internal/adapter/visualharness`, `internal/visual` |
 | AC-23 | Visual discrepancy triggers repair loop | done (M10: §16.5 bounded repair loop — screenshot → findings → targeted UI repair → rebuild → new screenshot; stops on score≥minimum_score or MaximumIterations; rule §32 no infinite retry) | M10 | M10-5 | `internal/visual` |
 | AC-24 | Disabled visual verification never claims UI is verified | done (M10: `visual.Status.IsVerified()` returns true ONLY for `passed`; `skipped` (disabled) and `not_verified` (no screenshot) are never claimable as verified; §16.6 reference-free review sets `PixelPerfect=false` unconditionally) | M10 | M10-7 | `internal/visual`, `internal/policy` |
-| AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
-| AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
+| AC-25 | `forge init --dry-run` shows a plan, changes nothing | done (M13: `forge init --dry-run` runs scan → profile → plan and renders it WITHOUT touching the filesystem; verified by a directory-snapshot test that asserts zero mutation; AC-25 covered in `m13integration` + CLI) | M13 | M13-3 | `internal/cli`, `internal/bootstrap` |
+| AC-26 | `forge init` installs tools, offers official auth, runs doctor | done (M13: the onboarding wizard runs the 8 §7.2 stages — scan, profile, plan+confirmation, guided install, auth wizard (official mechanisms only), toolchain lock — then directs the user to `forge doctor`; the fake detector/installer drive CI per rule §33) | M13 | M13-1..M13-6 | `internal/bootstrap`, `internal/cli` |
 | AC-27 | Daemon resumes unfinished tasks after restart | partial→done (M0: startup reconciliation framework; M3: workspace reconciler; M7: attempt reconciler recovers in-flight attempts — an active workspace with a checkpoint + continuation pack is reconciled as resumable; an interrupted run is marked failed so it is not treated as live; the durable pack survives restart so the failover controller can resume. The framework never auto-resumes a delivery operation.) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace`, `internal/supervisor` |
 | AC-28 | Agent has no merge credentials | done (M3: supervisor builds a positive-allowlist environment that strips GITHUB_TOKEN/GITLAB_TOKEN/AWS_SECRET/etc.; AssertEnvSafe verifies no leak; M11: VCS providers resolve tokens ONLY from the daemon-injected CredentialResolver — never from process env — so an agent subprocess cannot merge even with a token in env) | M3/M11 | M3-4, M11-3, M11-4 | `internal/supervisor`, `internal/adapter/vcs/{github,gitlab}` |
 | AC-29 | Non-disableable security policy cannot be weakened by task override | done (M0: policy core enforces AC-29 invariant; M8: full pipeline wiring — scope validator, review engine, Merge Governor all consult the resolved policy which restores mandatory checks; M11: the delivery Authority consults the resolved (override-clamped) policy, so a mandatory-review override that enables merge is still blocked by the Governor and refused at delivery) | M0/M8/M11 | M0-7, M8-1, M11-5 | `internal/policy`, `internal/merge` |
@@ -96,7 +96,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | `forge plugin ...` | done (M2: `forge plugin test <exe>` runs the §13.3 conformance suite; `forge plugin list` stub) | M2-7 |
 | `forge audit` | partial (read-only `/audit` API available; `forge audit` CLI command in M1+) | M0/M1+ |
 | `forge emergency-stop` / `forge cleanup` | planned | M1+ |
-| `forge init` / `update` | planned | M13 |
+| `forge init` | done (M13: onboarding wizard — scan/profile/plan/confirm/install/auth/lock; `--dry-run` AC-25, `--yes`, `--profile`, `--no-global`, `--offline`, `--skip-agents`, `--repair`; `--json`) | M13 |
+| `forge update` | done (M13: compatibility check, plan, apply, conformance re-run, rollback §7.5; blocked during active task §36.19) | M13 |
 
 ## Hard rules (spec §36) — current enforcement
 
@@ -111,14 +112,14 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 8 | No hard-coded model names in core | done (M2) — enforced by `TestCoreHasNoHardcodedModelNames`; models are provider-supplied |
 | 9 | Separate coding agents from image providers | done (M9) — separate adapter families with distinct interfaces (`codingagent.Adapter` vs `imageprovider.Adapter`); separate registries; image quota/budget tracked separately (§14.4); enforced by the type system (a coding agent cannot be registered as an image provider); ADR-0005/0006/0013 |
 | 10 | Quota not reported as exact unless provider says so | done (M6/M9) — `quota.Confidence` + `FormatRemaining` prefix `~` for ESTIMATED/INFERRED; aggregates take the coarsest confidence; image providers (GPT Image/Nano Banana) default to UNKNOWN confidence (no per-account quota API); tested |
-| 11 | No full repo in prompt | planned — M12-3 |
-| 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only |
+| 11 | No full repo in prompt | done (M12) — `internal/repoinfo` builds the §22.2 index (file tree, symbols, imports, build/test graph, FTS-like search, related-changes) and assembles a compact Context Pack (§22.3) that is trimmed to a token budget (§22.1); log slicing (§22.4) + delta repair context (§22.5) keep failure payloads small; never dumps the whole repo (tested) |
+| 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only; repoinfo/quality/postmerge/memory/bootstrap are all pure Go (no LLM) |
 | 13 | No push in LOCAL_REVIEW | done (M3) — git runner allowlist structurally excludes push/fetch/pull/clone/ls-remote; integration-tested (AC-7) |
 | 14 | Never modify primary checkout | done (M3: worktree isolation verified by integration test — HEAD SHA + working tree files unchanged after workspace create/run/checkpoint/result) | ADR-0007 |
 | 15 | Agent cannot change project security policy | done — `internal/policy` AC-29 enforcement; M8 wiring in testengine/review/merge |
 | 16 | Agent cannot disable checks that validate its output | done — `internal/policy` mandatory checks + M8 review/merge enforcement |
-| 17–18 | No silent install / privilege escalation | planned — M13-3 |
-| 19 | No provider CLI update during active run | planned — M13-5 |
+| 17–18 | No silent install / privilege escalation | done (M13) — `internal/bootstrap` Executor requires an explicit `Confirmer`; plan-level, per-step sudo (§36.18) and shell-profile-diff (§7.2 stage 4) confirmations are each enforced with dedicated sentinel errors (`ErrNotConfirmed`/`ErrShellProfileNotApproved`); `--dry-run` is a pure no-op (AC-25); installer tests use the `FakeInstaller` (rule §33) |
+| 19 | No provider CLI update during active run | done (M13) — `ToolchainLock.Update` consults an `ActiveTaskGuard` and returns `ErrActiveTask` before any update runs (§36.19); `forge update` honours it |
 | 20 | App builds + demonstrable scenario after each milestone | enforced — `make check` gate |
 | 21 | Record deviations as ADR | done — `docs/adr/` |
 | 22 | Every AC has an automated/integration test | enforced — per-issue Checks |
@@ -657,3 +658,121 @@ adapter. The failover controller consumes the stabilized §32 taxonomy +
   local-merge fallback (§5.1 R5). GitHub/GitLab are covered by fake HTTP/fixture
   tests; real network tests are opt-in (`network` build tag). Audit records
   push/PR/MR/merge/denied-delivery (§29.4). See ADR-0015.
+
+## Milestone M12 — Post-merge and optimization — what is implemented
+
+- **Repo index + Context Packs** (`internal/repoinfo`, §22.2/§22.3, rule §36.11):
+  builds the repository index — file tree, symbol index (Go/Python/JS/TS/JVM),
+  imports, build/test/lint command detection, an in-memory ranked search (the
+  SQLite-FTS analogue), and a related-changes co-change graph. `AssemblePack`
+  builds a compact Context Pack (specification + allowed scope + repo map +
+  relevant file slices + architectural rules + commands + recent failures +
+  artifact links) that is **trimmed to a token budget** (§22.1) — it never dumps
+  the whole repo (rule §36.11, tested). A `MaxRepoFiles` walk cap bounds memory.
+- **Log slicing** (`internal/repoinfo`, §22.4): `SliceLog` reduces a raw build/
+  test log to the exit code + failing command + first error + relevant stack
+  trace + deduped summary of other errors + a link to the full log — bounded to
+  `MaxLogTokens` so a log can never blow the context budget. Models never receive
+  the full log.
+- **Delta repair context** (`internal/repoinfo`, §22.5): `AssembleDelta` hands a
+  repair agent ONLY the finding + current diff + failing test + implicated files
+  — it deliberately does NOT replay the full research history (tested).
+- **Prompt-cache fingerprinting** (`internal/repoinfo`, §22.8): `StablePrefix`
+  renders the cacheable parts (rules/commands/repo map) in a deterministic order,
+  and `FingerprintPrompt` produces a stable hash so providers that support prompt
+  caching can detect a cache hit (byte-stable ordering, tested).
+- **Project memory** (`internal/memory`, §22.9): typed records
+  (architecture_fact/build_command/design_system_rule/known_failure/
+  accepted_decision/provider_quirk) with source/confidence/scope/commit-SHA/
+  expiration. Re-learning bumps the version; TTL + on-commit-change pruning; the
+  high-confidence rules feed the Context Pack's "architectural rules". Pure
+  domain logic; persisted by the daemon via the §31 `project_memory` table
+  (migration v5).
+- **Post-merge sentinel + auto-revert + task reopening** (`internal/postmerge`,
+  §4.4/§37): after a merge, the sentinel runs smoke checks; on regression it
+  auto-reverts through the Authority (the single merge-authority chokepoint,
+  §28) AND reopens the task — but **only when the resolved policy enables
+  `post_merge.auto_revert`** (only ever true for AUTONOMOUS, §4.4). Outside
+  AUTONOMOUS the sentinel is a structural no-op (the merge would already have
+  been refused, AC-7). A failed revert downgrades to ALERT_ONLY and reopens for
+  human review (never silent). Tested end-to-end in `m12integration`.
+- **Token accounting + quality statistics** (`internal/quality`, §6.1/§14.4/
+  §19.1): records per-run usage (coding input/output/cached + image generations)
+  with cached input accounted separately (§22.8 cache benefit); aggregates by
+  task/project/provider/day; records per-task outcomes and computes success
+  rates per model/engine/route (the §19.1 routing feedback signals). Pure
+  deterministic arithmetic (rule §22.6); the durable substrate is the §31
+  `usage_events` table (migration v5).
+- **Storage** (migration v5): `post_merge_checks`, `usage_events`,
+  `project_memory` tables (§31).
+- **Scenario** (`internal/m12integration`, M12-8): post-merge regression →
+  auto-revert + task reopen; auto-revert structurally disabled outside
+  AUTONOMOUS; failed-revert downgrade; context budget respected (§22.1); log
+  slice + delta repair small (§22.4/§22.5); prompt-cache fingerprint stable
+  (§22.8); token accounting + quality stats. All run under `go test -race`.
+
+### Remaining in M12 (explicitly not faked, rule §36.25)
+
+- The M12 engines are exercised in-process with deterministic fakes. They are
+  not yet wired behind daemon transport endpoints / driven by the scheduler —
+  that wiring lands with the scheduler (M2-8 follow-up) that dispatches tasks
+  through the full pipeline + post-merge sentinel. The pure decision functions
+  and their composition are complete and tested.
+
+## Milestone M13 — Bootstrap — what is implemented
+
+- **System scan** (`internal/bootstrap/scan.go`, §7.2 stage 1): detects OS/arch/
+  shell/git/package-manager/docker/podman/gh/glab/JDK/Node/Android-SDK + the six
+  coding agents, all via a read-only `Detector` abstraction (production
+  `CommandDetector` shells out to `--version` only; tests use `FakeDetector`).
+  Flags elevation (warns, never escalates). Never installs/mutates.
+- **Profiles** (`internal/bootstrap/profiles.go`, §7.2 stage 2):
+  Minimal/Standard/Android/Web/Full/Custom, each a declarative set of tool
+  requests with sudo flags + shell-profile-change annotations.
+- **Installation plan + confirmation** (`internal/bootstrap/plan.go`, §7.2
+  stage 3/4, AC-25): `ComputePlan` diffs the profile against the scan — present
+  tools are NEVER reinstalled (§7.2 "удалять существующие версии" forbidden);
+  `--no-global`/`--skip-agents` honoured. The plan renders the §7.2 stage-3
+  view AND the shell-profile diff (shown BEFORE applying). `--dry-run` is a pure
+  no-op.
+- **Platform-specific installer abstraction** (`internal/bootstrap/installer.go`,
+  §7.2 stage 5): the `Installer` interface + `Registry` + `Executor`. The
+  `Executor` is the ONLY thing that mutates the system, and it enforces every
+  safety rule via the `Confirmer`: plan approval (§36.17), per-step sudo
+  approval (§36.18), and shell-profile-diff approval (§7.2 stage 4) — each with
+  a dedicated sentinel error. CI uses the `FakeInstaller` (rule §33: installer
+  tests never install real system packages); production uses the `guidedInstaller`
+  that prints each step and never escalates silently.
+- **Authentication wizard** (`internal/bootstrap/auth.go`, §7.2 stage 6): runs
+  after install, launching each provider's OFFICIAL login mechanism via
+  `LoginLauncher`. NeuroForge NEVER collects a provider password (tested: no
+  password field crosses the boundary).
+- **Toolchain lock** (`internal/bootstrap/toolchain.go`, §7.4): persists
+  detected + installed versions; `Update` consults an `ActiveTaskGuard` and
+  returns `ErrActiveTask` before any update during an active run (§36.19); drift
+  detection.
+- **`forge update`** (`internal/bootstrap/update.go`, §7.5): compatibility check
+  → plan → apply → conformance re-run → rollback. On conformance failure the
+  previous lock is restored (`ErrConformanceFailed`, §7.5 step 5, tested).
+- **`forge init --repair`**: reconciles the toolchain with the lock — reinstalls
+  only missing tools through the confirmation gate (never silent).
+- **CLI** (`internal/cli/init_cmd.go`): `forge init` (with `--dry-run`,
+  `--yes`, `--profile`, `--no-global`, `--offline`, `--skip-agents`, `--repair`,
+  `--json`) and `forge update` (`--yes`, `--json`). Both are testable offline via
+  injectable deps.
+- **Scenario** (`internal/m13integration`, M13-8): AC-25 (dry-run changes
+  nothing — directory-snapshot assertion), AC-26 (full init installs + locks),
+  §36.17 (no silent install), §36.18 (no silent sudo), §7.2 stage 4 (shell diff
+  shown first), §7.2 stage 6 (auth never asks passwords), §36.19 (no update
+  during active task), §7.5 (rollback on conformance failure), all six profiles
+  produce a plan, and CI uses the fake installer. All run under `go test -race`.
+
+### Remaining in M13 (explicitly not faked, rule §36.25)
+
+- The production `guidedInstaller` prints each install step and the official
+  command; it does not silently invoke `sudo`/system package managers (a
+  deliberate safety choice — a platform-specific installer that actually runs
+  `brew`/`apt`/`winget` would be registered into the `Registry` when the user
+  opts in, always behind the confirmation gate). The full automated native
+  install is therefore a guided, confirmed flow, not a silent one — consistent
+  with §36.17/§36.18.

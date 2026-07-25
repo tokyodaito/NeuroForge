@@ -568,14 +568,29 @@ Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
 
 > Spec §22, §37 (post-merge), §22.9.
 
-- **M12-1 — Post-merge sentinel.**
-- **M12-2 — Auto-revert** (AUTONOMOUS only).
-- **M12-3 — Repo index (FTS, context pack)** (§22.2/§22.3). **Allowed:** `internal/repoinfo`.
-- **M12-4 — Log slicing + delta repair context** (§22.4/§22.5).
-- **M12-5 — Prompt-cache fingerprinting** (§22.8).
-- **M12-6 — Project memory** (§22.9).
-- **M12-7 — Quality statistics.**
-- **M12-8 — Scenario:** post-merge regression → auto-revert; context budget respected (§22.1).
+- **M12-1 — Post-merge sentinel.** `[DONE]` — `internal/postmerge` Sentinel runs
+  smoke checks after a merge; records a PostMergeCheckResult (persisted to the
+  §31 `post_merge_checks` table, migration v5).
+- **M12-2 — Auto-revert** (AUTONOMOUS only). `[DONE]` — the sentinel auto-reverts
+  via the Authority + reopens the task ONLY when `post_merge.auto_revert` is
+  policy-enabled (only AUTONOMOUS, §4.4); structural no-op otherwise (AC-7).
+  Failed revert downgrades to ALERT_ONLY.
+- **M12-3 — Repo index (FTS, context pack)** (§22.2/§22.3). `[DONE]` —
+  `internal/repoinfo`: file/symbol/import/build/test graph + ranked search +
+  related-changes + compact Context Pack trimmed to a token budget (§22.1, rule
+  §36.11).
+- **M12-4 — Log slicing + delta repair context** (§22.4/§22.5). `[DONE]` —
+  `SliceLog` + `AssembleDelta`; both bounded; delta never replays full history.
+- **M12-5 — Prompt-cache fingerprinting** (§22.8). `[DONE]` — `StablePrefix` +
+  `FingerprintPrompt` (byte-stable, tested).
+- **M12-6 — Project memory** (§22.9). `[DONE]` — `internal/memory`: typed records
+  with confidence/scope/commit/expiration; feeds Context Pack architectural
+  rules; §31 `project_memory` table (migration v5).
+- **M12-7 — Quality statistics.** `[DONE]` — `internal/quality`: token accounting
+  (cached vs uncached) + per-model/engine/route success rates (§19.1 signals);
+  §31 `usage_events` table (migration v5).
+- **M12-8 — Scenario:** post-merge regression → auto-revert; context budget
+  respected (§22.1). `[DONE]` — `internal/m12integration`.
 
 ---
 
@@ -583,14 +598,25 @@ Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
 
 > Spec §7. `forge init` may start earlier but completes after all adapters (§34).
 
-- **M13-1 — `forge init` onboarding wizard.** **AC:** AC-26.
-- **M13-2 — System scan** (§7.2 stage 1).
-- **M13-3 — Installation plan + confirmation** (no silent install/escalation §7.2/§36.17/§36.18). **AC:** AC-25.
+- **M13-1 — `forge init` onboarding wizard.** `[DONE]` — `internal/bootstrap`
+  Wizard runs the 8 §7.2 stages; CLI `forge init`. **AC:** AC-26.
+- **M13-2 — System scan** (§7.2 stage 1). `[DONE]` — read-only `Detector`
+  abstraction; production `CommandDetector`, tests `FakeDetector`.
+- **M13-3 — Installation plan + confirmation** (no silent install/escalation
+  §7.2/§36.17/§36.18). `[DONE]` — `ComputePlan` + `Executor` + `Confirmer`; shell
+  diff shown before applying; `--dry-run` pure no-op. **AC:** AC-25.
 - **M13-4 — Authentication wizard** (official provider mechanism §7.2 stage 6).
+  `[DONE]` — `AuthWizard` + `LoginLauncher`; never collects a password (tested).
 - **M13-5 — Toolchain lock** (§7.4; never update provider CLI mid-run §36.19).
-- **M13-6 — `forge doctor`.**
-- **M13-7 — `forge update`** (compatibility check, conformance re-run, rollback §7.5).
-- **M13-8 — Scenario:** `forge init --dry-run` shows plan, changes nothing (AC-25); full init + doctor (AC-26).
+  `[DONE]` — `ToolchainLock.Update` gated by `ActiveTaskGuard` → `ErrActiveTask`.
+- **M13-6 — `forge doctor`.** `[DONE]` — M0 doctor (the wizard directs the user
+  to it after init, §7.2 stage 7).
+- **M13-7 — `forge update`** (compatibility check, conformance re-run, rollback
+  §7.5). `[DONE]` — `bootstrap.Update`; rollback restores the previous lock on
+  conformance failure (`ErrConformanceFailed`, tested).
+- **M13-8 — Scenario:** `forge init --dry-run` shows plan, changes nothing
+  (AC-25); full init + doctor (AC-26). `[DONE]` — `internal/m13integration` +
+  `internal/cli/init_cmd_test.go`.
 
 ---
 

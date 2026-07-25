@@ -179,6 +179,67 @@ CREATE TABLE IF NOT EXISTS continuation_packs (
 CREATE INDEX IF NOT EXISTS idx_packs_workspace ON continuation_packs (workspace_id);
 `,
 	},
+	{
+		Version:     5,
+		Description: "create post_merge_checks, usage_events and project_memory tables (M12)",
+		Up: `
+-- Post-merge sentinel results (spec §31, §37, milestone M12). One row per
+-- post-merge sentinel run; records the decision, whether a revert happened and
+-- the smoke-check outcomes.
+CREATE TABLE IF NOT EXISTS post_merge_checks (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id     TEXT NOT NULL,
+	commit_sha  TEXT NOT NULL DEFAULT '',
+	base_branch TEXT NOT NULL DEFAULT '',
+	decision    TEXT NOT NULL,             -- HEALTHY | REVERT | ALERT_ONLY | SKIPPED
+	all_passed  INTEGER NOT NULL DEFAULT 0,
+	reverted    INTEGER NOT NULL DEFAULT 0,
+	revert_sha  TEXT NOT NULL DEFAULT '',
+	occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_post_merge_task ON post_merge_checks (task_id);
+
+-- Usage events for token accounting (spec §31, §6.1, §14.4). The quality package
+-- aggregates these; they are the durable substrate behind the dashboard totals.
+CREATE TABLE IF NOT EXISTS usage_events (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id           TEXT NOT NULL DEFAULT '',
+	project_id        TEXT NOT NULL DEFAULT '',
+	provider          TEXT NOT NULL DEFAULT '',
+	model             TEXT NOT NULL DEFAULT '',
+	kind              TEXT NOT NULL,           -- coding | image
+	input_tokens      INTEGER NOT NULL DEFAULT 0,
+	cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens     INTEGER NOT NULL DEFAULT 0,
+	generations       INTEGER NOT NULL DEFAULT 0,
+	cost_usd          REAL NOT NULL DEFAULT 0,
+	occurred_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_project ON usage_events (project_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_usage_task    ON usage_events (task_id);
+
+-- Structured project memory (spec §22.9, milestone M12). Keyed by
+-- (project_id, category, key) so re-learning a fact updates rather than
+-- duplicates.
+CREATE TABLE IF NOT EXISTS project_memory (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id  TEXT NOT NULL,
+	category    TEXT NOT NULL,
+	key         TEXT NOT NULL,
+	value       TEXT NOT NULL,
+	source      TEXT NOT NULL DEFAULT '',
+	confidence  TEXT NOT NULL DEFAULT 'medium',
+	scope       TEXT NOT NULL DEFAULT '',
+	commit_sha  TEXT NOT NULL DEFAULT '',
+	expiration TEXT NOT NULL DEFAULT 'permanent',
+	expires_at TEXT NOT NULL DEFAULT '',
+	learned_at TEXT NOT NULL,
+	version    INTEGER NOT NULL DEFAULT 1,
+	UNIQUE (project_id, category, key)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_project ON project_memory (project_id, category);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running

@@ -28,3 +28,7 @@ an ADR with a new one rather than rewriting it.
 | [0012](0012-versioned-coding-agent-protocol.md) | Versioned coding-agent protocol package (v1) | Accepted | §12–§13, §32, §33.1 |
 | [0013](0013-visual-harness-protocol.md) | Visual verification harness protocol | Accepted | §16, §15.2, §33.3 |
 | [0014](0014-content-addressed-artifact-store.md) | Content-addressed artifact store | Accepted | §9.5, §31, §14, §16.4 |
+| [0015](0015-change-request-provider-protocol.md) | Change-request provider protocol & merge authority | Accepted | §17.6, §28 |
+| [0016](0016-token-efficient-context-pipeline.md) | Token-efficient context pipeline (repo index + Context Pack) | Accepted | §22 |
+| [0017](0017-postmerge-sentinel-and-auto-revert.md) | Post-merge sentinel & auto-revert behind the merge authority | Accepted | §4.4, §37, §28 |
+| [0018](0018-bootstrap-confirmation-gate.md) | Bootstrap safety — explicit confirmation over the installer abstraction | Accepted | §7, §36.17–§36.19 |

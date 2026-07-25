@@ -30,6 +30,10 @@ type App struct {
 
 	// stderrIsTTY is used to decide whether the TUI can take over the screen.
 	stderrIsTTY func() bool
+
+	// initDeps optionally overrides the bootstrap components so `forge init` is
+	// testable offline (rule §33). nil → real production components.
+	initDeps *initDependencies
 }
 
 // New returns an App wired to os streams.
@@ -81,6 +85,10 @@ func (a *App) Run(args []string) int {
 		return a.runRoute(args[1:])
 	case "image-provider":
 		return a.runImageProvider(args[1:])
+	case "init":
+		return a.runInit(args[1:])
+	case "update":
+		return a.runUpdate(args[1:])
 	default:
 		fmt.Fprintf(a.Err, "%s: unknown command %q\n\n", a.Name, args[0])
 		writeHelp(a.Err)

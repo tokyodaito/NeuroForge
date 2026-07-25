@@ -71,6 +71,11 @@ Implemented commands:
   image-provider list     List registered image providers (§14) (--json)
   image-provider doctor   Run the §14 image-provider conformance suite (--json)
 
+  init                Onboarding wizard: scan, plan, confirm, install (§7) (--dry-run)
+  init --dry-run      Show the installation plan and change nothing (AC-25)
+  init --repair       Reconcile the toolchain with the lock (reinstall missing)
+  update              Update toolchain (compat check, conformance, rollback §7.5)
+
   Aliases:
     version  -> -v, -version, --version
     help     -> -h, --help
@@ -83,7 +88,6 @@ Not implemented (planned, by milestone):
   forge model ...              M6+
   forge audit                  M1+
   forge emergency-stop         M1+
-  forge init / update          M13
 
 Exit codes:
   0   success
