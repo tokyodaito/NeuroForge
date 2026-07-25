@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"neuroforge/internal/audit"
+	"neuroforge/internal/policy"
 	"neuroforge/internal/project"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/task"
@@ -61,8 +62,9 @@ func (a *apiAdapter) AddProject(ctx context.Context, req transport.AddProjectReq
 		return transport.ProjectDTO{}, fmt.Errorf("path is required")
 	}
 	p, err := a.svc.Projects.Add(ctx, project.AddRequest{
-		Path: req.Path,
-		Name: req.Name,
+		Path:    req.Path,
+		Name:    req.Name,
+		Profile: policy.Profile(req.Profile),
 	})
 	if err != nil {
 		return transport.ProjectDTO{}, err

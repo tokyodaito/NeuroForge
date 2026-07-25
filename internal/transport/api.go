@@ -23,8 +23,9 @@ type ProjectDTO struct {
 
 // AddProjectRequest is the body of POST /projects.
 type AddProjectRequest struct {
-	Path string `json:"path"`
-	Name string `json:"name,omitempty"`
+	Path    string `json:"path"`
+	Name    string `json:"name,omitempty"`
+	Profile string `json:"profile,omitempty"`
 }
 
 // TaskDTO is the wire representation of a task.

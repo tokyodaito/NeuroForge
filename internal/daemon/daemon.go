@@ -12,6 +12,7 @@ import (
 	"neuroforge/internal/adapter/codingagent"
 	"neuroforge/internal/adapter/codingagent/fake"
 	"neuroforge/internal/audit"
+	"neuroforge/internal/quality"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/supervisor"
 	"neuroforge/internal/transport"
@@ -144,6 +145,17 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	wsService := NewWorkspaceService(wsManager, leaseManager, sup, services.Tasks, recorder, logger, resolveProject)
 	wsAdapter := newWorkspaceAPIAdapter(wsService)
 
+	// 4c. Scheduler service (M12/M13 production wiring): composes the workspace
+	// manager + supervisor + task backlog + project registry + storage with the
+	// quality/memory/repoinfo/postmerge domain packages. This is the production
+	// execution path — tasks flow scheduler → dispatcher → supervisor, with usage
+	// events, Context Packs, project memory and quality statistics recorded on
+	// the way, and the post-merge sentinel driven after a merge.
+	accounting := quality.NewAccounting()
+	statistics := quality.NewStatistics()
+	schedSvc := NewSchedulerService(wsManager, sup, services.Tasks, services.Projects, db, recorder, accounting, statistics, logger, resolveProject)
+	schedAdapter := schedSvc
+
 	token := cfg.Token
 	if token == "" {
 		token, err = transport.GenerateToken()
@@ -163,6 +175,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		ProjectAPI:        apiAdapter,
 		TaskAPI:           apiAdapter,
 		WorkspaceAPI:      wsAdapter,
+		SchedulerAPI:      schedAdapter,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)

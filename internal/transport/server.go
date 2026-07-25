@@ -36,6 +36,9 @@ type Config struct {
 	// WorkspaceAPI, if set, backs the workspace endpoints (/workspaces).
 	// Nil makes those endpoints return 503.
 	WorkspaceAPI WorkspaceAPI
+	// SchedulerAPI, if set, backs the scheduler / post-merge / quality / memory
+	// endpoints. Nil makes those endpoints return 503.
+	SchedulerAPI SchedulerAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -114,6 +117,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	mux.HandleFunc("/audit", s.withToken(s.handleAudit))
 	s.registerAPIRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
+	s.registerSchedulerRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{
