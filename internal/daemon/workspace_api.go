@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"neuroforge/internal/audit"
 	"neuroforge/internal/storage"
@@ -78,6 +79,21 @@ func (s *WorkspaceService) RunWorkspace(ctx context.Context, id string, req tran
 	engine := req.Engine
 	if engine == "" {
 		engine = "fake"
+	}
+
+	// Validate the engine is known BEFORE the prompt guard, so an unknown
+	// engine surfaces as "unknown engine" (not "prompt required"). The
+	// supervisor's registry is the single source of truth for which engines
+	// exist (spec §13.3). Only a KNOWN non-fake engine is gated on a prompt:
+	// production adapters need an explicit directive or a headless run is a
+	// silent no-op (opencode emits no message flag; the fake engine keeps its
+	// legacy promptless smoke mode). Defense in depth: the CLI also validates,
+	// but the daemon is the authority (spec §11.4).
+	if _, ok := s.supervisor.Adapters().Lookup(engine); !ok {
+		// Defer to the supervisor so there is one canonical "unknown engine"
+		// message and error path.
+	} else if engine != "fake" && strings.TrimSpace(req.Prompt) == "" {
+		return transport.WorkspaceDTO{}, fmt.Errorf("workspace: prompt is required for engine %q (use --prompt or --prompt-file)", engine)
 	}
 
 	result, err := s.supervisor.Run(ctx, supervisor.RunRequest{

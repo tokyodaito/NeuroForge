@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -58,7 +60,7 @@ Subcommands:
   create  -t <task>        Create a worktree for a task (--wp, --base, --json)
   list    [-t <task>]      List workspaces (--project, --json)
   show    <id>             Show workspace details (--json)
-  run     <id>             Run the fake agent in the workspace (--engine, --json)
+  run     <id>             Run an agent in the workspace (--engine, --model, --prompt, --prompt-file, --json)
   checkpoint <id>          Create a checkpoint commit (--moment, --message)
   result  <id>             Create the local result branch (forge/result/<task>)
   review  <id> -a <action> Review: keep | reject | ask (--json)
@@ -164,14 +166,15 @@ func (a *App) workspaceShow(args []string) int {
 	fs := flag.NewFlagSet("workspace show", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace show <id> [--json]")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -218,16 +221,44 @@ func (a *App) workspaceShow(args []string) int {
 func (a *App) workspaceRun(args []string) int {
 	fs := flag.NewFlagSet("workspace run", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
-	engine := fs.String("engine", "fake", "agent engine")
+	engine := fs.String("engine", "fake", "agent engine (fake|codex|claude|gemini|kimi|grok|opencode)")
+	model := fs.String("model", "", "model id passed to the engine (e.g. zai-coding-plan/glm-5.2); separate from --engine")
+	prompt := fs.String("prompt", "", "inline prompt for the agent (mutually exclusive with --prompt-file)")
+	promptFile := fs.String("prompt-file", "", "path to a prompt file; read by the CLI and sent as content (mutually exclusive with --prompt)")
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
-		fmt.Fprintln(a.Err, "Usage: forge workspace run <id> [--engine fake]")
+	if len(positional) < 1 {
+		fmt.Fprintln(a.Err, workspaceRunUsage)
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	if len(positional) > 1 {
+		fmt.Fprintf(a.Err, "%s: workspace run takes exactly one workspace id; got %d (%v)\n\n%s\n",
+			a.Name, len(positional), positional, workspaceRunUsage)
+		return ExitErr
+	}
+	id := positional[0]
+
+	// --prompt and --prompt-file are mutually exclusive. A prompt is required
+	// for production engines; the fake engine keeps its legacy promptless mode
+	// (validated daemon-side) so existing smoke runs still work.
+	var promptBody string
+	switch {
+	case *prompt != "" && *promptFile != "":
+		fmt.Fprintf(a.Err, "%s: --prompt and --prompt-file are mutually exclusive\n", a.Name)
+		return ExitErr
+	case *prompt != "":
+		promptBody = *prompt
+	case *promptFile != "":
+		b, rerr := os.ReadFile(*promptFile)
+		if rerr != nil {
+			a.errf("read --prompt-file %q: %v", *promptFile, rerr)
+			return ExitErr
+		}
+		promptBody = string(b)
+	}
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -235,10 +266,14 @@ func (a *App) workspaceRun(args []string) int {
 		return ExitErr
 	}
 	// Long timeout — agent runs may take a while.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	ws, err := cli.RunWorkspace(ctx, id, transport.RunWorkspaceRequest{Engine: *engine})
+	ws, err := cli.RunWorkspace(ctx, id, transport.RunWorkspaceRequest{
+		Engine: *engine,
+		Model:  *model,
+		Prompt: promptBody,
+	})
 	if err != nil {
 		a.maybeJSON(*jsonOut, err, "run workspace")
 		return ExitErr
@@ -247,6 +282,12 @@ func (a *App) workspaceRun(args []string) int {
 		a.printJSON(ws)
 	} else {
 		fmt.Fprintf(a.Out, "Run complete: %s (state=%s)\n", ws.ID, ws.State)
+		if ws.Engine != "" {
+			fmt.Fprintf(a.Out, "  engine: %s\n", ws.Engine)
+		}
+		if ws.Model != "" {
+			fmt.Fprintf(a.Out, "  model:  %s\n", ws.Model)
+		}
 		if ws.HeadSHA != ws.BaseSHA {
 			fmt.Fprintf(a.Out, "  changes: %s -> %s\n", ws.BaseSHA[:8], ws.HeadSHA[:8])
 		}
@@ -254,19 +295,40 @@ func (a *App) workspaceRun(args []string) int {
 	return ExitOK
 }
 
+// workspaceRunUsage is the canonical help for `forge workspace run`.
+const workspaceRunUsage = `Usage: forge workspace run <id> [--engine <e>] [--model <m>] [--prompt <text> | --prompt-file <path>] [--json]
+
+Run a coding agent inside the workspace's isolated worktree. Flags may appear
+before or after the workspace id.
+
+Examples:
+  forge workspace run ws-1 --engine opencode --model zai-coding-plan/glm-5.2 --prompt "fix the bug"
+  forge workspace run --engine opencode --model zai-coding-plan/glm-5.2 --prompt-file task.md ws-1 --json
+
+Engines: fake (default, offline) | codex | claude | gemini | kimi | grok | opencode
+--model is independent of --engine (engine != model).
+--prompt and --prompt-file are mutually exclusive. For production engines a
+prompt is required; the fake engine may run without one.
+A prompt file is read locally by the CLI and sent as content (no host path is
+forwarded to the agent process).`
+
+// errEmptyPrompt signals a missing prompt for a production engine.
+var errEmptyPrompt = errors.New("prompt is required for this engine (use --prompt or --prompt-file)")
+
 func (a *App) workspaceCheckpoint(args []string) int {
 	fs := flag.NewFlagSet("workspace checkpoint", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	moment := fs.String("moment", "manual", "checkpoint moment")
 	message := fs.String("message", "", "checkpoint message")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace checkpoint <id> [--moment M] [--message M]")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -289,14 +351,15 @@ func (a *App) workspaceResult(args []string) int {
 	fs := flag.NewFlagSet("workspace result", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace result <id>")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -327,7 +390,8 @@ func (a *App) workspaceReview(args []string) int {
 	action := fs.String("a", "", "review action: keep | reject | ask")
 	action2 := fs.String("action", "", "review action (alias for -a)")
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
 	act := *action
@@ -338,11 +402,11 @@ func (a *App) workspaceReview(args []string) int {
 		fmt.Fprintln(a.Err, "Usage: forge workspace review <id> -a <keep|reject|ask>")
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace review <id> -a <keep|reject|ask>")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -368,14 +432,15 @@ func (a *App) workspaceReview(args []string) int {
 func (a *App) workspaceDiff(args []string) int {
 	fs := flag.NewFlagSet("workspace diff", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace diff <id>")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -397,14 +462,15 @@ func (a *App) workspaceDiff(args []string) int {
 func (a *App) workspacePatch(args []string) int {
 	fs := flag.NewFlagSet("workspace patch", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace patch <id>")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -426,14 +492,15 @@ func (a *App) workspacePatch(args []string) int {
 func (a *App) workspaceDelete(args []string) int {
 	fs := flag.NewFlagSet("workspace delete", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace delete <id>")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
@@ -455,14 +522,15 @@ func (a *App) workspaceCheckpoints(args []string) int {
 	fs := flag.NewFlagSet("workspace checkpoints", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseWithPositionalReorder(fs, args)
+	if err != nil {
 		return ExitErr
 	}
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(a.Err, "Usage: forge workspace checkpoints <id> [--json]")
 		return ExitErr
 	}
-	id := fs.Arg(0)
+	id := positional[0]
 
 	cli, err := a.ensureDaemon()
 	if err != nil {
