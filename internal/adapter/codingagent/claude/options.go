@@ -163,7 +163,12 @@ func New(opts Options) (*Adapter, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	a := &Adapter{opts: opts}
+	// runs is the shared active-run registry. It is allocated once here (never
+	// lazy-initialised in startRun) so every subsequent read/write under a.mu is
+	// race-free even when many Start calls run concurrently. The map itself is
+	// shared bookkeeping; per-run state lives in dedicated runState values and
+	// independent runs still execute fully in parallel.
+	a := &Adapter{opts: opts, runs: map[string]*runState{}}
 	return a, nil
 }
 
