@@ -1,13 +1,23 @@
-// Package vcs implements change-request providers (local Git, GitHub, GitLab).
+// Package vcs implements the change-request provider abstraction (spec §17.6):
+// Local Git, GitHub Pull Requests and GitLab Merge Requests.
 //
-// STATUS: scaffold — not implemented (planned for milestone M11).
+// STATUS: implemented for milestone M11 (ADR-0015).
 //
-// Scope (docs/spec/NEUROFORGE_SPEC.md §17.6): the ChangeRequestProvider interface
-// (PushBranch/CreateChangeRequest/UpdateChangeRequest/GetChecks/EnableAutoMerge/
-// Merge/Revert). Every call is authorized by the Merge Governor (package merge)
-// and constrained by the active autonomy profile (LOCAL_REVIEW forbids all network
-// operations — AC-7).
+// The [ChangeRequestProvider] interface is the §17.6 surface
+// (PushBranch/CreateChangeRequest/UpdateChangeRequest/GetChecks/
+// EnableAutoMerge/Merge/Revert). Three implementations live in sub-packages:
 //
-// Boundaries: never invoked when push/change_request/merge are disabled by policy;
-// credentials are held outside agent processes (§28, AC-28).
+//   - localgit: §17.5 accept-into-current-branch (merge/squash/cherry-pick/patch)
+//     into the user's checkout. Performs NO Git network operations.
+//   - github: GitHub Pull Requests over the REST API.
+//   - gitlab: GitLab Merge Requests over the REST API.
+//
+// Every delivery call flows through the Merge Governor Authority
+// (internal/merge.Authority), the single holder of merge authority. Providers
+// are therefore unreachable in LOCAL_REVIEW (AC-7), never receive VCS
+// credentials from agent processes (AC-28), and only merge when the Governor
+// emitted ALLOW_MERGE.
+//
+// Boundaries: this package defines the contract + a Registry; concrete HTTP/git
+// work lives in sub-packages. No core package imports a concrete provider.
 package vcs

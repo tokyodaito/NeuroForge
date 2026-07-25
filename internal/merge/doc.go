@@ -21,8 +21,18 @@
 //   - The §24.4/§25.1 local-result labels (LocalResultLabels): IMPLEMENTED /
 //     NOT TESTED / NOT REVIEWED / LOCAL BRANCH ONLY.
 //
-// Boundaries: the Governor only AUTHORISES; the actual delivery is performed by
-// adapter/vcs (M11), which is the only holder of merge credentials and is
-// unreachable without an ALLOW_* decision. This package does not perform Git
-// network operations or hold credentials.
+// Implemented in M11 (ADR-0015):
+//   - The [Authority]: the SINGLE holder of merge authority. Every delivery call
+//     (push, PR/MR, auto-merge, merge, revert) on a vcs.ChangeRequestProvider
+//     flows through it; it re-checks the Governor decision, the resolved policy
+//     and the network lock before any provider method runs. Agent processes
+//     never hold an Authority reference (§28, AC-28).
+//   - The [Queue]: a deterministic FIFO merge queue that re-validates branch
+//     currency at execution time and falls back to a local merge in the §5.1 R5
+//     local-merge mode.
+//
+// Boundaries: the Governor only AUTHORISES; the Authority is the only merge
+// authority and the only delivery call site; the actual Git work is performed by
+// adapter/vcs providers, which are unreachable without an ALLOW_* decision. This
+// package performs no Git network operations and holds no credentials.
 package merge

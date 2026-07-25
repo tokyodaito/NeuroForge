@@ -24,14 +24,14 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-4 | Attach an image to a task | done (M1: `-a`/`--attach` flag; content-addressed SHA-256 storage under `~/.neuroforge/artifacts/`) | M1 | M1-5 | `internal/task` |
 | AC-5 | Codex / Claude Code / Grok Build / Kimi Code / OpenCode / Gemini CLI | done (M4/M5: all six first-party adapters integrated on `integration/adapters`; each implements the full 13-method `codingagent.Adapter` surface at protocol v1 and passes the §13.3 conformance suite offline; central `builtin` registry wires them with no provider-specific core logic) | M4–M5 | M4-n, M5-n | `internal/adapter/codingagent/{codex,claude,gemini,kimi,grok,opencode,builtin}` |
 | AC-6 | A 7th agent via plugin, no core changes | done (M2: versioned `protocol` package v1 + declarative + native JSON-RPC plugin + `forge plugin test` conformance suite; the fake agent passes all 9 checks via plugin with no core changes) | M2 | M2-7 | `internal/adapter/codingagent/{protocol,declarative,plugin,conformance}` |
-| AC-7 | LOCAL_REVIEW performs no Git network ops | done (M3: structurally enforced by the workspace manager's git allowlist that excludes push/fetch/pull/clone/ls-remote; integration test verifies no remote refs are ever created) | M0/M3 | M0-7, M3-5 | `internal/policy`, `internal/workspace` |
-| AC-8 | Code saved in a separate local result branch | done (M3: `forge/result/<task-id>` local branch created by workspace manager; checkpoint commits never auto-merge to main) | M3 | M3-5 | `internal/workspace` |
+| AC-7 | LOCAL_REVIEW performs no Git network ops | done (M3: structurally enforced by the workspace manager's git allowlist that excludes push/fetch/pull/clone/ls-remote; M11: the delivery-layer Authority refuses every push/PR/merge call in LOCAL_REVIEW, network providers are never invoked, and each refusal is audited — verified end-to-end in `m11integration`) | M0/M3/M11 | M0-7, M3-5, M11-6 | `internal/policy`, `internal/workspace`, `internal/merge`, `internal/adapter/vcs` |
+| AC-8 | Code saved in a separate local result branch | done (M3: `forge/result/<task-id>` local branch created by workspace manager; checkpoint commits never auto-merge to main; M11: the result branch is the ONLY delivery artifact in LOCAL_REVIEW — it never appears as a remote ref, and the local-git provider can accept it via merge/squash/cherry-pick/patch) | M3/M11 | M3-5, M11-2 | `internal/workspace`, `internal/adapter/vcs/localgit` |
 | AC-9 | Open diff and worktree from TUI | done (M3: `/workspaces/{id}/diff` and workspace path exposed via API; TUI reachable through daemon transport) | M3 | M3-5 | `internal/workspace`, `internal/transport` |
 | AC-10 | Accept / reject / ask-for-changes | done (M3: keep/reject/ask review lifecycle via `POST /workspaces/{id}/review`; reject deletes only managed worktree, never user data) | M3/M11 | M3-5, M11-2 | `internal/workspace` |
 | AC-11 | Disable test generation | done (M8: tests.generate toggle; when off, test paths become forbidden via the §24.2 scope validator and normalisation R6/R7 force modify_existing/run_generated off) | M8 | M8-1, M8-3 | `internal/policy`, `internal/testengine` |
 | AC-12 | Disable running existing tests separately | done (M8: tests.run_existing is an independent toggle; run_generated is separate; both gated by the progressive test engine) | M8 | M8-3 | `internal/policy`, `internal/testengine` |
 | AC-13 | Disable AI-review | done (M8: review.ai_review, architecture_review, security_review are independent toggles; §25.1 NOT AI-REVIEWED label when all off) | M8 | M8-4 | `internal/policy`, `internal/review` |
-| AC-14 | Push / PR-MR / merge switchable separately | done (M8: independent toggles with §5.1 dependency rules; the Merge Governor decision function returns the highest permitted delivery action) | M8/M11 | M8-1, M11-6 | `internal/policy`, `internal/merge` |
+| AC-14 | Push / PR-MR / merge switchable separately | done (M8: independent toggles with §5.1 dependency rules; the Merge Governor decision function returns the highest permitted delivery action; M11: the Authority enforces the resolved policy per-action, so a disabled push automatically forbids PR/MR and remote merge (§5.1 R1/R2) — all toggle combinations covered in `m11integration`) | M8/M11 | M8-1, M11-6 | `internal/policy`, `internal/merge`, `internal/adapter/vcs` |
 | AC-15 | Quota failure after edits → continuation via fallback, checkpoint kept | done (M7: cross-engine failover controller writes a continuation pack at the pre-quota-switch checkpoint, opens the circuit on the primary account, selects a fallback route and continues from the current state — the fallback receives ONLY the pack, never the full conversation; completed steps are deduped so they are not repeated; bounded recovery, no infinite retry) | M7 | M7-1, M7-5 | `internal/supervisor`, `internal/workspace` |
 | AC-16 | Simple task → cheap route | done (M6: deterministic router maps C0→TINY/C1→SMALL via §19.3 base tiers; table-driven + scenario tests; exhausted accounts excluded) | M6 | M6-4 | `internal/router` |
 | AC-17 | Complex task → strong model | done (M6: C3/C4 escalate to HEAVY/FRONTIER; risk R3/R4 floors the tier; fallback chain per §21.1) | M6 | M6-4 | `internal/router` |
@@ -45,8 +45,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
 | AC-27 | Daemon resumes unfinished tasks after restart | partial→done (M0: startup reconciliation framework; M3: workspace reconciler; M7: attempt reconciler recovers in-flight attempts — an active workspace with a checkpoint + continuation pack is reconciled as resumable; an interrupted run is marked failed so it is not treated as live; the durable pack survives restart so the failover controller can resume. The framework never auto-resumes a delivery operation.) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace`, `internal/supervisor` |
-| AC-28 | Agent has no merge credentials | done (M3: supervisor builds a positive-allowlist environment that strips GITHUB_TOKEN/GITLAB_TOKEN/AWS_SECRET/etc.; AssertEnvSafe verifies no leak; tested) | M3 | M3-4 | `internal/supervisor` |
-| AC-29 | Non-disableable security policy cannot be weakened by task override | done (M0: policy core enforces AC-29 invariant; M8: full pipeline wiring — scope validator, review engine, Merge Governor all consult the resolved policy which restores mandatory checks) | M0/M8 | M0-7, M8-1 | `internal/policy` |
+| AC-28 | Agent has no merge credentials | done (M3: supervisor builds a positive-allowlist environment that strips GITHUB_TOKEN/GITLAB_TOKEN/AWS_SECRET/etc.; AssertEnvSafe verifies no leak; M11: VCS providers resolve tokens ONLY from the daemon-injected CredentialResolver — never from process env — so an agent subprocess cannot merge even with a token in env) | M3/M11 | M3-4, M11-3, M11-4 | `internal/supervisor`, `internal/adapter/vcs/{github,gitlab}` |
+| AC-29 | Non-disableable security policy cannot be weakened by task override | done (M0: policy core enforces AC-29 invariant; M8: full pipeline wiring — scope validator, review engine, Merge Governor all consult the resolved policy which restores mandatory checks; M11: the delivery Authority consults the resolved (override-clamped) policy, so a mandatory-review override that enables merge is still blocked by the Governor and refused at delivery) | M0/M8/M11 | M0-7, M8-1, M11-5 | `internal/policy`, `internal/merge` |
 | AC-30 | Full task history available in audit | done (M1: project/task lifecycle events — added/removed/state_changed — all recorded in append-only audit store; `forge daemon logs -f` for live events) | M0+ | M0-6, M1-1, M1-5 | `internal/audit` |
 
 ## CLI surface (spec §30)
@@ -123,7 +123,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 21 | Record deviations as ADR | done — `docs/adr/` |
 | 22 | Every AC has an automated/integration test | enforced — per-issue Checks |
 | 23 | Spec is source of truth | done — referenced everywhere |
-| 24 | Agent may not self-reduce project scope | planned — M11-5 (scope_valid) |
+| 24 | Agent may not self-reduce project scope | done (M11: the Governor `scope_valid` gate is consulted by the Authority; a delivery whose changes fall outside the task scope is refused before any provider call) |
 | 25 | Unimplemented requirements explicitly marked | done — scaffold `doc.go` markers, this matrix, help text |
 
 ## Durable-workflow & security enforcement (M0)
@@ -649,6 +649,11 @@ adapter. The failover controller consumes the stabilized §32 taxonomy +
   repair loop (§16.5) are all in place. The `visual_policy_satisfied` gate can
   now be computed from a `visual.Result`. Real image/device calls remain opt-in
   (rule §33): CI exercises only the fake provider/harness.
-- Remote merge (GitHub/GitLab PR providers, M11) is not implemented — the Merge
-  Governor only AUTHORISES; the actual VCS delivery adapter that holds merge
-  credentials arrives in M11.
+- Remote merge (GitHub/GitLab PR providers, M11) is now implemented: the
+  `vcs.ChangeRequestProvider` interface (Local Git, GitHub, GitLab) is the §17.6
+  surface, and `merge.Authority` is the single merge-authority chokepoint that
+  authorises every delivery call against a Governor decision + resolved policy +
+  the network lock. A deterministic merge queue serialises merges with a
+  local-merge fallback (§5.1 R5). GitHub/GitLab are covered by fake HTTP/fixture
+  tests; real network tests are opt-in (`network` build tag). Audit records
+  push/PR/MR/merge/denied-delivery (§29.4). See ADR-0015.

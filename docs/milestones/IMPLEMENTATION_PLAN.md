@@ -554,13 +554,13 @@ Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
 
 > Spec §17.6, §28, §3.3. Goal: push/PR/MR and deterministic merge.
 
-- **M11-1 — `ChangeRequestProvider` interface** (§17.6).
-- **M11-2 — Local Git provider** (accept/merge/squash/cherry-pick/patch §17.5). **AC:** AC-10.
-- **M11-3 — GitHub PR provider.**
-- **M11-4 — GitLab MR provider.**
-- **M11-5 — Merge Governor decision function + exhaustive tests** (§28). **Related ADR:** 0009. **AC:** AC-28, AC-29.
-- **M11-6 — Push/PR/MR wiring under policy.** **AC:** AC-14.
-- **M11-7 — Scenario:** REMOTE_REVIEW PR; AUTONOMOUS merge; LOCAL_REVIEW stays silent (AC-7).
+- **M11-1 — `ChangeRequestProvider` interface** (§17.6). `[DONE]` — `internal/adapter/vcs` (interface + types + Capabilities + Registry + sentinel errors; ADR-0015).
+- **M11-2 — Local Git provider** (accept/merge/squash/cherry-pick/patch §17.5). **AC:** AC-10. `[DONE]` — `internal/adapter/vcs/localgit` (§17.5 accept-into-current-branch with backup ref + dirty-checkout refusal; non-network, IsNetwork=false).
+- **M11-3 — GitHub PR provider.** `[DONE]` — `internal/adapter/vcs/github` (REST API + auto-merge; fake httptest.Server fixture tests; opt-in `network` build-tag tests for real calls, rule §33).
+- **M11-4 — GitLab MR provider.** `[DONE]` — `internal/adapter/vcs/gitlab` (REST API v4; fake fixture tests; opt-in `network` tests).
+- **M11-5 — Merge Governor decision function + exhaustive tests** (§28). **Related ADR:** 0009, 0015. **AC:** AC-28, AC-29. `[DONE]` — Governor (M8) + `merge.Authority` (single merge-authority chokepoint) + `merge.Queue` (deterministic FIFO merge queue with local fallback for §5.1 R5 local-merge mode).
+- **M11-6 — Push/PR/MR wiring under policy.** **AC:** AC-14. `[DONE]` — the Authority consults `policy.Resolve` per action: disabled push auto-forbids PR/MR and remote merge (§5.1 R1/R2).
+- **M11-7 — Scenario:** REMOTE_REVIEW PR; AUTONOMOUS merge; LOCAL_REVIEW stays silent (AC-7). `[DONE]` — `internal/m11integration` (AC-7/AC-8/AC-14/AC-28/AC-29 + §3.3 REMOTE_REVIEW push+PR-no-merge + §28 sole-merge-authority + §29.4 audit + GitHub/GitLab end-to-end vs fake HTTP + merge queue determinism).
 
 ---
 
