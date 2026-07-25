@@ -26,3 +26,5 @@ an ADR with a new one rather than rewriting it.
 | [0010](0010-sqlite-driver-modernc.md) | Pure-Go SQLite driver (modernc.org/sqlite) | Accepted | §10, §31 |
 | [0011](0011-terminal-raw-mode-golang-x-term.md) | Terminal raw-mode via golang.org/x/term | Accepted | §6, M1 |
 | [0012](0012-versioned-coding-agent-protocol.md) | Versioned coding-agent protocol package (v1) | Accepted | §12–§13, §32, §33.1 |
+| [0013](0013-visual-harness-protocol.md) | Visual verification harness protocol | Accepted | §16, §15.2, §33.3 |
+| [0014](0014-content-addressed-artifact-store.md) | Content-addressed artifact store | Accepted | §9.5, §31, §14, §16.4 |

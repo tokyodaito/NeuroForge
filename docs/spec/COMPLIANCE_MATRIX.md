@@ -36,12 +36,12 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | AC-16 | Simple task → cheap route | done (M6: deterministic router maps C0→TINY/C1→SMALL via §19.3 base tiers; table-driven + scenario tests; exhausted accounts excluded) | M6 | M6-4 | `internal/router` |
 | AC-17 | Complex task → strong model | done (M6: C3/C4 escalate to HEAVY/FRONTIER; risk R3/R4 floors the tier; fallback chain per §21.1) | M6 | M6-4 | `internal/router` |
 | AC-18 | Dashboard shows exact vs ~estimated vs unknown usage distinctly | done (M6: confidence EXACT/PROVIDER_REPORTED/ESTIMATED/INFERRED/UNKNOWN carried end-to-end; `FormatRemaining` prefixes `~` for estimated/inferred; TUI Usage screen + `forge usage` tag totals) | M6 | M6-9 | `internal/quota`, `internal/budget`, `internal/tui`, `internal/cli` |
-| AC-19 | GPT Image and Nano Banana adapters | planned | M9 | M9-3, M9-4 | `internal/adapter/imageprovider` |
-| AC-20 | Generate a visual specification from text | planned | M9/M10 | M9-6 | `internal/design`, `internal/adapter/imageprovider` |
-| AC-21 | Create UI implementation task from an attached image | planned | M10 | M10-8 | `internal/task`, `internal/visual` |
-| AC-22 | Visual Verification captures a real screenshot | planned | M10 | M10-3 | `internal/adapter/visualharness`, `internal/visual` |
-| AC-23 | Visual discrepancy triggers repair loop | planned | M10 | M10-5 | `internal/visual` |
-| AC-24 | Disabled visual verification never claims UI is verified | planned | M10 | M10-7 | `internal/visual`, `internal/policy` |
+| AC-19 | GPT Image and Nano Banana adapters | done (M9: both real HTTP adapters implemented on `internal/adapter/imageprovider/{gptimage,nanobanana}`; tier→model catalog swappable without code change; both opt-in (Health=unknown when unconfigured, refuse to generate without a key — rule §33); §14 conformance suite passes against the fake provider) | M9 | M9-1, M9-3, M9-4 | `internal/adapter/imageprovider/{gptimage,nanobanana,fake,conformance}` |
+| AC-20 | Generate a visual specification from text | done (M9: design orchestrator turns a text brief into N variants via §14.2 Generate, selects one (HUMAN/AUTOMATIC/FIRST_VALID), and locks a §15.6 visual specification with viewport/theme/locale/density; image quota failover §15.5 falls back to the next provider, then to the attached image, then WAITING_QUOTA) | M9 | M9-6, M9-7 | `internal/design`, `internal/adapter/imageprovider` |
+| AC-21 | Create UI implementation task from an attached image | done (M10: REFERENCE_ONLY design mode locks the attached image as the visual specification; the task compiler feeds the locked artifact hash to the coding agent scope; §15.6: once locked, the agent must not arbitrarily change the design) | M10 | M10-6, M10-8 | `internal/design`, `internal/task` |
+| AC-22 | Visual Verification captures a real screenshot | done (M10: VisualHarness protocol + generic command harness + first-class Android harness + §33.3 fake harness; Capture writes a content-addressed screenshot; the visual engine consumes it for §16.3 deterministic + multimodal checks) | M10 | M10-1, M10-2, M10-3 | `internal/adapter/visualharness`, `internal/visual` |
+| AC-23 | Visual discrepancy triggers repair loop | done (M10: §16.5 bounded repair loop — screenshot → findings → targeted UI repair → rebuild → new screenshot; stops on score≥minimum_score or MaximumIterations; rule §32 no infinite retry) | M10 | M10-5 | `internal/visual` |
+| AC-24 | Disabled visual verification never claims UI is verified | done (M10: `visual.Status.IsVerified()` returns true ONLY for `passed`; `skipped` (disabled) and `not_verified` (no screenshot) are never claimable as verified; §16.6 reference-free review sets `PixelPerfect=false` unconditionally) | M10 | M10-7 | `internal/visual`, `internal/policy` |
 | AC-25 | `forge init --dry-run` shows a plan, changes nothing | planned | M13 | M13-3 | `internal/cli`, bootstrap |
 | AC-26 | `forge init` installs tools, offers official auth, runs doctor | planned | M13 | M13-1..M13-6 | bootstrap |
 | AC-27 | Daemon resumes unfinished tasks after restart | partial→done (M0: startup reconciliation framework; M3: workspace reconciler; M7: attempt reconciler recovers in-flight attempts — an active workspace with a checkpoint + continuation pack is reconciled as resumable; an interrupted run is marked failed so it is not treated as live; the durable pack survives restart so the failover controller can resume. The framework never auto-resumes a delivery operation.) | M0/M3/M7 | M0-4, M3-6, M7-3 | `internal/daemon`, `internal/storage`, `internal/workspace`, `internal/supervisor` |
@@ -91,7 +91,8 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | `forge quota` | done (M6: per-account quota states + confidence; --json) | M6 |
 | `forge usage` | done (M6: included vs paid separated, confidence-tagged totals; --json) | M6 |
 | `forge cost` | done (M6: cost across daily/monthly/project scopes; --json) | M6 |
-| `forge image-provider ...` | planned | M9 |
+| `forge image-provider list` | done (M9: lists registered image providers; --json) | M9 |
+| `forge image-provider doctor` | done (M9: runs the §14 conformance suite; --json) | M9 |
 | `forge plugin ...` | done (M2: `forge plugin test <exe>` runs the §13.3 conformance suite; `forge plugin list` stub) | M2-7 |
 | `forge audit` | partial (read-only `/audit` API available; `forge audit` CLI command in M1+) | M0/M1+ |
 | `forge emergency-stop` / `forge cleanup` | planned | M1+ |
@@ -104,12 +105,12 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
 | 1–2 | Modular monolith, not microservices / one giant package | done — ADR-0001 + package layout |
 | 3 | No Kubernetes | done — not used |
 | 4 | No web UI before TUI | done — TUI-first in plan |
-| 5 | No real paid models in CI | done (M2) — fake coding agent (§33.1) drives all orchestration/conformance tests; no AI/network calls |
+| 5 | No real paid models in CI | done (M2/M9) — fake coding agent (§33.1) + fake image provider (§33.2) + fake visual harness (§33.3) drive all orchestration/conformance tests; real image providers (GPT Image/Nano Banana) are opt-in and refuse to generate without a configured key; tested |
 | 6 | Fake coding agent first | done (M2) — `internal/adapter/codingagent/fake` + `cmd/fake-coding-agent`, 13 scenarios |
 | 7 | Stabilise adapter protocol, then adapters | done (M2) — protocol v1 stabilised; concrete engines in M4/M5 |
 | 8 | No hard-coded model names in core | done (M2) — enforced by `TestCoreHasNoHardcodedModelNames`; models are provider-supplied |
-| 9 | Separate coding agents from image providers | done (structure) — ADR-0005/0006 |
-| 10 | Quota not reported as exact unless provider says so | done (M6) — `quota.Confidence` + `FormatRemaining` prefix `~` for ESTIMATED/INFERRED; aggregates take the coarsest confidence; tested |
+| 9 | Separate coding agents from image providers | done (M9) — separate adapter families with distinct interfaces (`codingagent.Adapter` vs `imageprovider.Adapter`); separate registries; image quota/budget tracked separately (§14.4); enforced by the type system (a coding agent cannot be registered as an image provider); ADR-0005/0006/0013 |
+| 10 | Quota not reported as exact unless provider says so | done (M6/M9) — `quota.Confidence` + `FormatRemaining` prefix `~` for ESTIMATED/INFERRED; aggregates take the coarsest confidence; image providers (GPT Image/Nano Banana) default to UNKNOWN confidence (no per-account quota API); tested |
 | 11 | No full repo in prompt | planned — M12-3 |
 | 12 | No LLM for Git/policy/quota/budget arithmetic | done (policy) — ADR-0009; code-only |
 | 13 | No push in LOCAL_REVIEW | done (M3) — git runner allowlist structurally excludes push/fetch/pull/clone/ls-remote; integration-tested (AC-7) |
@@ -639,9 +640,15 @@ adapter. The failover controller consumes the stabilized §32 taxonomy +
   lands with the scheduler (M6 follow-up) that dispatches tasks through the full
   pipeline. The pure decision functions and their composition are complete and
   tested.
-- Image providers and visual verification (M9/M10) are not implemented — the
-  visual_policy_satisfied gate is an input to the Governor but is not yet
-  computed by a visual engine.
+- Image providers and visual verification (M9/M10) are implemented — the
+  `ImageProviderAdapter` protocol + GPT Image + Nano Banana + fake image
+  provider (§14, §33.2), the design orchestrator with image quota failover
+  (§15), the `VisualHarness` protocol + generic/Android/fake harnesses (§16,
+  §33.3), and the Visual Verification Engine with deterministic checks,
+  multimodal evaluator interface, reference-free review (§16.6) and the bounded
+  repair loop (§16.5) are all in place. The `visual_policy_satisfied` gate can
+  now be computed from a `visual.Result`. Real image/device calls remain opt-in
+  (rule §33): CI exercises only the fake provider/harness.
 - Remote merge (GitHub/GitLab PR providers, M11) is not implemented — the Merge
   Governor only AUTHORISES; the actual VCS delivery adapter that holds merge
   credentials arrives in M11.

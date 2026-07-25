@@ -68,6 +68,9 @@ Implemented commands:
   cost                Show cost report across scopes (§23) (--json)
   route explain       Explain the deterministic route decision for a task (§19.6) (--json)
 
+  image-provider list     List registered image providers (§14) (--json)
+  image-provider doctor   Run the §14 image-provider conformance suite (--json)
+
   Aliases:
     version  -> -v, -version, --version
     help     -> -h, --help
@@ -78,7 +81,6 @@ Not implemented (planned, by milestone):
   forge project init/settings  M1+
   forge agent ...              M2-M5
   forge model ...              M6+
-  forge image-provider ...     M9
   forge audit                  M1+
   forge emergency-stop         M1+
   forge init / update          M13

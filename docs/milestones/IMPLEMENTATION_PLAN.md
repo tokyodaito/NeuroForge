@@ -518,32 +518,35 @@ Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
 
 ---
 
-## M9 — Image providers
+## M9 — Image providers (DONE)
 
 > Spec §14, §15.4–§15.6, §33.2.
 
-- **M9-1 — `ImageProviderAdapter` interface + registry** (§14.2). **AC:** AC-19 (enabler). **Related ADR:** 0006.
-- **M9-2 — Fake image provider** (§33.2).
-- **M9-3 — GPT Image adapter.** **AC:** AC-19.
-- **M9-4 — Nano Banana adapter.** **AC:** AC-19.
-- **M9-5 — Image budgets + quota** (§23 image, §14.4).
-- **M9-6 — Design generation orchestration** (variants + selection §15.4). **AC:** AC-20.
-- **M9-7 — Scenario:** text → visual specification (AC-20); image quota failover (§15.5).
+- **M9-1 — `ImageProviderAdapter` interface + registry** (§14.2). **AC:** AC-19 (enabler). **Related ADR:** 0006. ✅ `internal/adapter/imageprovider` + `protocol` sub-package.
+- **M9-2 — Fake image provider** (§33.2). ✅ `internal/adapter/imageprovider/fake` (success/quota/invalid-image/timeout/failover/deterministic-fixture/auth).
+- **M9-3 — GPT Image adapter.** **AC:** AC-19. ✅ `internal/adapter/imageprovider/gptimage` (OpenAI Images API; opt-in via CredentialResolver; tier→model catalog swappable).
+- **M9-4 — Nano Banana adapter.** **AC:** AC-19. ✅ `internal/adapter/imageprovider/nanobanana` (Gemini generateContent; same opt-in/catalog shape).
+- **M9-5 — Image budgets + quota** (§23 image, §14.4). ✅ image quota tracked separately on `quota.Manager` (image accounts); image spend bounded by `budget.Limits.ImageDailyUSD` separate from coding; tested.
+- **M9-6 — Design generation orchestration** (variants + selection §15.4). **AC:** AC-20. ✅ `internal/design` (Brief/Variant/Specification; HUMAN/AUTOMATIC/FIRST_VALID; §15.1 modes; MaxVariants cap).
+- **M9-7 — Scenario:** text → visual specification (AC-20); image quota failover (§15.5). ✅ `internal/m9integration` (AC-19/AC-20/quota-failover/cross-provider/rule §36.9 separation).
+- **M9-8 — Artifacts store** (§9.5, §31). ✅ `internal/artifacts` (content-addressed SHA-256, atomic+idempotent writes; ADR-0014).
+- **M9-9 — Conformance + CLI.** ✅ `internal/adapter/imageprovider/conformance` (10 checks); `forge image-provider list|doctor`.
 
 ---
 
-## M10 — Design and visual verification
+## M10 — Design and visual verification (DONE)
 
 > Spec §15, §16, §33.3.
 
-- **M10-1 — `VisualHarness` interface + generic command harness** (§16.1/§16.2).
-- **M10-2 — Android harness** (§16.2).
-- **M10-3 — Screenshot capture + comparison** (§16.3). **AC:** AC-22.
-- **M10-4 — Visual findings model** (§16.4).
-- **M10-5 — Visual repair loop** (§16.5). **AC:** AC-23.
-- **M10-6 — Visual specification lock** (§15.6).
-- **M10-7 — Reference-free quality review** (§16.6). **AC:** AC-24 (no false "verified").
-- **M10-8 — Scenario:** screenshot-from-attachment → UI → verify → repair (AC-21/AC-22/AC-23).
+- **M10-1 — `VisualHarness` interface + generic command harness** (§16.1/§16.2). ✅ `internal/adapter/visualharness` + `generic`. **Related ADR:** 0013.
+- **M10-2 — Android harness** (§16.2). ✅ `internal/adapter/visualharness/android` (emulator/AVD/APK/Activity/locale/theme/font-scale/fixed-resolution/screencap).
+- **M10-3 — Screenshot capture + comparison** (§16.3). **AC:** AC-22. ✅ Capture content-addressed; `internal/visual.DeterministicChecks` (size/viewport/blank/clipping/overflow/contrast/similarity).
+- **M10-4 — Visual findings model** (§16.4). ✅ `visual.Finding`/`Result`/`ResultArtifacts` (severity blocker/major/minor/info; reference/actual/diff hashes).
+- **M10-5 — Visual repair loop** (§16.5). **AC:** AC-23. ✅ `visual.RunRepairLoop` bounded (rule §32); stops on score≥minimum_score or MaximumIterations.
+- **M10-6 — Visual specification lock** (§15.6). ✅ `design.Specification.IsLocked`; viewport/theme/locale/density carried end-to-end.
+- **M10-7 — Reference-free quality review** (§16.6). **AC:** AC-24 (no false "verified"). ✅ `visual.ReferenceFreeReview` (integrity/overflow/readability/broken states); `PixelPerfect=false` unconditionally without a reference; `Status.IsVerified()` true only for `passed`.
+- **M10-8 — Scenario:** screenshot-from-attachment → UI → verify → repair (AC-21/AC-22/AC-23). ✅ `internal/m10integration` (AC-21..AC-24 + end-to-end + all §33.3 fake harness scenarios).
+- **M10-9 — Multimodal evaluator interface** (§16.3). ✅ `visual.MultimodalEvaluator` + deterministic default; production wires a vision-model-backed evaluator via a coding agent (rule §36.9: analysis by coding agent, generation by image provider).
 
 ---
 

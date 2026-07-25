@@ -79,6 +79,8 @@ func (a *App) Run(args []string) int {
 		return a.runCost(args[1:])
 	case "route":
 		return a.runRoute(args[1:])
+	case "image-provider":
+		return a.runImageProvider(args[1:])
 	default:
 		fmt.Fprintf(a.Err, "%s: unknown command %q\n\n", a.Name, args[0])
 		writeHelp(a.Err)
