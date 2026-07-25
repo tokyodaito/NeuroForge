@@ -222,9 +222,8 @@ func (a *Adapter) startRun(ctx context.Context, req protocol.AgentRunRequest, si
 			cancel()
 		})
 	}
-	if a.runs == nil {
-		a.runs = map[string]*runState{}
-	}
+	// a.runs is pre-allocated in New; insert under a.mu so concurrent Starts
+	// never race on the registry. Run supervision/streaming stays parallel.
 	a.mu.Lock()
 	a.runs[runID] = st
 	a.mu.Unlock()
