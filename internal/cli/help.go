@@ -45,6 +45,11 @@ Implemented commands:
   task pause <id>     Pause a task
   task cancel <id>    Cancel a task
 
+  run \"<description>\"  One-shot reliable run: create task + worktree, run one
+                      production adapter (opencode), finalize + result ref.
+                      (--engine, --model, --file, --base, --timeout, --json,
+                       --verbose)
+
   workspace create -t <task>   Create an isolated Git worktree (--wp, --base, --json)
   workspace list [-t <task>]   List workspaces (--project, --json)
   workspace show <id>          Show workspace details (--json)

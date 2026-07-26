@@ -212,7 +212,9 @@ func runDeclarative(t *testing.T, scenario string) []protocol.NormalizedEvent {
 		t.Fatalf("FromYAML: %v", err)
 	}
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Generous under full-suite load: parallel packages can starve the fake
+	// binary long enough that a 5s ctx yields zero events (flake under make check).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	workspace := t.TempDir()
@@ -225,7 +227,7 @@ func runDeclarative(t *testing.T, scenario string) []protocol.NormalizedEvent {
 	if handle.Engine != "fake" {
 		t.Errorf("engine = %s", handle.Engine)
 	}
-	return waitForTerminal(t, sink, 4*time.Second)
+	return waitForTerminal(t, sink, 30*time.Second)
 }
 
 func waitForTerminal(t *testing.T, s *codingagent.SliceSink, timeout time.Duration) []protocol.NormalizedEvent {
@@ -263,13 +265,13 @@ func TestDeclarativeMalformedSavedAndClassified(t *testing.T) {
 		t.Fatalf("FromYAML: %v", err)
 	}
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err = a.Start(ctx, protocol.AgentRunRequest{RunID: "m1", Engine: "fake", Workspace: t.TempDir()}, sink)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	evs := waitForTerminal(t, sink, 4*time.Second)
+	evs := waitForTerminal(t, sink, 30*time.Second)
 
 	// The run must still complete (malformed does not break it).
 	if lastType(evs) != protocol.EventRunCompleted {
@@ -393,13 +395,13 @@ func TestDeclarativeConcurrentRuns(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			sink := &codingagent.SliceSink{}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			_, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "concurrent", Engine: "fake", Workspace: t.TempDir()}, sink)
 			if err != nil {
 				t.Errorf("Start %d: %v", i, err)
 			}
-			waitForTerminal(t, sink, 4*time.Second)
+			waitForTerminal(t, sink, 30*time.Second)
 		}(i)
 	}
 	wg.Wait()

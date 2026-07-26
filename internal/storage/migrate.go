@@ -240,6 +240,76 @@ CREATE TABLE IF NOT EXISTS project_memory (
 CREATE INDEX IF NOT EXISTS idx_memory_project ON project_memory (project_id, category);
 `,
 	},
+	{
+		Version:     6,
+		Description: "create task_sequences for persistent collision-free task ids (AC: restart/concurrency safety)",
+		Up: `
+-- Persistent per-project sequence backing task id generation. Without this the
+-- task.Backlog held the sequence in an atomic counter that reset to zero on
+-- every daemon restart, producing duplicate ids (<project>-1) that failed the
+-- tasks.id UNIQUE constraint (blocker: task id collision after restart). The
+-- sequence is monotonic and never reused (deleted tasks keep their id; the
+-- counter only moves forward) — spec §11.4 durable ids.
+CREATE TABLE IF NOT EXISTS task_sequences (
+	project_id TEXT PRIMARY KEY,
+	next_seq   INTEGER NOT NULL DEFAULT 1
+);
+
+-- Backfill each project's next_seq from existing task ids so an existing
+-- database migrates without regressing and re-colliding. Only pure-numeric
+-- suffixes (the format task.Backlog emits: <project_id>-<seq>) are counted; any
+-- non-conforming id contributes 0 and is left untouched. next_seq stores the
+-- LAST issued sequence number; NextTaskSeq increments-then-returns, so seeding
+-- to the max existing suffix makes the first post-migration task id strictly
+-- greater than every existing one (no collision, no gap).
+INSERT INTO task_sequences (project_id, next_seq)
+SELECT t.project_id,
+       COALESCE(MAX(
+           CASE WHEN SUBSTR(t.id, LENGTH(t.project_id) + 2) =
+                     CAST(CAST(SUBSTR(t.id, LENGTH(t.project_id) + 2) AS INTEGER) AS TEXT)
+                THEN CAST(SUBSTR(t.id, LENGTH(t.project_id) + 2) AS INTEGER)
+                ELSE 0
+           END
+       ), 0) AS next_seq
+FROM tasks t
+GROUP BY t.project_id;
+`,
+	},
+	{
+		Version:     7,
+		Description: "create finalize_intents for crash-consistent run finalization (BF-07)",
+		Up: `
+-- Finalize intents: durable finalization protocol state (BF-07).
+-- Git refs and SQLite cannot share one physical transaction; recovery after a
+-- crash between "create result ref" and "commit terminal DB state" is driven
+-- by this intent row. Phases:
+--   pending   — classification recorded; result ref not yet ensured
+--   ref_ready — result ref created/verified at expected_sha (or N/A)
+--   (row deleted on successful terminal commit)
+CREATE TABLE IF NOT EXISTS finalize_intents (
+	workspace_id      TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+	task_id           TEXT NOT NULL,
+	outcome           TEXT NOT NULL,
+	run_terminal      TEXT NOT NULL DEFAULT '',
+	run_id            TEXT NOT NULL DEFAULT '',
+	engine            TEXT NOT NULL DEFAULT '',
+	model             TEXT NOT NULL DEFAULT '',
+	base_sha          TEXT NOT NULL DEFAULT '',
+	actual_head_sha   TEXT NOT NULL DEFAULT '',
+	expected_ref_sha  TEXT NOT NULL DEFAULT '',
+	result_branch     TEXT NOT NULL DEFAULT '',
+	commit_sha        TEXT NOT NULL DEFAULT '',
+	git_status_empty  INTEGER NOT NULL DEFAULT 1,
+	changed_files     TEXT NOT NULL DEFAULT '[]',
+	target_ws_state   TEXT NOT NULL DEFAULT '',
+	target_task_state TEXT NOT NULL DEFAULT '',
+	phase             TEXT NOT NULL DEFAULT 'pending',
+	created_at        TEXT NOT NULL,
+	updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_finalize_intents_phase ON finalize_intents (phase);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running

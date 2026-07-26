@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"neuroforge/internal/adapter/codingagent"
@@ -143,7 +144,17 @@ func (a *Adapter) startRun(ctx context.Context, runID, engine, model, workspace 
 		sessionID:     handle.SessionID,
 		startIsResume: isResume,
 	}
-	sc := resolveScenario(a.opts.Scenario, params)
+	// Pick the scenario: the model id can override the adapter's default. This
+	// is what the minimal-run black-box tests use to drive each outcome via
+	// `forge run --engine fake --model fake/<scenario>` (e.g.
+	// `fake/write-commit`, `fake/no-change`, `fake/cancel`, `fake/crash`). When
+	// the model is empty or unrecognized, the adapter's configured scenario
+	// (default ScenarioSuccess) is used.
+	scenario := a.opts.Scenario
+	if override, ok := scenarioFromModel(model); ok {
+		scenario = override
+	}
+	sc := resolveScenario(scenario, params)
 	// For resume, force the first event to run.resumed.
 	if isResume && len(sc.steps) > 0 && sc.steps[0].event != nil {
 		sc.steps[0].event.kind = "run.resumed"
@@ -163,6 +174,24 @@ func (a *Adapter) startRun(ctx context.Context, runID, engine, model, workspace 
 	}()
 
 	return handle, nil
+}
+
+// scenarioFromModel maps a model id of the form "fake/<scenario-name>" to the
+// corresponding Scenario. Returns (zero, false) when the model is empty or does
+// not match the fake-scenario form (so normal model ids pass through to the
+// adapter's configured scenario). Used by the minimal-run black-box tests to
+// drive each outcome via the engine id `fake` plus a model override.
+func scenarioFromModel(model string) (Scenario, bool) {
+	const prefix = "fake/"
+	if !strings.HasPrefix(model, prefix) {
+		return "", false
+	}
+	name := strings.TrimPrefix(model, prefix)
+	s := Scenario(name)
+	if !IsValidScenario(s) {
+		return "", false
+	}
+	return s, true
 }
 
 // SendMessage implements codingagent.Adapter.
@@ -224,4 +253,26 @@ func (s *sinkEmitter) write(_ context.Context, path, content string) error {
 		return nil
 	}
 	return fileWrite(s.workspace, path, content)
+}
+
+// gitAddAll runs `git add -A` inside the workspace (in-process only). It is
+// used by the write-commit scenario to produce a real commit. When no
+// workspace is configured the call is a no-op (so tests without a worktree do
+// not pollute the process CWD).
+func (s *sinkEmitter) gitAddAll(_ context.Context) error {
+	if s.workspace == "" {
+		return nil
+	}
+	return gitInWorkspace(s.workspace, "add", "-A")
+}
+
+// gitCommit runs `git commit -m <msg>` inside the workspace (in-process only).
+// The commit uses a deterministic identity so it never needs the user's git
+// config.
+func (s *sinkEmitter) gitCommit(_ context.Context, msg string) error {
+	if s.workspace == "" {
+		return nil
+	}
+	return gitInWorkspace(s.workspace, "commit", "-m", msg,
+		"--author=NeuroForge Fake <fake@neuroforge.local>")
 }

@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 
 	"neuroforge/internal/adapter/codingagent"
+	"neuroforge/internal/adapter/codingagent/builtin"
+	"neuroforge/internal/adapter/codingagent/fake"
 	"neuroforge/internal/transport"
 )
 
@@ -76,9 +79,25 @@ func (a *workspaceAPIAdapter) ListCheckpoints(ctx context.Context, id string) ([
 	return a.svc.ListCheckpoints(ctx, id)
 }
 
-// hasAdapter reports whether the registry already has an adapter with the given
-// id (used to avoid double-registration on daemon restart in the same process).
-func hasAdapter(r *codingagent.Registry, id string) bool {
-	_, ok := r.Lookup(id)
-	return ok
+// buildAdapterRegistry constructs a fresh coding-agent registry holding the
+// six first-party production engines (via [builtin.RegisterAll]) plus the fake
+// agent used for offline/smoke runs. It returns a clear error if any adapter
+// fails to construct or if an engine id collides, so a misconfigured daemon
+// surfaces the problem at startup instead of at dispatch time with an
+// "unknown engine" error.
+//
+// A new registry is built for every daemon Run so that repeated in-process
+// starts (integration tests, daemon restart) never see stale or
+// double-registered adapters — there is no package-level mutable registry
+// shared across runs.
+func buildAdapterRegistry() (*codingagent.Registry, error) {
+	reg := codingagent.NewRegistry()
+	if err := builtin.RegisterAll(reg); err != nil {
+		return nil, fmt.Errorf("builtin engines: %w", err)
+	}
+	fa := fake.New(fake.AdapterOptions{Installed: true})
+	if err := reg.Register(fa, 0); err != nil {
+		return nil, fmt.Errorf("fake engine: %w", err)
+	}
+	return reg, nil
 }

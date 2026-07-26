@@ -71,8 +71,10 @@ func (a *Adapter) Cancel(_ context.Context, handle protocol.RunHandle) error {
 	if !ok {
 		return fmt.Errorf("opencode: unknown or already-finished run %q", handle.RunID)
 	}
-	st.cancel()
-	return st.proc.Kill()
+	// Record the cancel intent BEFORE the kill so a kill-induced EOF cannot
+	// produce a non-cancelled terminal (KF-09 / invariant I.9).
+	st.requestCancel()
+	return nil
 }
 
 // Health probes the reachability of the OpenCode engine for one account (spec

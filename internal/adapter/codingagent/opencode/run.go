@@ -195,23 +195,23 @@ func (a *Adapter) supervise(ctx context.Context, st *runState, sink codingagent.
 		case <-ctx.Done():
 			_ = st.proc.Kill()
 			<-readerDone
-			if !sawTerminal {
-				_ = sink.OnEvent(context.Background(), terminalCancel(st))
-			}
-			_ = st.proc.Wait()
+			a.finalizeTerminal(st, sink, sawTerminal)
 			return
 		case <-timerCh:
+			// Record the timeout intent BEFORE the kill so a kill-induced EOF
+			// cannot synthesize a non-timeout terminal (KF-09 / I.9).
+			st.timedOut.Store(true)
 			_ = st.proc.Kill()
 			<-readerDone
-			if !sawTerminal {
-				_ = sink.OnEvent(context.Background(), terminalTimeout(st))
-			}
-			_ = st.proc.Wait()
+			a.finalizeTerminal(st, sink, sawTerminal)
 			return
 		case res := <-ch:
 			if res.line == nil && !res.hasMore {
-				// EOF: process has closed stdout. Collect exit code + stderr.
-				a.finishRun(st, sink, sawTerminal)
+				// EOF: process closed stdout. Route through the single terminal
+				// decision, which honours a cancel/timeout intent recorded
+				// before any kill (so a kill-induced EOF never misclassifies).
+				<-readerDone
+				a.finalizeTerminal(st, sink, sawTerminal)
 				return
 			}
 			if res.line == nil {
@@ -270,32 +270,48 @@ func (a *Adapter) forward(ctx context.Context, st *runState, sink codingagent.Ev
 	return sink.OnEvent(ctx, redactEvent(ev))
 }
 
-// finishRun is called when the process closes stdout (EOF). It waits for the
-// process, captures redacted stderr, and synthesizes a terminal event when the
-// engine did not emit one (crash / partial output / clean exit).
-func (a *Adapter) finishRun(st *runState, sink codingagent.EventSink, sawTerminal bool) {
+// finalizeTerminal is the SINGLE terminal decision point for a run (KF-09 /
+// invariant I.9). It waits for the process, then — if the engine did not emit
+// its own terminal — decides exactly one terminal event with priority
+// timeout > cancellation > natural exit. The cancel/timeout intents are
+// recorded before any kill, so a kill-induced EOF always observes them and can
+// never misclassify. Calling it more than once is harmless because the run is
+// already unregistered by the time a second path could reach it.
+func (a *Adapter) finalizeTerminal(st *runState, sink codingagent.EventSink, sawTerminal bool) {
 	waitErr := st.proc.Wait()
 	exitCode := exitCodeFrom(waitErr)
 	stderr := redactSecrets(st.proc.Stderr())
 	if sawTerminal {
 		return
 	}
-	term := protocol.EventRunCompleted
-	var failure *protocol.FailurePayload
-	if exitCode != 0 {
-		fc := a.ClassifyFailure(exitCode, nil, stderr)
-		term = protocol.EventRunFailed
-		failure = &protocol.FailurePayload{Class: fc.Class, Reason: fc.Reason, ExitCode: exitCode}
+	var ev protocol.NormalizedEvent
+	switch {
+	case st.timedOut.Load():
+		ev = terminalTimeout(st)
+	case st.cancelRequested.Load():
+		ev = terminalCancel(st)
+	default:
+		ev = a.synthesizeFromExit(st, exitCode, stderr)
 	}
-	ev := protocol.NormalizedEvent{
-		Type:      term,
+	_ = sink.OnEvent(context.Background(), ev)
+}
+
+// synthesizeFromExit builds a terminal event from the process outcome when the
+// engine did not emit one and no cancel/timeout intent was recorded. Exit 0 →
+// run.completed; non-zero → run.failed classified via ClassifyFailure.
+func (a *Adapter) synthesizeFromExit(st *runState, exitCode int, stderr string) protocol.NormalizedEvent {
+	if exitCode == 0 {
+		return openEvent(protocol.EventRunCompleted, st)
+	}
+	fc := a.ClassifyFailure(exitCode, nil, stderr)
+	return protocol.NormalizedEvent{
+		Type:      protocol.EventRunFailed,
 		Timestamp: time.Now(),
 		RunID:     st.runID,
 		Engine:    st.engine,
 		Model:     st.model,
-		Failure:   failure,
+		Failure:   &protocol.FailurePayload{Class: fc.Class, Reason: fc.Reason, ExitCode: exitCode},
 	}
-	_ = sink.OnEvent(context.Background(), ev)
 }
 
 // saveMalformed persists a (redacted) malformed agent output line to the

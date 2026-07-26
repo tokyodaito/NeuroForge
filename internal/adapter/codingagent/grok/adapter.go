@@ -290,19 +290,8 @@ func (a *Adapter) supervise(runCtx context.Context, runID, engine, model, worksp
 			_ = proctree.KillGroup(cmd, proctree.SigKill)
 			<-readerDone
 			if !sawTerminal {
-				cause := context.Cause(runCtx)
-				if errors.Is(cause, errGrokTimeout) {
-					_ = sink.OnEvent(context.Background(), protocol.NormalizedEvent{
-						Type: protocol.EventRunFailed, Timestamp: time.Now().UTC(),
-						RunID: runID, Engine: engine, Model: model,
-						Failure: &protocol.FailurePayload{Class: protocol.FailureTimeout, Reason: "run exceeded its wall-clock timeout", ExitCode: 124},
-					})
-				} else {
-					_ = sink.OnEvent(context.Background(), protocol.NormalizedEvent{
-						Type: protocol.EventRunCancelled, Timestamp: time.Now().UTC(),
-						RunID: runID, Engine: engine, Model: model,
-						Failure: &protocol.FailurePayload{Class: protocol.FailureCancelled, Reason: "cancelled by caller"},
-					})
+				if ev, ok := cancelTimeoutTerminal(runCtx, runID, engine, model); ok {
+					_ = sink.OnEvent(context.Background(), ev)
 				}
 			}
 			return
@@ -332,11 +321,21 @@ func (a *Adapter) supervise(runCtx context.Context, runID, engine, model, worksp
 	}
 
 	// Process exited; collect exit code + captured (redacted) stderr.
+	<-readerDone
 	waitErr := cmd.Wait()
 	exitCode := exitCodeOf(waitErr)
 	stderrText := redactSecrets(stderr.String())
 
 	if sawTerminal {
+		return
+	}
+
+	// KF-09 / invariant I.9: a cancel/timeout cancelled the run context BEFORE
+	// the kill that induced this EOF, so honour the cause here — never
+	// synthesize a non-cancelled terminal from the SIGKILL exit code. Priority:
+	// timeout > cancellation > natural exit.
+	if ev, ok := cancelTimeoutTerminal(runCtx, runID, engine, model); ok {
+		_ = sink.OnEvent(context.Background(), ev)
 		return
 	}
 
@@ -356,6 +355,29 @@ func (a *Adapter) supervise(runCtx context.Context, runID, engine, model, worksp
 		RunID: runID, Engine: engine, Model: model,
 		Failure: &protocol.FailurePayload{Class: fc.Class, Reason: fc.Reason, ExitCode: exitCode},
 	})
+}
+
+// cancelTimeoutTerminal decides the terminal event for a cancelled/timed-out
+// run from the run-context cause (errGrokTimeout ⇒ TIMEOUT, else CANCELLED).
+// Returns ok=false when the run was not cancelled/timed out (natural exit). It
+// is shared by the ctx.Done() path and the post-EOF path so the terminal
+// decision is identical and single-owner (KF-09 / invariant I.9).
+func cancelTimeoutTerminal(runCtx context.Context, runID, engine, model string) (protocol.NormalizedEvent, bool) {
+	if runCtx.Err() == nil {
+		return protocol.NormalizedEvent{}, false
+	}
+	if errors.Is(context.Cause(runCtx), errGrokTimeout) {
+		return protocol.NormalizedEvent{
+			Type: protocol.EventRunFailed, Timestamp: time.Now().UTC(),
+			RunID: runID, Engine: engine, Model: model,
+			Failure: &protocol.FailurePayload{Class: protocol.FailureTimeout, Reason: "run exceeded its wall-clock timeout", ExitCode: 124},
+		}, true
+	}
+	return protocol.NormalizedEvent{
+		Type: protocol.EventRunCancelled, Timestamp: time.Now().UTC(),
+		RunID: runID, Engine: engine, Model: model,
+		Failure: &protocol.FailurePayload{Class: protocol.FailureCancelled, Reason: "cancelled by caller"},
+	}, true
 }
 
 // saveMalformed persists a malformed/unknown agent output line to the artifacts

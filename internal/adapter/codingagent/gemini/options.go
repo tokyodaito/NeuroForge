@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"neuroforge/internal/adapter/codingagent/protocol"
 )
@@ -59,9 +60,34 @@ type Adapter struct {
 }
 
 // runState tracks one live Gemini run for cancellation and timeout.
+//
+// Terminal arbitration (KF-09 / invariant I.9): the cancel intent is recorded
+// in [runState.cancelled] BEFORE the process is killed, so a kill-induced EOF
+// can never be observed by supervise before the cancel intent is visible. The
+// hard deadline is baked into the run context at creation, so a
+// context.DeadlineExceeded check is inherently race-free. Together these give a
+// single, deterministic terminal decision owned by the supervise goroutine.
 type runState struct {
 	proc   launchedProcess
 	cancel context.CancelFunc
+
+	cancelOnce sync.Once
+	cancelled  atomic.Bool
+}
+
+// requestCancel records the cancel intent, cancels the run context, and kills
+// the process group — exactly once, idempotently. The intent flag is set BEFORE
+// the kill so a kill-induced EOF cannot race ahead of the cancel decision.
+func (st *runState) requestCancel() {
+	st.cancelOnce.Do(func() {
+		st.cancelled.Store(true)
+		if st.cancel != nil {
+			st.cancel()
+		}
+		if st.proc != nil {
+			_ = st.proc.kill()
+		}
+	})
 }
 
 // New returns a Gemini adapter configured by opts. It does not self-register;

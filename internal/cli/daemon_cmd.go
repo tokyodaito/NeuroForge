@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -63,7 +64,15 @@ func (a *App) daemonRun(dirs daemon.Dirs, args []string) int {
 	fs := flag.NewFlagSet("daemon run", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	addr := fs.String("addr", "127.0.0.1:0", "loopback listen address (loopback only)")
+	// runtime-home is written into argv by daemon.Start so OS process samplers
+	// can attribute a PID to a single NeuroForge home (BF-F-01 test isolation).
+	// If provided it must match the resolved home; it does not override env.
+	runtimeHome := fs.String("runtime-home", "", "runtime home path (process identity; must match NEUROFORGE_HOME)")
 	if err := fs.Parse(args); err != nil {
+		return ExitErr
+	}
+	if *runtimeHome != "" && filepath.Clean(*runtimeHome) != filepath.Clean(dirs.Root) {
+		fmt.Fprintf(a.Err, "%s: --runtime-home %q does not match resolved home %q\n", a.Name, *runtimeHome, dirs.Root)
 		return ExitErr
 	}
 

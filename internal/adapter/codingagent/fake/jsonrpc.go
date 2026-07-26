@@ -342,3 +342,11 @@ func (e *rpcEmitter) emitRaw(_ context.Context, line string) error {
 func (e *rpcEmitter) write(_ context.Context, rel, content string) error {
 	return nil
 }
+
+// gitAddAll / gitCommit are no-ops in JSON-RPC mode. The write-commit scenario
+// is exercised in-process and via the command-mode binary; the JSON-RPC plugin
+// mode never produces commits because the host owns the workspace.
+func (e *rpcEmitter) gitAddAll(_ context.Context) error { return nil }
+func (e *rpcEmitter) gitCommit(_ context.Context, _ string) error {
+	return nil
+}

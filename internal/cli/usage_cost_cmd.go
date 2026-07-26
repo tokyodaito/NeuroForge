@@ -164,19 +164,35 @@ func usageJSON(s budget.AggregatedSummary) usageJSONOut {
 // seedDemoUsage records a deterministic, clearly-fake set of usage events so
 // `forge usage` / `forge cost` are demonstrable without a live run. All engines
 // and models are fakes (rule §36.5: no real paid models).
+//
+// Timestamps are clamped into [startOfDayUTC(now), now] so a default `--days 1`
+// window never goes empty near UTC midnight (demo offsets of -1h/-2h would
+// otherwise fall on the previous UTC day and drop CoarsestConf to UNKNOWN).
 func seedDemoUsage(bc *budget.Controller) {
 	now := time.Now().UTC()
 	records := []budget.UsageRecord{
 		{Engine: "alpha", Model: "alpha-pro", Tier: "STANDARD", Account: quota.AccountID{Engine: "alpha", Account: "alpha-api"},
 			InputTokens: 1_200_000, CachedTokens: 980_000, OutputTokens: 141_000, CostUSD: 6.81, Included: false,
-			Confidence: quota.ConfEstimated, ProviderType: budget.ProviderCoding, At: now.Add(-2 * time.Hour)},
+			Confidence: quota.ConfEstimated, ProviderType: budget.ProviderCoding, At: demoUsageAt(now, 2*time.Hour)},
 		{Engine: "alpha", Model: "alpha-lite", Tier: "SMALL", Account: quota.AccountID{Engine: "alpha", Account: "alpha-sub"},
 			InputTokens: 320_000, OutputTokens: 22_000, CostUSD: 0, Included: true,
-			Confidence: quota.ConfProviderReported, ProviderType: budget.ProviderCoding, At: now.Add(-1 * time.Hour)},
+			Confidence: quota.ConfProviderReported, ProviderType: budget.ProviderCoding, At: demoUsageAt(now, 1*time.Hour)},
 	}
 	for _, r := range records {
 		bc.Record(r)
 	}
+}
+
+// demoUsageAt returns now-behind, floored to the start of the UTC day so the
+// point always lies inside the default "today" usage window.
+func demoUsageAt(now time.Time, behind time.Duration) time.Time {
+	now = now.UTC()
+	t := now.Add(-behind)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if t.Before(day) {
+		return day
+	}
+	return t
 }
 
 func humanTokens(n int) string {

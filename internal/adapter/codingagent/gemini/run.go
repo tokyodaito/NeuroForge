@@ -49,10 +49,12 @@ func (a *Adapter) SendMessage(_ context.Context, _ protocol.RunHandle, _ protoco
 	return ErrLiveMessagesNotSupported
 }
 
-// Cancel implements [codingagent.Adapter]. It terminates the whole agent
-// process group (spec: cancellation ends the whole process group, never
-// orphaning descendants) and signals the run's context so the supervise loop
-// emits run.cancelled.
+// Cancel implements [codingagent.Adapter]. It records the cancel intent, then
+// terminates the whole agent process group (spec: cancellation ends the whole
+// process group, never orphaning descendants) and signals the run's context so
+// the supervise loop emits run.cancelled. The intent is recorded before the
+// kill (see [runState.requestCancel]) so a kill-induced EOF can never produce a
+// non-cancelled terminal (KF-09 / invariant I.9).
 func (a *Adapter) Cancel(_ context.Context, handle protocol.RunHandle) error {
 	a.mu.Lock()
 	st, ok := a.runs[handle.RunID]
@@ -60,10 +62,7 @@ func (a *Adapter) Cancel(_ context.Context, handle protocol.RunHandle) error {
 	if !ok {
 		return fmt.Errorf("gemini: unknown run %q", handle.RunID)
 	}
-	if st.proc != nil {
-		_ = st.proc.kill()
-	}
-	st.cancel()
+	st.requestCancel()
 	return nil
 }
 
@@ -173,21 +172,17 @@ func (a *Adapter) supervise(ctx context.Context, st *runState, md frameMeta, sin
 	}()
 
 	var raw []byte
-	timedOut := false
-	cancelled := false
 	select {
 	case <-ctx.Done():
+		// Cancellation or hard deadline. Kill the group (idempotent) and drain
+		// the reader so its goroutine exits cleanly. The terminal reason is
+		// decided below from race-free sources — not here — so a kill-induced
+		// EOF that races back into this goroutine cannot misclassify.
 		_ = st.proc.kill()
-		// Drain the reader so the goroutine exits cleanly.
 		select {
 		case o := <-readCh:
 			raw = o.raw
 		case <-time.After(2 * time.Second):
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			timedOut = true
-		} else {
-			cancelled = true
 		}
 	case o := <-readCh:
 		raw = o.raw
@@ -203,7 +198,16 @@ func (a *Adapter) supervise(ctx context.Context, st *runState, md frameMeta, sin
 		emit(ev)
 	}
 
-	// Terminal event.
+	// Terminal arbitration (KF-09 / invariant I.9): a SINGLE decision owned by
+	// this goroutine. Priority per STATE_MACHINE §1.3:
+	//   timeout (deadline) > cancellation > natural exit.
+	// The deadline is baked into ctx at creation (race-free); the cancel intent
+	// is recorded in st.cancelled BEFORE the kill (race-free). A kill-induced
+	// EOF therefore always observes the cancel intent, so it can never leak a
+	// non-cancelled terminal from synthesizedTerminal below.
+	timedOut := ctx.Err() == context.DeadlineExceeded
+	cancelled := !timedOut && (st.cancelled.Load() || ctx.Err() == context.Canceled)
+
 	switch {
 	case cancelled:
 		emitTerm(a.cancelledTerminal(md, st))

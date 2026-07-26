@@ -394,6 +394,15 @@ func (a *Adapter) supervise(in superviseInput) {
 	if sawTerminal {
 		return
 	}
+	// KF-09 / invariant I.9: a cancel/timeout cancelled the run context BEFORE
+	// the kill that induced this EOF, so honour the recorded reason here — never
+	// synthesize a non-cancelled terminal from the SIGKILL exit code. ctx.Err()
+	// distinguishes a real cancellation (Cancel sets the reason + cancels ctx
+	// before the kill) from a natural exit (ctx still alive).
+	if in.ctx.Err() != nil {
+		emitBG(a.synthesizeTermination(in.runID, in.engine, in.rs.reasonOf()))
+		return
+	}
 	fc := classifyFailure(exitCode, events, stderr)
 	term := protocol.EventRunCompleted
 	if exitCode != 0 {

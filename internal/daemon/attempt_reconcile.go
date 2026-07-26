@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"neuroforge/internal/audit"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/supervisor"
+	"neuroforge/internal/task"
 	"neuroforge/internal/workspace"
 )
 
@@ -89,7 +91,7 @@ func (r *attemptReconciler) reconcileActive(ctx context.Context, tx ReconcileTx,
 	resumable := len(packs) > 0 && len(checkpoints) > 0
 	if existErr != nil || !exists {
 		// Worktree gone: the run cannot be resumed at all.
-		if err := r.markFailed(ctx, ws.ID, "worktree missing after restart"); err != nil {
+		if err := r.markFailed(ctx, tx, ws, "worktree missing after restart"); err != nil {
 			tx.Logger.Warn("attempt reconciler: mark failed", "err", err)
 		}
 		return ReconcileDecision{
@@ -104,7 +106,7 @@ func (r *attemptReconciler) reconcileActive(ctx context.Context, tx ReconcileTx,
 	if resumable {
 		detail += "; resumable from continuation pack (AC-27)"
 	}
-	if err := r.markFailed(ctx, ws.ID, "interrupted by daemon restart"); err != nil {
+	if err := r.markFailed(ctx, tx, ws, "interrupted by daemon restart"); err != nil {
 		tx.Logger.Warn("attempt reconciler: mark failed", "err", err)
 	}
 	return ReconcileDecision{
@@ -120,7 +122,7 @@ func (r *attemptReconciler) reconcileActive(ctx context.Context, tx ReconcileTx,
 func (r *attemptReconciler) reconcileWaitingQuota(ctx context.Context, tx ReconcileTx, ws workspace.Workspace) ReconcileDecision {
 	exists, err := workspace.WorktreeExists(ws.Path)
 	if err != nil || !exists {
-		if mErr := r.markFailed(ctx, ws.ID, "worktree missing while waiting for quota"); mErr != nil {
+		if mErr := r.markFailed(ctx, tx, ws, "worktree missing while waiting for quota"); mErr != nil {
 			tx.Logger.Warn("attempt reconciler: mark failed", "err", mErr)
 		}
 		return ReconcileDecision{
@@ -136,15 +138,60 @@ func (r *attemptReconciler) reconcileWaitingQuota(ctx context.Context, tx Reconc
 	}
 }
 
-func (r *attemptReconciler) markFailed(ctx context.Context, workspaceID, reason string) error {
-	if _, err := r.wm.SetState(ctx, workspaceID, workspace.StateFailed); err != nil {
-		return err
+// markFailed transitions an interrupted workspace to failed AND keeps the
+// owning task in agreement: a non-terminal task is moved to FAILED (BF-03,
+// STATE_MACHINE.md §5.1 / §4.3 — a task whose workspace is terminal is itself
+// terminal). The `interrupted` outcome (OUTCOME_CONTRACT.md §1.1) is recorded
+// in the audit log with the reason so the interruption is durable and visible.
+// The change is idempotent: re-reconciling an already-failed workspace is a
+// no-op (allowedRecoveryTransition permits failed->failed) and a terminal task
+// is never revived.
+func (r *attemptReconciler) markFailed(ctx context.Context, tx ReconcileTx, ws workspace.Workspace, reason string) error {
+	if _, err := r.wm.SetState(ctx, ws.ID, workspace.StateFailed); err != nil {
+		return fmt.Errorf("workspace %s -> failed: %w", ws.ID, err)
 	}
-	if r.wm != nil {
-		// The workspace manager audits the transition; nothing more to do.
-		_ = reason
+	// Keep the task in agreement with the terminal workspace. Only a
+	// non-terminal task is moved; a terminal task stays (it must not be
+	// revived — invariant I.8 / BF-03).
+	if ws.TaskID != "" {
+		if t, err := tx.DB.GetTask(ctx, ws.TaskID); err == nil && !isTerminalTask(task.State(t.State)) {
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			if err := tx.DB.UpdateTaskState(ctx, ws.TaskID, string(task.StateFailed), now); err != nil {
+				tx.Logger.Warn("attempt reconciler: task -> failed", "task", ws.TaskID, "err", err)
+			}
+		}
+	}
+	// Record the interrupted outcome so it is durable and distinct from a
+	// normal failure (OUTCOME_CONTRACT.md §1.1: interrupted is produced only by
+	// the reconciler).
+	if tx.Audit != nil {
+		if _, err := tx.Audit.Record(ctx, audit.Event{
+			Type:    "run.outcome_decided",
+			Scope:   audit.ScopeTask,
+			ScopeID: ws.ID,
+			Actor:   audit.ActorDaemon,
+			Payload: audit.Payload(
+				"outcome", "interrupted",
+				"workspace_id", ws.ID,
+				"task_id", ws.TaskID,
+				"run_id", ws.RunID,
+				"reason", reason,
+			),
+		}); err != nil {
+			tx.Logger.Warn("attempt reconciler: audit interrupted outcome", "err", err)
+		}
 	}
 	return nil
+}
+
+// isTerminalTask reports whether a task state is terminal (COMPLETED / FAILED /
+// CANCELLED / REJECTED) so the reconciler never revives a terminal task.
+func isTerminalTask(s task.State) bool {
+	switch s {
+	case task.StateCompleted, task.StateFailed, task.StateCancelled, task.StateRejected:
+		return true
+	}
+	return false
 }
 
 func decisionForActive(resumable bool) DecisionAction {
