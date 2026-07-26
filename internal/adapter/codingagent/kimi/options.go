@@ -1,6 +1,8 @@
 package kimi
 
 import (
+	"os/exec"
+
 	"neuroforge/internal/adapter/codingagent/protocol"
 )
 
@@ -17,6 +19,13 @@ type Options struct {
 	// for wiring/tests that must pin a specific binary. It is never interpreted
 	// by a shell (no /bin/sh); it is passed straight to exec.
 	BinaryOverride string
+
+	// LookPath, when non-nil, replaces [exec.LookPath] for binary resolution.
+	// Production leaves it nil. Tests inject a deterministic resolver so
+	// detection never depends on the process-global PATH or a real installed
+	// kimi binary (PATH is process-global and unsafe to mutate from parallel
+	// tests).
+	LookPath func(file string) (string, error)
 
 	// ArtifactsDir is where malformed agent output lines are persisted for
 	// forensics (spec: malformed event is saved to artifacts). Defaults to
@@ -65,6 +74,14 @@ type Options struct {
 	// state so a run never mutates the user's global profile. Provided only for
 	// diagnostic harnesses that must reuse an existing profile.
 	DisableIsolation bool
+}
+
+// lookPath resolves file via the injected LookPath hook, or [exec.LookPath].
+func (o *Options) lookPath(file string) (string, error) {
+	if o != nil && o.LookPath != nil {
+		return o.LookPath(file)
+	}
+	return exec.LookPath(file)
 }
 
 func (o *Options) binaryName() string {

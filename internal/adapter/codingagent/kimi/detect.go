@@ -34,18 +34,19 @@ type probedFlags struct {
 }
 
 // detectBinary resolves the engine executable. BinaryOverride wins; otherwise
-// exec.LookPath searches PATH (honouring PATHEXT on Windows, so .exe/.cmd/.bat
-// and npm shims are found) and tolerates spaces and Unicode in the path.
+// LookPath (default [exec.LookPath]) searches PATH (honouring PATHEXT on
+// Windows, so .exe/.cmd/.bat and npm shims are found) and tolerates spaces and
+// Unicode in the path.
 func detectBinary(opts *Options) (path string, found bool) {
 	if opts.BinaryOverride != "" {
 		// An explicit override is trusted verbatim (it may be a test harness
 		// path). We still sanity-check it via LookPath so a typo is reported.
-		if p, err := exec.LookPath(opts.BinaryOverride); err == nil {
+		if p, err := opts.lookPath(opts.BinaryOverride); err == nil {
 			return p, true
 		}
 		return opts.BinaryOverride, true
 	}
-	p, err := exec.LookPath(opts.binaryName())
+	p, err := opts.lookPath(opts.binaryName())
 	if err != nil {
 		return "", false
 	}
