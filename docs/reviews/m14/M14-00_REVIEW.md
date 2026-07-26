@@ -2,9 +2,10 @@
 
 **Task:** M14-00 — Strict baseline, evidence model and sequential gate.
 **Reviewer actor:** `M14-00-review-session` (distinct from `M14-00-impl-session`).
-**Reviewed candidate SHA:** `9ef4eda6756cc822cef0af1486e2741d3e0f44b2`
+**Reviewed candidate SHA:** `9ef4eda6756cc822cef0af1486e2741d3e0f44b2` (initial),
+`3bad1b5f97e3e67f850a73577b429a289236b0bd` (after remediation).
 **Starting SHA:** `00e0902804cf46ca85f4602e9d36fc472cb95419`
-**Verdict:** `CHANGES_REQUESTED` (one BLOCKER finding — see below).
+**Verdict:** `REVIEW_APPROVED` (re-review after remediation — see §"Re-review").
 
 The review was performed against a clean checkout of the candidate SHA. The
 diff is 11 files / +1927 lines, all additive except `AGENTS.md`, `cli.go`, and
@@ -158,3 +159,75 @@ unvalidated ACCEPTED claim (BLOCKER-1). All other criteria are met and the
 implementation is otherwise clean, well-tested, and correctly scoped. Once
 BLOCKER-1 is fixed with a regression test and MINOR-1's doc sentence is added,
 the change should be ready for `REVIEW_APPROVED`.
+
+---
+
+## Re-review after remediation
+
+**Reviewer actor:** `M14-00-review-session`.
+**Remediation commit:** `3bad1b5f97e3e67f850a73577b429a289236b0bd` ("M14-00:
+address review findings"). The reviewer re-examined only the remediation diff
+(`git diff 9ef4eda..3bad1b5`) and re-ran the gates independently.
+
+### BLOCKER-1 — CLOSED
+
+- Fix verified: `enggate.CanStartNext` now calls
+  `ValidateTransition(predecessor.PreviousState, StateAccepted, predecessor)`
+  after the `State != StateAccepted` short-circuit. A manifest that claims
+  `state: "ACCEPTED"` but is otherwise invalid (wrong schema, missing evidence,
+  self-accept, missing black-box) no longer unlocks a successor.
+- Regression tests verified to catch the defect: the three new tests
+  (`internal/enggate.TestNegativeCanStartNextFabricatedAcceptedWrongSchema`,
+  `TestNegativeCanStartNextFabricatedAcceptedSelfAccept`,
+  `internal/cli.TestGateBlackBoxNegativeNextFabricatedAccepted`) were confirmed
+  by the implementer to FAIL on the pre-fix code and PASS after. The reviewer
+  independently re-ran them against `3bad1b5`:
+  - `go test -run 'TestNegativeCanStartNext' -count=1 ./internal/enggate/` → PASS
+  - `go test -run 'TestGateBlackBoxNegativeNext' -count=1 ./internal/cli/` → PASS
+- Counterexample re-attempt through the compiled binary:
+
+  ```
+  $ ./forge gate next --manifest /tmp/evil.json   # state=ACCEPTED, schema 999, no evidence
+  forge: gate next: BLOCKED: enggate: predecessor "M14-EVIL" claims ACCEPTED but is not validly accepted: schema_version 999 != active 1
+  # exit 1   (previously exit 0)
+  ```
+- The positive path is preserved:
+
+  ```
+  $ ./forge gate next --manifest docs/reviews/m14/M14-00.manifest.json
+  OK: predecessor "M14-00" is ACCEPTED; successor task may start   # exit 0
+  ```
+
+### MINOR-1 — CLOSED
+
+- Baseline §4 now contains an explicit "What the validator checks, and what it
+  does not" paragraph stating that `ValidateTransition` enforces structural
+  completeness and rules (not reference authenticity), and that `forge gate next`
+  validates the ACCEPTED claim. §7 mirrors the latter. The reviewer confirms the
+  wording is accurate and does not overclaim.
+
+### MINOR-2 — DEFERRED (not blocking)
+
+- ADR for the `internal/enggate` package boundary remains a follow-up (FU-2). It
+  does not affect any mandatory criterion.
+
+### Independent re-run at `3bad1b5`
+
+| Command | Result |
+|---------|--------|
+| `go test ./internal/enggate/ -count=1` | PASS |
+| `go test -race ./internal/enggate/` | PASS |
+| `go test -race -run 'TestGateBlackBox' -count=1 ./internal/cli/` | PASS |
+| `make check` | PASS (exit 0) |
+| `gofmt -l .` | clean |
+| `./forge gate validate --manifest docs/reviews/m14/M14-00.manifest.json` | exit 0 |
+| `./forge gate next --manifest docs/reviews/m14/M14-00.manifest.json` | exit 0 |
+
+### Updated verdict
+
+`REVIEW_APPROVED`. BLOCKER-1 is closed by a regression test that demonstrably
+catches the defect and the counterexample is now rejected through the compiled
+binary; MINOR-1 is applied; MINOR-2 is deferred without blocking. All four
+mandatory acceptance criteria are now met with passing automated evidence at
+unit, integration, and black-box levels. The candidate `3bad1b5` is ready for
+final independent acceptance.
