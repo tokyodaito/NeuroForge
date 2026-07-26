@@ -176,10 +176,9 @@ func TestHealthDownWhenMissing(t *testing.T) {
 	}
 }
 
-// withPath prepends dir to PATH for the duration of the test.
+// withPath isolates PATH to dir for the duration of the test (t.Setenv restores
+// automatically). PATH is process-global — never use bare os.Setenv here.
 func withPath(t *testing.T, dir string) {
 	t.Helper()
-	old := os.Getenv("PATH")
-	os.Setenv("PATH", dir+string(os.PathListSeparator)+old)
-	t.Cleanup(func() { os.Setenv("PATH", old) })
+	t.Setenv("PATH", dir)
 }

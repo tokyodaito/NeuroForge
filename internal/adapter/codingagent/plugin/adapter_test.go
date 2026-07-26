@@ -64,7 +64,10 @@ func fakeBin(t *testing.T) string {
 func dialFake(t *testing.T, scenario fake.Scenario) (*Adapter, func()) {
 	t.Helper()
 	bin := fakeBin(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Dial budget covers process start + handshake only. Under full-suite load
+	// the OS can delay exec of the plugin binary for many seconds without a
+	// protocol deadlock; a 10s ceiling produced context deadline flakes.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// Set FAKE_SCENARIO so the jsonrpc server picks the scenario.
 	env := []string{"FAKE_SCENARIO=" + string(scenario)}
@@ -77,6 +80,16 @@ func dialFake(t *testing.T, scenario fake.Scenario) (*Adapter, func()) {
 	}
 	a := ad.(*Adapter)
 	return a, func() { _ = a.Close() }
+}
+
+// runCtx returns a Start/Resume context that is not tied to waitForTerminal.
+// A short shared deadline cancels the run and synthesizes run.cancelled under
+// full-suite process-start delay.
+func runCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
 }
 
 func waitForTerminal(s *codingagent.SliceSink, timeout time.Duration) []protocol.NormalizedEvent {
@@ -126,9 +139,7 @@ func TestPluginRunSuccessStreamsEvents(t *testing.T) {
 	defer cleanup()
 
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	handle, err := a.Start(ctx, protocol.AgentRunRequest{
+	handle, err := a.Start(runCtx(t), protocol.AgentRunRequest{
 		RunID: "p1", Engine: "fake", Model: "fake/standard", Workspace: t.TempDir(),
 	}, sink)
 	if err != nil {
@@ -137,7 +148,7 @@ func TestPluginRunSuccessStreamsEvents(t *testing.T) {
 	if handle.RunID != "p1" || handle.Engine != "fake" {
 		t.Errorf("handle: %+v", handle)
 	}
-	evs := waitForTerminal(sink, 3*time.Second)
+	evs := waitForTerminal(sink, 10*time.Second)
 	types := typesOf(evs)
 	if len(types) == 0 || types[0] != protocol.EventRunStarted {
 		t.Errorf("first = %v, want run.started", types)
@@ -152,13 +163,11 @@ func TestPluginQuotaFailureClassified(t *testing.T) {
 	defer cleanup()
 
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "q1", Engine: "fake", Model: "fake/standard"}, sink)
+	_, err := a.Start(runCtx(t), protocol.AgentRunRequest{RunID: "q1", Engine: "fake", Model: "fake/standard"}, sink)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	evs := waitForTerminal(sink, 3*time.Second)
+	evs := waitForTerminal(sink, 10*time.Second)
 	if lastType(evs) != protocol.EventRunFailed {
 		t.Fatalf("last = %s, want run.failed", lastType(evs))
 	}
@@ -174,9 +183,7 @@ func TestPluginCancellation(t *testing.T) {
 	defer cleanup()
 
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	handle, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "cc", Engine: "fake", Model: "fake/standard", Workspace: t.TempDir()}, sink)
+	handle, err := a.Start(runCtx(t), protocol.AgentRunRequest{RunID: "cc", Engine: "fake", Model: "fake/standard", Workspace: t.TempDir()}, sink)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -184,7 +191,7 @@ func TestPluginCancellation(t *testing.T) {
 	if err := a.Cancel(context.Background(), handle); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	evs := waitForTerminal(sink, 2*time.Second)
+	evs := waitForTerminal(sink, 10*time.Second)
 	if lastType(evs) != protocol.EventRunCancelled {
 		t.Errorf("last = %s, want run.cancelled", lastType(evs))
 	}
@@ -195,15 +202,13 @@ func TestPluginResume(t *testing.T) {
 	defer cleanup()
 
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := a.Resume(ctx, protocol.ResumeRequest{
+	_, err := a.Resume(runCtx(t), protocol.ResumeRequest{
 		RunID: "rr", Engine: "fake", Model: "fake/standard", Workspace: t.TempDir(), SessionID: "fake-session-1",
 	}, sink)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	evs := waitForTerminal(sink, 3*time.Second)
+	evs := waitForTerminal(sink, 10*time.Second)
 	types := typesOf(evs)
 	if len(types) == 0 || types[0] != protocol.EventRunResumed {
 		t.Errorf("first = %v, want run.resumed", types)
@@ -218,13 +223,11 @@ func TestPluginMalformedDoesNotBreakRun(t *testing.T) {
 	defer cleanup()
 
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "m1", Engine: "fake"}, sink)
+	_, err := a.Start(runCtx(t), protocol.AgentRunRequest{RunID: "m1", Engine: "fake"}, sink)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	evs := waitForTerminal(sink, 3*time.Second)
+	evs := waitForTerminal(sink, 10*time.Second)
 	// Must still complete; the malformed line arrives as a warning event.
 	if lastType(evs) != protocol.EventRunCompleted {
 		t.Errorf("last = %s, want run.completed", lastType(evs))
@@ -239,13 +242,11 @@ func TestPluginUsageEvents(t *testing.T) {
 	defer cleanup()
 
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "u1", Engine: "fake"}, sink)
+	_, err := a.Start(runCtx(t), protocol.AgentRunRequest{RunID: "u1", Engine: "fake"}, sink)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	evs := waitForTerminal(sink, 3*time.Second)
+	evs := waitForTerminal(sink, 10*time.Second)
 	n := 0
 	for _, e := range evs {
 		if e.Type == protocol.EventUsageUpdated {

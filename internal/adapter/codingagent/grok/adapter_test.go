@@ -13,16 +13,25 @@ import (
 	"neuroforge/internal/adapter/codingagent/protocol"
 )
 
+// startCtx returns a run context that outlives waitForTerminal. Tests must not
+// cancel Start via the same short deadline used to wait for events: expiry
+// synthesizes run.cancelled and falsely fails success scenarios under
+// full-suite load (process-start delay consumes the shared budget).
+func startCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // runStub starts a run against the given scenario and returns the collected
 // events once a terminal event arrives (or the timeout elapses).
 func runStub(t *testing.T, scenario string, timeout time.Duration) (protocol.RunHandle, []protocol.NormalizedEvent) {
 	t.Helper()
 	a := New(stubOptions(t, scenario))
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 	ws := t.TempDir()
-	handle, err := a.Start(ctx, protocol.AgentRunRequest{
+	handle, err := a.Start(startCtx(t), protocol.AgentRunRequest{
 		RunID: "t-" + scenario, Engine: a.ID(), Model: "grok/coding", Workspace: ws, Prompt: "hi",
 	}, sink)
 	if err != nil {
@@ -86,9 +95,7 @@ func TestRunMalformedDoesNotBreakAndSavesArtifact(t *testing.T) {
 		ExtraEnv:     []string{"GROK_STUB_SCENARIO=malformed-json"},
 	})
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	if _, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "mal", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
+	if _, err := a.Start(startCtx(t), protocol.AgentRunRequest{RunID: "mal", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
 		t.Fatal(err)
 	}
 	evs := waitForTerminal(sink, 6*time.Second)
@@ -131,9 +138,7 @@ func TestRunUnknownEventEmitsWarningAndCompletes(t *testing.T) {
 func TestRunQuotaFailureClassified(t *testing.T) {
 	a := New(stubOptions(t, "quota-before-edits"))
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	if _, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "q", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
+	if _, err := a.Start(startCtx(t), protocol.AgentRunRequest{RunID: "q", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
 		t.Fatal(err)
 	}
 	evs := waitForTerminal(sink, 6*time.Second)
@@ -160,9 +165,7 @@ func TestRunQuotaFailureClassified(t *testing.T) {
 func TestRunCrashClassifiedAsEngineCrash(t *testing.T) {
 	a := New(stubOptions(t, "crash"))
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	if _, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "c", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
+	if _, err := a.Start(startCtx(t), protocol.AgentRunRequest{RunID: "c", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
 		t.Fatal(err)
 	}
 	evs := waitForTerminal(sink, 6*time.Second)
@@ -192,9 +195,7 @@ func TestRunResumeEmitsRunResumed(t *testing.T) {
 	// and the adapter's default gate already enables it, but be explicit).
 	a.opts.ResumeEnabled = boolPtr(true)
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	if _, err := a.Resume(ctx, protocol.ResumeRequest{
+	if _, err := a.Resume(startCtx(t), protocol.ResumeRequest{
 		RunID: "r", Engine: a.ID(), Workspace: t.TempDir(), SessionID: "grok-session-1",
 	}, sink); err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -282,9 +283,7 @@ func TestRunSecretRedactionInFailureReason(t *testing.T) {
 	// it from the failure reason.
 	a := New(stubOptions(t, "auth-failure"))
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	if _, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "auth", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
+	if _, err := a.Start(startCtx(t), protocol.AgentRunRequest{RunID: "auth", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink); err != nil {
 		t.Fatal(err)
 	}
 	evs := waitForTerminal(sink, 6*time.Second)
@@ -306,9 +305,7 @@ func TestRunWindowsPathAndUnicodeWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink := &codingagent.SliceSink{}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	if _, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "ws", Engine: a.ID(), Workspace: ws, Prompt: "x"}, sink); err != nil {
+	if _, err := a.Start(startCtx(t), protocol.AgentRunRequest{RunID: "ws", Engine: a.ID(), Workspace: ws, Prompt: "x"}, sink); err != nil {
 		t.Fatalf("Start with unicode/spaces workspace: %v", err)
 	}
 	evs := waitForTerminal(sink, 6*time.Second)
@@ -325,9 +322,7 @@ func TestRunConcurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			sink := &codingagent.SliceSink{}
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer cancel()
-			_, err := a.Start(ctx, protocol.AgentRunRequest{RunID: "cc", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink)
+			_, err := a.Start(startCtx(t), protocol.AgentRunRequest{RunID: "cc", Engine: a.ID(), Workspace: t.TempDir(), Prompt: "x"}, sink)
 			if err != nil {
 				t.Errorf("Start %d: %v", i, err)
 				return
