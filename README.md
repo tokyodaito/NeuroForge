@@ -7,11 +7,19 @@ delivers it to a local branch, a remote branch, a Pull/Merge Request, or a merge
 target branch — while the user manages a backlog, policies, budgets and autonomy
 levels instead of individual agents.
 
-> **Status:** architectural scaffold (milestone **M0 — in progress**).
-> Only `forge version` and `forge help` are implemented. Every other capability is
-> explicitly tracked as not-yet-implemented — see
-> [`docs/spec/COMPLIANCE_MATRIX.md`](docs/spec/COMPLIANCE_MATRIX.md). There are no
-> disguised stubs that pretend to work.
+> **Status:** self-hosting alpha. The domain logic for all fourteen milestones
+> (M0–M13) is implemented and covered by automated tests — unit tests, in-process
+> integration tests, and black-box tests that drive the compiled `forge` binary
+> through the daemon loopback transport. `forge run "<description>"` is the
+> production self-hosting vertical slice: it creates a task, opens an isolated
+> worktree, runs one real coding-agent adapter (opencode by default), and
+> finalizes a local result ref (reliability is being actively stabilized — see
+> [`docs/stabilization/`](docs/stabilization/)). What stays **opt-in** (rule §33,
+> no paid calls in CI): live paid models, real image generation, and real device
+> harnesses — CI exercises only the fake coding agent, fake image provider and
+> fake visual harness. Per-requirement status lives in
+> [`docs/spec/COMPLIANCE_MATRIX.md`](docs/spec/COMPLIANCE_MATRIX.md); there are no
+> disguised stubs that pretend to work (rule §36.25).
 
 The authoritative requirements live in
 [`docs/spec/NEUROFORGE_SPEC.md`](docs/spec/NEUROFORGE_SPEC.md). This README is a
@@ -47,14 +55,21 @@ Requirements:
 make build              # produces ./forge with version metadata
 ./forge version         # print version / commit / platform
 ./forge help            # implemented + planned commands
+./forge daemon start    # start the background daemon (loopback HTTP + SSE)
+./forge daemon status   # lifecycle status (--json)
+./forge run "<desc>"    # one-shot run: task -> worktree -> adapter -> result ref
 make check              # fmt-check + go vet + tests (the CI gate)
 make test               # unit tests
 ```
 
 > `make lint` runs `golangci-lint` if installed, otherwise falls back to `go vet`.
 
-There is no daemon, no SQLite storage and no real adapters yet — those arrive in
-their milestones (see the implementation plan).
+The daemon owns all mutable state (SQLite/WAL via the pure-Go
+`modernc.org/sqlite` driver, ADR-0010); the CLI and TUI reach it only over a
+loopback, token-protected HTTP+SSE transport (ADR-0004). Real paid models,
+image generation and device harnesses are **opt-in** and never invoked in CI —
+orchestration and conformance tests use the fake coding agent (§33.1), fake
+image provider (§33.2) and fake visual harness (§33.3) instead (rule §36.5).
 
 ### Windows
 
@@ -68,44 +83,76 @@ On Windows the PowerShell scripts under `scripts/` are the first-class path
 ## Repository layout
 
 ```
-cmd/forge/              binary entrypoint
+cmd/forge/              binary entrypoint (+ cmd/fake-coding-agent fixture)
 internal/
-  cli/                  CLI command dispatch (IMPLEMENTED: version, help)
-  version/              build/runtime version info (IMPLEMENTED)
-  daemon/               long-running daemon process                (M0, scaffold)
-  storage/              SQLite durable store + migrations          (M0, scaffold)
-  transport/            loopback TUI<->daemon API (HTTP+SSE)       (M0, scaffold)
-  tui/                  interactive terminal UI                     (M0, scaffold)
-  project/              project registry + lifecycle               (M1, scaffold)
-  task/                 task model, backlog, compiler              (M1, scaffold)
-  workgraph/            work DAG + semantic leases                 (M1/M2, scaffold)
-  scheduler/            work dispatch                              (M2/M3, scaffold)
-  router/               model/engine/account router                (M6, scaffold)
-  quota/                quota + circuit breaker                    (M6, scaffold)
-  budget/               budget controller                          (M6, scaffold)
-  workspace/            git worktree + branches                    (M3, scaffold)
-  supervisor/           agent process supervision                  (M3, scaffold)
-  merge/                deterministic Merge Governor               (M11, scaffold)
-  audit/                tamper-evident audit trail                 (M0, scaffold)
-  policy/               security policy + pipeline toggles         (M0/M8, scaffold)
-  risk/                 risk classification R0..R4                 (M6, scaffold)
-  repoinfo/             repo index / token optimization            (M12, scaffold)
+  cli/                  CLI command dispatch (version, help, daemon, project,
+                        task, workspace, run, plugin, route/quota/usage/cost,
+                        image-provider, init, update, doctor, memory, quality)
+  version/              build/runtime version info
+  daemon/               long-running daemon: lifecycle, lockfile, startup
+                        reconciliation framework + attempt reconciler (AC-27)
+  storage/              SQLite/WAL durable store + forward-only migrations
+  transport/            loopback TUI<->daemon API (HTTP JSON + SSE + token)
+  tui/                  interactive terminal UI (MVU, projects/tasks/usage/
+                        quotas/route screens, command palette, live SSE)
+  project/              project registry + state machine (§8)
+  task/                 task model, backlog, attachments, compiler (§9)
+  workgraph/            work DAG + path/semantic leases (§18.4)
+  workspace/            git worktrees, branches, checkpoints, review (§17)
+  supervisor/           agent process supervision, env allowlist (AC-28),
+                        continuation packs, failover controller, recovery (§21)
+  scheduler/            production dispatch root: task -> dispatcher ->
+                        supervisor, usage/memory/quality wiring (§22)
+  runapp/               one-shot `forge run` service (task+worktree+adapter+
+                        finalize, outcome contract, terminal arbitration)
+  router/               complexity C0..C4, model catalog, deterministic route
+                        selection + fallback chain (§18.2/§19; no hard-coded
+                        model names, §36.8)
+  quota/                quota confidence + circuit breaker (§20)
+  budget/               budget controller: included vs paid, soft/hard (§23)
+  risk/                 risk classification R0..R4 (§26)
+  policy/               pipeline toggles, dependency rules, AC-29 invariant,
+                        stage status + labels (§4/§5/§5.1/§24/§25/§29)
+  testengine/           progressive verification (syntax->compile->...->full, §24)
+  review/               correctness/architecture/security review roles (§25)
+  evidence/             acceptance-criterion -> typed evidence linking (§27)
+  repair/               bounded repair loop, targeted context (§22.5/§25/§16.5)
+  merge/                deterministic Merge Governor + Authority + queue (§28)
+  postmerge/            post-merge sentinel + auto-revert + reopen (§4.4/§37)
+  repoinfo/             repo index, context packs, log slicing, prompt-cache
+                        fingerprint (§22.1-§22.5/§22.8; rule §36.11)
+  memory/               typed project memory (§22.9)
+  quality/              token accounting + per-model success rates (§6.1/§19.1)
+  artifacts/            content-addressed (SHA-256) artifact store (§9.5, §31)
+  design/               design orchestrator: brief -> variants -> spec (§15)
+  visual/               visual verification engine + reference-free review (§16)
+  audit/                tamper-evident append-only audit trail (§29, AC-30)
+  bootstrap/            `forge init` / `forge update` wizard + toolchain lock (§7)
   adapter/
-    codingagent/        coding-agent adapter protocol              (M2, scaffold)
-    imageprovider/      image-provider adapter protocol            (M9, scaffold)
-    visualharness/      visual verification harness protocol       (M10, scaffold)
-    vcs/                change-request providers (GitHub/GitLab)   (M11, scaffold)
+    codingagent/        protocol v1 + Registry + fake + declarative + native
+                        JSON-RPC plugin + conformance (§12/§13/§33.1)
+      codex/claude/gemini/kimi/grok/opencode/   six first-party engines (AC-5)
+      builtin/          central registry wiring all six (§13.3)
+    imageprovider/      protocol + Registry + fake + conformance (§14/§33.2)
+      gptimage/         OpenAI Images adapter (opt-in)
+      nanobanana/       Gemini generateContent adapter (opt-in)
+    visualharness/      protocol + generic + Android + fake harnesses (§16/§33.3)
+    vcs/                ChangeRequestProvider: localgit + GitHub + GitLab (§17.6)
 docs/
   spec/                 NEUROFORGE_SPEC.md (source of truth) + COMPLIANCE_MATRIX.md
-  architecture/         COMPONENTS, DATA_FLOW, STATE_MACHINES
-  adr/                  architecture decision records
-  milestones/           IMPLEMENTATION_PLAN
+  architecture/         COMPONENTS, DATA_FLOW, STATE_MACHINES, ADAPTER_DEV_GUIDE
+  adr/                  architecture decision records (ADR-0001..0019)
+  milestones/           IMPLEMENTATION_PLAN + milestone closure reports
+  adapters/             per-engine adapter docs
+  stabilization/        minimal reliable run (`forge run`) spec + test plan
+  platforms/            WINDOWS setup guide
 Makefile                build / test / lint / check
 ```
 
-Each scaffold package currently contains only a `doc.go` that states its purpose,
-the spec section it implements, the owning milestone, and a clear
-**"STATUS: not implemented"** marker. No fake logic.
+Packages that are not yet acceptance-complete carry an explicit
+`STATUS: not implemented` marker in their `doc.go`, and every unmet requirement
+is tracked in the compliance matrix — there are no fake stubs that look finished
+(rule §36.25).
 
 ---
 
@@ -113,19 +160,28 @@ the spec section it implements, the owning milestone, and a clear
 
 | Milestone | Theme                              | Status       |
 |-----------|------------------------------------|--------------|
-| M0        | Foundation (module, daemon, SQLite skeleton, CLI, TUI shell) | in progress |
-| M1        | Projects and local tasks           | planned      |
-| M2        | Agent protocol + fake agent        | planned      |
-| M3        | Workspaces (worktree, supervision) | planned      |
-| M4–M5     | Coding engines (Codex/Claude/Gemini; Kimi/Grok/OpenCode) | planned |
-| M6        | Routing, quota, budget, dashboard  | planned      |
-| M7        | Failover + continuation packs      | planned      |
-| M8        | Configurable tests & review        | planned      |
-| M9        | Image providers                    | planned      |
-| M10       | Design + visual verification       | planned      |
-| M11       | Remote delivery + Merge Governor   | planned      |
-| M12       | Post-merge + context optimization  | planned      |
-| M13       | Bootstrap (`forge init`)           | planned      |
+| M0        | Foundation (module, daemon, SQLite skeleton, CLI, TUI shell) | done |
+| M1        | Projects and local tasks           | done |
+| M2        | Agent protocol + fake agent        | done |
+| M3        | Workspaces (worktree, supervision) | done |
+| M4–M5     | Coding engines (Codex/Claude/Gemini; Kimi/Grok/OpenCode) | done (integrated; offline conformance; live calls opt-in) |
+| M6        | Routing, quota, budget, dashboard  | done |
+| M7        | Failover + continuation packs      | done |
+| M8        | Configurable tests & review        | done |
+| M9        | Image providers                    | done (GPT Image + Nano Banana; real calls opt-in) |
+| M10       | Design + visual verification       | done (real device harness opt-in) |
+| M11       | Remote delivery + Merge Governor   | done (real GitHub/GitLab network opt-in) |
+| M12       | Post-merge + context optimization  | done |
+| M13       | Bootstrap (`forge init`)           | done |
+
+"done" means the milestone's domain logic is implemented and covered by automated
+tests (unit / in-process integration / black-box against the compiled binary).
+It is **not** a production-maturity claim: the project is a self-hosting alpha.
+Capabilities that touch live paid models, real image generation, real devices or
+real network VCS providers remain **opt-in** (rule §33) and are never exercised
+in CI; live quota/usage streaming into the router at runtime and the remaining
+planned CLI surface (`forge agent …`, `forge model …`, `forge audit`,
+`forge emergency-stop`) are tracked in the compliance matrix.
 
 Per-milestone breakdown into issues with scope, allowed/forbidden paths,
 dependencies, acceptance criteria, checks and Definition of Done:
