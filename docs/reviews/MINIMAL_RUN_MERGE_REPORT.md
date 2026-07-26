@@ -184,4 +184,122 @@ Re-attempt merge only after DualDaemonRace is stable under `make check` on the
 feature tip (or after a focused flake investigation). Do not treat review Gate B
 PASS alone as sufficient if integration `make check` fails.
 
+---
+
+## Post-Rollback BF-F-01 Investigation
+
+| | |
+|--|--|
+| Date (local) | 2026-07-26 |
+| Agent | concurrency/release-fix (local only) |
+| Classification | **VARIANT B — CROSS-TEST PROCESS ATTRIBUTION** |
+| Feature tip after fix | `e7e48efa4bfadd1fcd7a189ecb4a04b6ae754607` |
+| `main` after investigation | `253c9d1fd68c818f50a60cfb3e115b624e42fde3` (unchanged; no publish) |
+| Ephemeral verify merge SHA | `47e2dfbf585e970cad74b208411ec4fbe95e0b40` (worktree only; rolled back) |
+| Final status | **READY FOR INDEPENDENT RE-REVIEW** |
+
+### True root cause
+
+`TestForgeRun_DualDaemonRace` sampled the OS process table with:
+
+```text
+pgrep -f <package-forge-binary> + " daemon run"
+```
+
+All `internal/cli` integration tests share one `forgeBinary` path. A live
+daemon for **another temp home** (prior subtest/test cleanup lag, or any
+concurrent same-binary daemon) inflated `maxConcurrentDaemons` even when the
+home under test had exactly one owner.
+
+This matches the original Gate B evidence exactly:
+
+| Probe | Original failure | Interpretation |
+|-------|------------------|----------------|
+| `'daemon starting'` log events | **1** | single `daemon.Start` for the home |
+| pidfile owner | **single** | single claimed owner |
+| process-table max | **2** | binary-global count, not same-home |
+
+**Not** Variant A (same-runtime dual): a real same-home double spawn would
+append a second `--- daemon starting ---` line and/or flip the pidfile.
+
+### Process timeline (diagnostic reproduction)
+
+Isolated harness: foreign daemon on `home-A`, DualDaemon-shaped 8-client burst
+on `home-B`, same forge binary, sampler attributes via `NEUROFORGE_HOME`:
+
+| Time | PID | Runtime Home | Global N | Home-A N | Home-B N |
+|------|-----|--------------|----------|----------|----------|
+| t0 | — | — | 0 | 0 | 0 |
+| t1 | 3099 | home-A (foreign contaminant) | 1 | 1 | 0 |
+| t2 | 3099, 3199 | home-A + home-B | **2** | 1 | 1 |
+| t3… | same | same | 2 | 1 | 1 |
+
+Result: `max_global=2`, `max_A=1`, `max_B=1`. Old sampler → false FAIL.
+Home-scoped sampler → PASS. Same-home invariant holds.
+
+### Fix (does not hide same-home overlap)
+
+1. **Production identity:** `daemon.Start` spawns
+   `forge daemon run --runtime-home <dirs.Root>` so argv attributes a PID to
+   exactly one home. `daemon run` validates the flag against resolved home.
+2. **Test sampler:** `daemonProcCount(bin, home)` counts only PIDs whose
+   `--runtime-home` / `NEUROFORGE_HOME` / cwd equals `home`.
+3. **Regressions:**
+   - `TestForgeRun_DaemonProcCount_DifferentHomesIsolation` (R2)
+   - `TestForgeRun_DaemonProcCount_ForeignHomeNotCounted` (R3 / merge shape)
+4. Same-home DualDaemonRace still fails if `maxConcurrentDaemons > 1` **for
+   that home** — assertion ceiling remains 1; only foreign homes are excluded.
+5. **Collateral (make-check stability, not BF-F-01):**
+   - demo usage seeds clamped into UTC day window (midnight empty-window flake)
+   - declarative adapter test timeouts 5s/4s → 30s under full-suite load
+
+### Files changed
+
+| Commit | Files |
+|--------|--------|
+| `e4f812e` | `internal/daemon/lifecycle.go`, `internal/cli/daemon_cmd.go`, `internal/cli/run_dualdaemon_test.go` |
+| `2be8e6b` | `internal/cli/usage_cost_cmd.go`, `internal/tui/m6_snapshot.go` |
+| `e7e48ef` | `internal/adapter/codingagent/declarative/adapter_test.go` |
+
+### Merge-context evidence (post-fix)
+
+Ephemeral worktree from `main` @ `253c9d1` + `git merge --no-ff fix/runtime-production-adapters`
+→ `47e2dfb` (local only; branch `main` force-reset back to `253c9d1` after).
+
+| Command | Exit | Notes |
+|---------|------|--------|
+| `go test -count=1 ./...` × **20** | **0/0 fails** | ~140–145s each; no cache |
+| `go test -race -count=1 ./...` | **0** | full race |
+| `go test -count=20 ./internal/cli -run TestForgeRun_DualDaemonRace$` | **0** | merge tree |
+| `go test -race -count=20 ./internal/cli -run TestForgeRun_DualDaemonRace$` | **0** | merge tree |
+| `GOFLAGS=-count=1 make check` | **0** | fmt + vet + full tests |
+
+Feature-branch stress (pre-merge tip):
+
+| Command | Exit |
+|---------|------|
+| `go test -count=50 ./internal/cli -run TestForgeRun_DualDaemonRace$` | 0 |
+| `go test -race -count=50 ./internal/cli -run 'DualDaemon\|DifferentHome\|Isolation\|ForeignHome\|DirectDaemon'` | 0 |
+| `go test -count=50 ./internal/cli -run 'OwnerKill\|ChildCrash\|ColdStart\|Autostart\|StaleAutostart'` | 0 |
+| `go test -count=1 ./...` + `-race -count=1 ./...` | 0 |
+
+### Remaining risks
+
+| Risk | Status |
+|------|--------|
+| T4 owner-SIGKILL before readiness → transient second same-home process | **Unchanged residual** (documented non-blocking in final re-review §9); not the Gate B failure mode |
+| Sampler 3ms poll gap | Unchanged; practical under real spawn |
+| Windows process-table sampling | Still disabled (`daemonProcCount` → 0); pidfile path remains |
+| Generation/nonce handshake | **Not required** for this failure (Variant B); defer unless T4 is promoted to blocking |
+
+### Safety
+
+- No push / PR / fetch / pull / clone / ls-remote
+- No remote mutation
+- `main` left at pre-merge `253c9d1`
+- Unrelated review docs (`M12_M13_REVIEW.md`, etc.) **not** committed
+- Ephemeral merge worktree removed after verification
+
+(End of post-rollback investigation.)
+
 (End of local merge verification report.)
