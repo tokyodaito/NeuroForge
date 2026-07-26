@@ -65,7 +65,10 @@ func TestForgeRun_DualDaemonRace(t *testing.T) {
 					if pid, err := readPIDFile(dirs.PIDFile); err == nil && pid > 0 {
 						pidSeen[pid] = struct{}{}
 					}
-					if n := daemonProcCount(f.bin); n > 0 {
+					// Scope by runtime home: a daemon for a different temp home
+					// (previous subtest cleanup lag, parallel package, leftover)
+					// must not inflate this counter (BF-F-01 / Variant B).
+					if n := daemonProcCount(f.bin, f.home); n > 0 {
 						procMu.Lock()
 						if n > maxConcurrentDaemons {
 							maxConcurrentDaemons = n
@@ -182,16 +185,194 @@ func TestForgeRun_DualDaemonRace(t *testing.T) {
 					pid, pidAfterWarm)
 			}
 
-			// T10: cleanup leaves no orphan daemon processes for this binary.
+			// T10: cleanup leaves no orphan daemon processes for THIS home.
 			// The fixture's withDaemonCleanup stops the home's daemon; here we
-			// sanity-check there is exactly one live daemon proc for this binary
-			// (the warm daemon), not a herd of orphaned starters.
-			if n := daemonProcCount(f.bin); n > 1 {
+			// sanity-check there is exactly one live same-home daemon (the warm
+			// daemon), not a herd of orphaned starters for this home.
+			if n := daemonProcCount(f.bin, f.home); n > 1 {
 				dumpDaemonArtifacts(t, dirs)
-				t.Fatalf("repeat %d: %d daemon processes alive after burst (orphan leak)", r, n)
+				t.Fatalf("repeat %d: %d same-home daemon processes alive after burst (orphan leak)", r, n)
 			}
 		})
 	}
+}
+
+// TestForgeRun_DaemonProcCount_DifferentHomesIsolation (R2 / BF-F-01 Variant B):
+// two daemons in two different runtime homes may run concurrently. The
+// home-scoped sampler must see only its own home (global dual is allowed;
+// per-home max remains 1). This pins the full-suite false-fail that used a
+// binary-only pgrep and counted foreign homes as same-runtime duals.
+func TestForgeRun_DaemonProcCount_DifferentHomesIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real daemon processes")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("process-table sampling is unix-only here")
+	}
+
+	fA := newRunFixture(t)
+	fB := newRunFixture(t)
+	// Both fixtures share the package forge binary path.
+	if fA.bin != fB.bin {
+		t.Fatalf("fixtures must share binary (got %q vs %q)", fA.bin, fB.bin)
+	}
+
+	procA := startRawDaemon(t, fA)
+	t.Cleanup(func() {
+		_ = procA.Process.Kill()
+		_, _ = procA.Process.Wait()
+	})
+	procB := startRawDaemon(t, fB)
+	t.Cleanup(func() {
+		_ = procB.Process.Kill()
+		_, _ = procB.Process.Wait()
+	})
+
+	dirsA := daemon.WithRoot(fA.home)
+	dirsB := daemon.WithRoot(fB.home)
+	if err := waitForHealthFiles(dirsA, 15*time.Second); err != nil {
+		t.Fatalf("daemon A not healthy: %v", err)
+	}
+	if err := waitForHealthFiles(dirsB, 15*time.Second); err != nil {
+		t.Fatalf("daemon B not healthy: %v", err)
+	}
+
+	// Global binary match may see both; per-home must be exactly one each.
+	global := daemonProcCountGlobal(fA.bin)
+	if global < 2 {
+		t.Fatalf("global daemon count = %d, want >= 2 (both homes live)", global)
+	}
+	nA := daemonProcCount(fA.bin, fA.home)
+	nB := daemonProcCount(fB.bin, fB.home)
+	if nA != 1 {
+		t.Fatalf("sampler A saw %d pids for home A (want 1); pids=%v", nA, daemonPIDsForHome(fA.bin, fA.home))
+	}
+	if nB != 1 {
+		t.Fatalf("sampler B saw %d pids for home B (want 1); pids=%v", nB, daemonPIDsForHome(fB.bin, fB.home))
+	}
+	// Cross-talk: A must not count B's pid and vice versa.
+	for _, pid := range daemonPIDsForHome(fA.bin, fA.home) {
+		if processRuntimeHome(pid) != filepath.Clean(fA.home) {
+			t.Fatalf("sampler A attributed pid %d to wrong home %q", pid, processRuntimeHome(pid))
+		}
+	}
+	for _, pid := range daemonPIDsForHome(fB.bin, fB.home) {
+		if processRuntimeHome(pid) != filepath.Clean(fB.home) {
+			t.Fatalf("sampler B attributed pid %d to wrong home %q", pid, processRuntimeHome(pid))
+		}
+	}
+}
+
+// TestForgeRun_DaemonProcCount_ForeignHomeNotCounted reproduces the merge
+// Gate B false-fail shape: a live daemon for home-A must not make a cold-start
+// burst on home-B report maxConcurrent > 1.
+func TestForgeRun_DaemonProcCount_ForeignHomeNotCounted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real daemon processes")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("process-table sampling is unix-only here")
+	}
+
+	foreign := newRunFixture(t)
+	procF := startRawDaemon(t, foreign)
+	t.Cleanup(func() {
+		_ = procF.Process.Kill()
+		_, _ = procF.Process.Wait()
+	})
+	if err := waitForHealthFiles(daemon.WithRoot(foreign.home), 15*time.Second); err != nil {
+		t.Fatalf("foreign daemon not healthy: %v", err)
+	}
+
+	// Subject home under test — DualDaemon-shaped burst with foreign live.
+	f := newRunFixture(t)
+	dirs := daemon.WithRoot(f.home)
+
+	var procMu sync.Mutex
+	maxSameHome := 0
+	maxGlobal := 0
+	var samplerWG sync.WaitGroup
+	stopSampler := make(chan struct{})
+	samplerWG.Add(1)
+	go func() {
+		defer samplerWG.Done()
+		for {
+			select {
+			case <-stopSampler:
+				return
+			default:
+			}
+			same := daemonProcCount(f.bin, f.home)
+			glob := daemonProcCountGlobal(f.bin)
+			procMu.Lock()
+			if same > maxSameHome {
+				maxSameHome = same
+			}
+			if glob > maxGlobal {
+				maxGlobal = glob
+			}
+			procMu.Unlock()
+			time.Sleep(3 * time.Millisecond)
+		}
+	}()
+
+	const clients = 8
+	var wg sync.WaitGroup
+	startGate := make(chan struct{})
+	wg.Add(clients)
+	for i := 0; i < clients; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			<-startGate
+			_, _, _ = f.run("--engine", "fake", "--model", "fake/no-change",
+				"foreign-iso "+strconv.Itoa(idx))
+		}(i)
+	}
+	close(startGate)
+	doneCh := make(chan struct{})
+	go func() { wg.Wait(); close(doneCh) }()
+	select {
+	case <-doneCh:
+	case <-time.After(90 * time.Second):
+		close(stopSampler)
+		t.Fatal("clients did not finish")
+	}
+	close(stopSampler)
+	samplerWG.Wait()
+
+	procMu.Lock()
+	msh, mg := maxSameHome, maxGlobal
+	procMu.Unlock()
+
+	if mg < 2 {
+		t.Fatalf("precondition failed: global max=%d want >=2 (foreign+subject)", mg)
+	}
+	if msh > 1 {
+		dumpDaemonArtifacts(t, dirs)
+		t.Fatalf("same-home max concurrent=%d want <=1 (foreign home leaked into sampler)", msh)
+	}
+	if msh < 1 {
+		t.Fatalf("same-home max concurrent=%d want >=1 (subject daemon never observed)", msh)
+	}
+}
+
+// daemonProcCountGlobal counts every live `<bin> daemon run` regardless of home.
+// Used only by isolation tests to prove two homes are both visible globally.
+func daemonProcCountGlobal(bin string) int {
+	if runtime.GOOS == "windows" {
+		return 0
+	}
+	out, err := exec.Command("pgrep", "-f", bin+" daemon run").Output()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // TestForgeRun_StaleAutostartLockNotStuck verifies that a leftover (unheld)
@@ -274,9 +455,9 @@ func TestForgeRun_DirectDaemonDoubleStart_OnlyOneBinds(t *testing.T) {
 		t.Fatalf("pid file changed after loser start: %q -> %q (loser clobbered winner)", pidA, got)
 	}
 
-	// Exactly one daemon process for this binary must be alive (the winner A).
-	if n := daemonProcCount(f.bin); n != 1 {
-		t.Fatalf("after loser bow-out, %d daemon processes alive (want exactly 1)", n)
+	// Exactly one same-home daemon process must be alive (the winner A).
+	if n := daemonProcCount(f.bin, f.home); n != 1 {
+		t.Fatalf("after loser bow-out, %d same-home daemon processes alive (want exactly 1)", n)
 	}
 
 	// A must still be healthy and serving.
@@ -285,11 +466,13 @@ func TestForgeRun_DirectDaemonDoubleStart_OnlyOneBinds(t *testing.T) {
 	}
 }
 
-// startRawDaemon launches `<bin> daemon run` as a detached foreground daemon for
-// the fixture's home and returns the started command (caller arranges shutdown).
+// startRawDaemon launches `<bin> daemon run --runtime-home <home>` as a
+// foreground daemon for the fixture's home and returns the started command
+// (caller arranges shutdown).
 func startRawDaemon(t *testing.T, f *runFixture) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(f.bin, "daemon", "run")
+	cmd := exec.Command(f.bin, "daemon", "run", "--runtime-home", f.home)
+	cmd.Dir = f.home
 	cmd.Env = append(os.Environ(), "NEUROFORGE_HOME="+f.home)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start raw daemon: %v", err)
@@ -351,32 +534,106 @@ func pidAlive(pid int) bool {
 }
 
 // daemonProcCount returns the number of live detached daemon child processes
-// (`<bin> daemon run`) for the test binary. It is used to sample the OS process
-// table during a concurrent cold-start burst so a transient second daemon that
-// dies before the next PID-file poll cannot hide (BF-F-01 / T1).
+// (`<bin> daemon run …`) whose runtime home equals `home`. It is used to sample
+// the OS process table during a concurrent cold-start burst so a transient
+// second daemon that dies before the next PID-file poll cannot hide
+// (BF-F-01 / T1), without attributing daemons of other temp homes (full-suite
+// / cross-subtest contamination) as same-runtime duals.
+//
+// Attribution uses, in order:
+//  1. `--runtime-home <path>` on the daemon argv (written by daemon.Start);
+//  2. NEUROFORGE_HOME in the process environment (ps eww fallback);
+//  3. process cwd equal to home (Start sets cmd.Dir = dirs.Root).
 //
 // On non-unix platforms there is no portable pgrep, so the function returns 0
 // (process-table sampling is disabled; the per-home PID-file sampler remains
 // the authoritative check).
-func daemonProcCount(bin string) int {
-	if runtime.GOOS == "windows" {
-		return 0
+func daemonProcCount(bin, home string) int {
+	return len(daemonPIDsForHome(bin, home))
+}
+
+// daemonPIDsForHome lists live daemon PIDs for bin that belong to home.
+func daemonPIDsForHome(bin, home string) []int {
+	if runtime.GOOS == "windows" || home == "" {
+		return nil
 	}
-	// pgrep -f matches the full command line. The daemon child is launched as
-	// `<bin> daemon run`; quoting bin makes the pattern unambiguous for temp
-	// paths containing spaces.
+	home = filepath.Clean(home)
 	out, err := exec.Command("pgrep", "-f", bin+" daemon run").Output()
 	if err != nil {
-		return 0
+		return nil
 	}
-	n := 0
+	var pids []int
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" {
-			n++
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if processRuntimeHome(pid) == home {
+			pids = append(pids, pid)
 		}
 	}
-	return n
+	return pids
+}
+
+// processRuntimeHome attributes a daemon PID to a NeuroForge home, or "" if
+// unknown. Prefer argv --runtime-home, then NEUROFORGE_HOME, then cwd.
+func processRuntimeHome(pid int) string {
+	// argv via ps -p (no env); covers --runtime-home written by daemon.Start.
+	if argsOut, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output(); err == nil {
+		args := string(argsOut)
+		if h := runtimeHomeFromArgs(args); h != "" {
+			return h
+		}
+	}
+	// Full eww line includes environment on macOS/BSD (NEUROFORGE_HOME=…).
+	if eww, err := exec.Command("ps", "eww", "-p", strconv.Itoa(pid), "-o", "command=").Output(); err == nil {
+		if h := runtimeHomeFromEnvText(string(eww)); h != "" {
+			return h
+		}
+		if h := runtimeHomeFromArgs(string(eww)); h != "" {
+			return h
+		}
+	}
+	// cwd fallback (daemon.Start sets Dir = dirs.Root).
+	if cwdOut, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output(); err == nil {
+		for _, line := range strings.Split(string(cwdOut), "\n") {
+			if strings.HasPrefix(line, "n") {
+				return filepath.Clean(strings.TrimPrefix(line, "n"))
+			}
+		}
+	}
+	return ""
+}
+
+func runtimeHomeFromArgs(args string) string {
+	const flag = "--runtime-home"
+	fields := strings.Fields(args)
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if f == flag && i+1 < len(fields) {
+			return filepath.Clean(fields[i+1])
+		}
+		if strings.HasPrefix(f, flag+"=") {
+			return filepath.Clean(strings.TrimPrefix(f, flag+"="))
+		}
+	}
+	return ""
+}
+
+func runtimeHomeFromEnvText(text string) string {
+	const key = "NEUROFORGE_HOME="
+	// Scan tokens; ps eww joins env as KEY=val pairs separated by spaces.
+	// Home paths from t.TempDir have no spaces.
+	for _, tok := range strings.Fields(text) {
+		if strings.HasPrefix(tok, key) {
+			return filepath.Clean(strings.TrimPrefix(tok, key))
+		}
+	}
+	return ""
 }
 
 func dumpDaemonArtifacts(t *testing.T, dirs daemon.Dirs) {

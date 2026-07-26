@@ -65,7 +65,11 @@ func Start(ctx context.Context, dirs Dirs) error {
 		return fmt.Errorf("open log for child: %w", err)
 	}
 
-	cmd := exec.Command(exe, "daemon", "run")
+	// --runtime-home is duplicated into argv so process-table samplers (and
+	// operators) can attribute a daemon PID to exactly one home without
+	// scraping the environment. NEUROFORGE_HOME remains the authoritative
+	// runtime selector; the flag is identity + defence-in-depth.
+	cmd := exec.Command(exe, "daemon", "run", "--runtime-home", dirs.Root)
 	cmd.Dir = dirs.Root
 	cmd.Env = childEnv(dirs.Root)
 	cmd.Stdin = nil
