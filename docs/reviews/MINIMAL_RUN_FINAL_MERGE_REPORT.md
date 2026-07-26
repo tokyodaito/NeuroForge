@@ -1,14 +1,15 @@
 # MINIMAL_RUN_FINAL_MERGE_REPORT
 
 Final local integration of the minimal `forge run` vertical slice into `main`.
-Mandatory Gates A/B/C passed on the merge commit. Gate D not exercised.
-Repository left **MERGED LOCALLY — READY TO PUSH**. No remote publish.
+Mandatory Gates A/B/C passed on the merge commit. Gate D initially UNPROVEN;
+later manually verified PASS via real OpenCode smoke.
+Repository status: **MERGED LOCALLY — REAL OPENCODE ADAPTER VERIFIED — READY TO PUSH**.
 
 | | |
 |--|--|
 | Date (local) | 2026-07-26 |
 | Role | release/integration agent |
-| Final result | **MERGED LOCALLY — READY TO PUSH** |
+| Final result | **MERGED LOCALLY — REAL OPENCODE ADAPTER VERIFIED — READY TO PUSH** |
 
 ---
 
@@ -41,7 +42,7 @@ Repository left **MERGED LOCALLY — READY TO PUSH**. No remote publish.
 | merge-context `make check` (re-review) | **20/20** |
 | Feature Gate A/B/C | PASS / PASS / PASS |
 | Merge-context Gate A/B/C (re-review) | PASS / PASS / PASS |
-| Gate D | UNPROVEN / NON-BLOCKING |
+| Gate D | **PASS** (was UNPROVEN until manual smoke) |
 | Collateral `2be8e6b` UTC day window | UNRELATED BUT VALID |
 | Collateral `e7e48ef` declarative timeouts | UNRELATED BUT VALID |
 | Blocking issues | **none** |
@@ -207,11 +208,35 @@ done
 
 | Field | Value |
 |-------|--------|
-| `NEUROFORGE_SMOKE` | unset (not set by this agent) |
-| Real OpenCode smoke | **not run** |
-| Result | **UNPROVEN / NOT EXERCISED / NON-BLOCKING** |
+| Historical status (pre-smoke) | **UNPROVEN / NOT EXERCISED / NON-BLOCKING** |
+| Real OpenCode smoke | **run manually by user after merge** |
+| Result | **PASS** |
 
-Do not report PASS for a skipped smoke test.
+### Evidence
+
+Command:
+
+```
+go test -v -count=1 -run '^TestForgeRun_Smoke_OpenCode$' ./internal/cli
+```
+
+Result: **PASS**
+
+| Field | Value |
+|-------|--------|
+| Observed test | `TestForgeRun_Smoke_OpenCode` |
+| Test duration | **18.32s** |
+| Package duration | **18.735s** |
+
+```
+=== RUN   TestForgeRun_Smoke_OpenCode
+--- PASS: TestForgeRun_Smoke_OpenCode (18.32s)
+PASS
+ok  	neuroforge/internal/cli	18.735s
+```
+
+This confirms readiness of the minimal `forge run` vertical slice,
+but **not** production readiness of the full autonomous NeuroForge factory.
 
 ---
 
@@ -284,23 +309,34 @@ entirely offline. This release/integration session itself stayed local-only.
 
 ## Final Result
 
-# MERGED LOCALLY — READY TO PUSH
+# MERGED LOCALLY — REAL OPENCODE ADAPTER VERIFIED — READY TO PUSH
 
 | Field | Value |
 |-------|--------|
 | Gate A | **PASS** |
 | Gate B | **PASS** |
 | Gate C | **PASS** |
-| Gate D | **UNPROVEN / NON-BLOCKING** |
-| Gate E | N/A (not defined as mandatory for this pass) |
+| Gate D | **PASS** |
+| Gate E | **ACCEPT** |
 | `make check` ×20 | **20/20 PASS** |
 | Conflicts | none |
 | Rollback | not performed |
 | Final main HEAD (merge) | `20991bf0a2e4792517632a8bffa1ac6c284ec149` |
 | Final report path | `docs/reviews/MINIMAL_RUN_FINAL_MERGE_REPORT.md` |
-| Push | **no** |
+| Push | pending (this release commit) |
 | PR | **no** |
-| fetch/pull/clone/ls-remote | **no** (this pass) |
-| Remote mutation | **no** |
+| fetch/pull/clone/ls-remote | **no** (this pass; historical coding pass had read-only `git ls-remote`) |
+| Remote mutation | pending push of main + tag |
+
+### Scope caveat
+
+This confirms readiness of the minimal `forge run` vertical slice,
+but **not** production readiness of the full autonomous NeuroForge factory.
+
+### Known retained notes
+
+- Gate D was **UNPROVEN** until the manual real OpenCode smoke above.
+- A past historical coding pass ran read-only `git ls-remote` (network operation).
+- Non-blocking leak `TestWorkspaceRun_PromptFileReadSucceeds` remains known.
 
 (End of final merge report.)
