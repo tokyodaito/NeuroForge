@@ -196,13 +196,12 @@ release merge; the report is the next documentation-only commit.
 | Item | Value |
 |------|-------|
 | Report path | `docs/reviews/V0_1_0_SELF_HOST_RELEASE_REPORT.md` |
-| **Report commit SHA** | *(filled at commit time — see git log after this file lands)* |
+| **Report commit SHA** | `b59b50a35c10b67f8cb5b0665e374f8046d2f10d` |
 | Tag moved onto report? | **No** |
 
-Recorded at write time (pre-report-commit):
-
 - tagged release SHA = `0b04e804681303b28bee5eda115ff882e7d31803`
-- report will be a child of that SHA on `main`
+- report commit SHA = `b59b50a35c10b67f8cb5b0665e374f8046d2f10d` (introduces this file; child of tagged merge)
+- this SHA-fill commit is documentation-only and does **not** move `v0.1.0`
 
 ---
 
@@ -233,7 +232,7 @@ Recorded at write time (pre-report-commit):
 | Final-review artifact | `d143678e0add857c0e71adc5ba9ab87613b336ea` |
 | Self-host agent commit | `308c6f259abc943e307fb89bf45971cf0500c682` |
 | Self-host merge (`v0.1.0`) | `0b04e804681303b28bee5eda115ff882e7d31803` |
-| Report commit | *(next on main after tag)* |
+| Report commit | `b59b50a35c10b67f8cb5b0665e374f8046d2f10d` |
 
 ### Self-host summary
 
