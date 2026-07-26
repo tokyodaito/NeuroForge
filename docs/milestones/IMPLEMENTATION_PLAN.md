@@ -6,8 +6,17 @@ each requirement is mirrored in
 [`../spec/COMPLIANCE_MATRIX.md`](../spec/COMPLIANCE_MATRIX.md).
 
 > Legend — **Depends on** lists issue IDs that must merge first. AC references
-> point to spec §35 acceptance criteria. **Status** of the whole project: only the
-> M0 items marked `[DONE]` below are implemented; everything else is planned.
+> point to spec §35 acceptance criteria. **Status:** the domain logic for every
+> milestone M0–M13 is implemented and covered by automated tests (unit / in-process
+> integration / black-box against the compiled `forge` binary); this plan tracks
+> the per-issue breakdown. NeuroForge is a **self-hosting alpha**: capabilities
+> that touch live paid models, real image generation, real device harnesses or
+> real network VCS providers are **opt-in** (rule §33) and never run in CI, and a
+> few CLI surfaces (`forge agent …`, `forge model …`, `forge audit`,
+> `forge emergency-stop`) remain planned. Per-requirement status is mirrored in
+> [`../spec/COMPLIANCE_MATRIX.md`](../spec/COMPLIANCE_MATRIX.md); the spec
+> ([`../spec/NEUROFORGE_SPEC.md`](../spec/NEUROFORGE_SPEC.md)) remains the
+> immutable source of truth.
 
 ### Issue template
 
@@ -315,20 +324,24 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
   (text/`--json`); passes against the in-process fake adapter AND the fake plugin
   with no core changes.
 
-### M2-8 — Supervisor: run/resume/cancel + streaming
+### M2-8 — Supervisor: run/resume/cancel + streaming `[DONE]`
 - **Goal:** consume adapters, enforce turn limits (§22.7), capture checkpoints.
 - **Allowed:** `internal/supervisor/**`.
 - **Depends on:** M2-1..M2-3, M3 (worktree). **Note:** may stub worktree initially.
 - **Acceptance:** run lifecycle emits events; checkpoints created; cancellation
   propagates.
 - **Checks:** supervisor unit + integration vs fake.
-  — **Pending:** blocked on M3 workspaces; the M2 protocol/registry surface is
-  complete and is what the supervisor will consume.
+  — Done: `internal/supervisor` runs adapters with a positive-allowlist
+  environment (AC-28, M3-4), enforces turn limits + hard timeout, streams §12.4
+  normalized events to a terminal state, and is consumed by both the M7 failover
+  controller and the M12 scheduler / `internal/runapp` (`forge run`).
 
-### M2-9 — M2 demonstrable scenario
+### M2-9 — M2 demonstrable scenario `[DONE]`
 - **Depends on:** M2-1..M2-8. End-to-end fake run; AC-6 (plugin agent) demoable.
-  — AC-6 is demonstrable now via `forge plugin test`; the full end-to-end run
-  lands with M2-8/M3.
+  — Done: AC-6 is demonstrable via `forge plugin test`; the full end-to-end run
+  exists through `forge run "<desc>"` (M12 wiring + `internal/runapp`) and the
+  `m12_m13_e2e_test.go` black-box suite, and the conformance suite passes against
+  the fake adapter/plugin.
 
 ---
 
@@ -385,63 +398,91 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
 
 ---
 
-## M4 — Initial coding engines (Codex, Claude Code, Gemini CLI)
+## M4 — Initial coding engines (Codex, Claude Code, Gemini CLI) `[DONE]`
 
 > Per engine. Adapters M4 & M5 parallelise after protocol stabilises (§34).
 
-### M4-n — per engine (detect/health/caps → start/resume/cancel → quota/usage → conformance)
+### M4-n — per engine (detect/health/caps → start/resume/cancel → quota/usage → conformance) `[DONE]`
 - **Allowed:** `internal/adapter/codingagent/<engine>/**`.
 - **Forbidden:** core packages, schema.
 - **Depends on:** M2-7 (conformance). **AC:** AC-5.
 - **Acceptance:** engine passes conformance; quota+usage reported; no hard-coded
   model names in core.
 - **Checks:** conformance suite + recorded fixtures (no real paid calls in CI).
+  — Done: Codex, Claude Code and Gemini CLI are integrated as in-process Go
+  adapters ("Path 3") under `internal/adapter/codingagent/{codex,claude,gemini}/`,
+  each satisfying the 13-method `codingagent.Adapter` surface at protocol v1 and
+  passing the §13.3 conformance suite offline against recorded byte-stream
+  fixtures. See the "Milestone M4/M5" section of the compliance matrix for the
+  full coverage/security/Windows-correctness notes.
 
 ---
 
-## M5 — Remaining coding engines (Kimi Code, Grok Build, OpenCode)
+## M5 — Remaining coding engines (Kimi Code, Grok Build, OpenCode) `[DONE]`
 
 Same template as M4. **Depends on:** M2-7. **AC:** AC-5.
+  — Done: Kimi Code, Grok Build and OpenCode integrated on the same adapter
+  contract; `internal/adapter/codingagent/builtin` is the central registry that
+  wires all six engines (the only surface the scheduler/supervisor core may use,
+  ADR-0005) with no provider-specific core logic. Live model enumeration / quota
+  / health are deferred to each adapter's opt-in smoke test (skipped in CI);
+  `ListModels` returns empty rather than hard-coding names (§36.8).
 
 ---
 
-## M6 — Routing, quota, budget, dashboard
+## M6 — Routing, quota, budget, dashboard `[DONE]`
 
 > Spec §19, §20, §23, §26. Goal: pick routes, enforce limits, show usage.
 
-### M6-1 — Model catalog (config, no hard-coded names) — §19.2
+### M6-1 — Model catalog (config, no hard-coded names) — §19.2 `[DONE]`
 - **Allowed:** `internal/router/**`, config. **AC:** AC-16/AC-17 (enabler).
+  — Done: provider-supplied tier→(engine,model,account) catalog; `TestNoHardcodedModelNames` enforces §36.8.
 
-### M6-2 — Complexity classifier C0..C4 — §18.2/§19.3
+### M6-2 — Complexity classifier C0..C4 — §18.2/§19.3 `[DONE]`
 - **Allowed:** `internal/task` (compiler) / new pkg.
 - **Acceptance:** economic cascade; tier mapping per §19.3.
+  — Done: additive C0..C4 scoring + `BaseTier` economic cascade + `Escalate`/`Deescalate` (§19.4/§19.5).
 
-### M6-3 — Risk classifier R0..R4 — §26
+### M6-3 — Risk classifier R0..R4 — §26 `[DONE]`
 - **Allowed:** `internal/risk/**`.
 - **Acceptance:** deterministic classification; influences listed in §26.
+  — Done: deterministic structural + keyword/path R0..R4 mapping; highest band wins; reasons returned (§19.6).
 
-### M6-4 — Route selection (engine+model+account+runtime) — §19
+### M6-4 — Route selection (engine+model+account+runtime) — §19 `[DONE]`
 - **Allowed:** `internal/router/**`. **Depends on:** M6-1..M6-3, M2.
 - **Acceptance:** AC-16 (cheap route), AC-17 (escalation); `forge route explain`.
+  — Done: pure deterministic scoring + §21.1 fallback chain; exhausted accounts excluded; hard-budget restricts to included routes; `forge route explain` (text/`--json`).
 
-### M6-5 — Circuit breaker — §20.3
+### M6-5 — Circuit breaker — §20.3 `[DONE]`
 - **Allowed:** `internal/quota/**`. **Depends on:** M2-3.
+  — Done: CLOSED/OPEN/HALF_OPEN; rate-limit ≠ exhaustion; auth failure stops auto-retry.
 
-### M6-6 — Quota manager (confidence levels) — §20.1/§20.2
+### M6-6 — Quota manager (confidence levels) — §20.1/§20.2 `[DONE]`
 - **Allowed:** `internal/quota/**`.
+  — Done: EXACT/PROVIDER_REPORTED/ESTIMATED/INFERRED/UNKNOWN confidence (aliased from protocol); `FormatRemaining` prefixes `~` (§36.10, AC-18).
 
-### M6-7 — Budget controller — §23
+### M6-7 — Budget controller — §23 `[DONE]`
 - **Allowed:** `internal/budget/**`. **Acceptance:** soft/hard limits; BUDGET_EXCEEDED.
+  — Done: global/daily/monthly/project/task/image budgets; included usage accounted separately from paid; aggregates take coarsest confidence.
 
-### M6-8 — Usage/cost tracking — §14.4
+### M6-8 — Usage/cost tracking — §14.4 `[DONE]`
 - **Allowed:** `internal/budget`/`internal/quota`.
+  — Done: `forge usage` (included vs paid, confidence-tagged) + `forge cost` across scopes (text/`--json`).
 
-### M6-9 — Dashboard (TUI) + usage/quota views — §6.1/§20.1
+### M6-9 — Dashboard (TUI) + usage/quota views — §6.1/§20.1 `[DONE]`
 - **Allowed:** `internal/tui/**`. **Depends on:** M6-6/M6-8. **AC:** AC-18.
 - **Acceptance:** exact/~estimated/unknown rendered distinctly.
+  — Done: Usage/Quotas/Route-Decision TUI screens via the command palette; confidence-distinct rendering.
 
-### M6-10 — M6 scenario
+### M6-10 — M6 scenario `[DONE]`
 - **Depends on:** M6-1..M6-9. AC-16/AC-17/AC-18 demonstrable.
+  — Done: the M6-10 scenario exercises AC-16/AC-17/AC-18 together under `go test -race`.
+
+> Remaining in M6 (rule §36.25 — not faked): live quota/usage snapshots are not
+> streamed from the daemon into the router at runtime; the M6 commands/TUI
+> operate on deterministic in-process fixtures (the default catalog + seeded demo
+> usage). The pure decision functions are complete and fully tested. See the
+> compliance matrix "Milestone M6 — Remaining" note.
 
 ---
 
