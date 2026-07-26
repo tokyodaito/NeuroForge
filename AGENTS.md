@@ -10,6 +10,36 @@ the spec disagree, **the spec wins**. Architectural deviations require an ADR.
 
 ---
 
+## Engineering baseline (MANDATORY)
+
+Before any implementation work, read and obey the versioned engineering
+baseline:
+[`docs/engineering/ENGINEERING_BASELINE.md`](docs/engineering/ENGINEERING_BASELINE.md)
+(active version: **1**).
+
+It defines the evidence levels (`unit` / `integration` / `blackbox` / `live`),
+the task lifecycle (`STARTED → IMPLEMENTED_TESTED → REVIEW_APPROVED → ACCEPTED`),
+the machine-readable evidence manifest schema, the actor-separation rule, and the
+19 baseline rules that bind all engineering work.
+
+The baseline is enforced by the `forge gate` command:
+
+```sh
+forge gate baseline                       # print active baseline version + doc path
+forge gate validate --manifest <path.json>  # exit 0 only if the manifest's claimed transition is legal
+forge gate next --manifest <path.json>      # exit 0 only if the predecessor task is ACCEPTED
+```
+
+- No task may be marked done (`IMPLEMENTED_TESTED`) without the required evidence.
+- No task may be `REVIEW_APPROVED` or `ACCEPTED` without an independent actor.
+- No successor task may start until its predecessor is `ACCEPTED`.
+- Documentation must not claim production readiness without matching proof.
+
+A stale baseline cannot be satisfied silently: every evidence manifest must
+declare `baseline_version: 1`, and the validator rejects any mismatch.
+
+---
+
 ## Mandatory commands
 
 ```sh

@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "baseline_version": "1",
+  "task_id": "M14-00",
+  "predecessor_task_id": "",
+  "previous_state": "REVIEW_APPROVED",
+  "state": "ACCEPTED",
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Engineering baseline is automatically available to every coding agent entering the repository (versioned doc + mandatory AGENTS.md link + forge gate baseline).",
+      "mandatory": true
+    },
+    {
+      "id": "AC2",
+      "description": "A task cannot be marked done/IMPLEMENTED_TESTED or ACCEPTED without the required evidence (mandatory criteria backed by passing automated unit/integration/blackbox evidence; actor separation enforced).",
+      "mandatory": true
+    },
+    {
+      "id": "AC3",
+      "description": "A successor task cannot be unlocked until its predecessor is ACCEPTED (forge gate next).",
+      "mandatory": true
+    },
+    {
+      "id": "AC4",
+      "description": "Documentation must not assert production readiness without corresponding proof (baseline rule codified; M14-00's own docs make no such claim; existing product docs audited).",
+      "mandatory": true
+    }
+  ],
+  "evidence": [
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/enggate.TestActiveBaselinePathExists",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/enggate.TestAgentsMandatesBaseline",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "blackbox",
+      "reference": "internal/cli.TestGateBlackBoxBaseline",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestValidateTransitionPositiveFullFlow",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeMissingTestEvidence",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeMissingBlackBoxProof",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeMissingUnit",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeMissingMakeCheck",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeSelfReview",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeSelfAcceptance",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeAcceptorEqualsReviewer",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestGateBlackBoxNegativeMissingEvidence",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestGateBlackBoxNegativeSameActor",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestGateBlackBoxNegativeInvalidTransition",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/enggate.TestNegativeCanStartNextBeforeAccepted",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestGateBlackBoxNegativeNextBeforeAccepted",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestGateBlackBoxPositiveFlow",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "integration",
+      "reference": "internal/enggate.TestBaselineDefinesEvidenceLevelsAndHonesty",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "integration",
+      "reference": "internal/enggate.TestActiveBaselinePathExists",
+      "status": "passed",
+      "automated": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "make check",
+      "status": "passed"
+    }
+  ],
+  "actors": {
+    "implementer": "M14-00-impl-session",
+    "reviewer": "M14-00-review-session",
+    "acceptor": "M14-00-accept-session"
+  },
+  "reports": {
+    "implementation": "docs/reviews/m14/M14-00_IMPLEMENTATION.md",
+    "review": "docs/reviews/m14/M14-00_REVIEW.md",
+    "acceptance": "docs/reviews/m14/M14-00_ACCEPTANCE.md"
+  },
+  "blackbox": {
+    "compiled_binary": "forge",
+    "scenario": "forge gate validate --manifest docs/reviews/m14/M14-00.manifest.json",
+    "status": "passed",
+    "exempt": false,
+    "exempt_reason": ""
+  },
+  "remediation_note": ""
+}

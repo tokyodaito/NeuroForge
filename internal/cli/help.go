@@ -81,6 +81,12 @@ Implemented commands:
   init --repair       Reconcile the toolchain with the lock (reinstall missing)
   update              Update toolchain (compat check, conformance, rollback §7.5)
 
+  gate baseline       Print the active engineering baseline version + doc path
+  gate validate -m <manifest.json>   Validate a task manifest's claimed transition
+  gate next -m <manifest.json>       Exit 0 only if the predecessor task is ACCEPTED
+                      (META: engineering baseline gate; see
+                       docs/engineering/ENGINEERING_BASELINE.md)
+
   Aliases:
     version  -> -v, -version, --version
     help     -> -h, --help

@@ -95,6 +95,8 @@ func (a *App) Run(args []string) int {
 		return a.runInit(args[1:])
 	case "update":
 		return a.runUpdate(args[1:])
+	case "gate":
+		return a.runGate(args[1:])
 	default:
 		fmt.Fprintf(a.Err, "%s: unknown command %q\n\n", a.Name, args[0])
 		writeHelp(a.Err)
