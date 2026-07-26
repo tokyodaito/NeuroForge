@@ -177,6 +177,20 @@ Field semantics:
 - `blackbox.exempt` — see §3 rule 1. Acceptance (§3 rule 3) never accepts
   exemption.
 
+**What the validator checks, and what it does not.** `ValidateTransition`
+enforces *structural completeness* and the *rules*: schema/baseline version,
+state-machine legality, that every mandatory criterion has a passing automated
+evidence entry at an eligible level, actor separation, and the `make check`
+result recorded in the manifest. It does **not** execute the referenced tests or
+verify that an `evidence[].reference` string resolves to a real, passing test.
+A manifest could therefore pass `forge gate validate` with fabricated reference
+strings. The authenticity of the references is established separately and
+independently by the review (§5.2) and acceptance (§5.3) phases, which re-run
+the targeted tests, `make check`, the race detector, and the black-box gates.
+`forge gate next` additionally calls `ValidateTransition` on the predecessor's
+ACCEPTED claim, so a fabricated or stale `state: "ACCEPTED"` manifest cannot
+unlock a successor.
+
 ---
 
 ## 5. Report formats
@@ -237,8 +251,13 @@ is black-box observable:
 ```
 forge gate baseline                        # print active baseline version + doc path
 forge gate validate --manifest <path>      # validate the manifest's claimed transition; exit 0 only if legal
-forge gate next --manifest <path>          # exit 0 only if the (predecessor) task state is ACCEPTED
+forge gate next --manifest <path>          # exit 0 only if the predecessor task is genuinely ACCEPTED
 ```
+
+`forge gate next` does not trust the predecessor manifest's bare `state` field:
+it calls `ValidateTransition` on the predecessor's `REVIEW_APPROVED ->
+ACCEPTED` claim, so a fabricated or stale `state: "ACCEPTED"` manifest cannot
+unlock a successor.
 
 Every task's implementation report must record the literal `forge gate validate`
 and `forge gate next` invocations and their exit codes as black-box evidence.

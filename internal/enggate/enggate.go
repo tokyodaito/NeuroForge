@@ -385,14 +385,25 @@ func (m Manifest) commandPassed(label string) bool {
 	return false
 }
 
-// CanStartNext returns nil only if the predecessor task's state is ACCEPTED
+// CanStartNext returns nil only if the predecessor task is genuinely ACCEPTED
 // (baseline §3: no successor task may start until its predecessor is ACCEPTED).
+//
+// "Genuinely ACCEPTED" means more than the manifest's `state` field claiming so:
+// the ACCEPTED claim must itself pass ValidateTransition
+// (REVIEW_APPROVED -> ACCEPTED with full evidence, actor separation, black-box
+// and `make check`). This closes the bypass where a fabricated or stale manifest
+// with `state == "ACCEPTED"` unlocks a successor without ever being validly
+// accepted.
 func CanStartNext(predecessor Manifest) error {
-	if predecessor.State == StateAccepted {
-		return nil
+	if predecessor.State != StateAccepted {
+		return fmt.Errorf("enggate: cannot start successor task: predecessor %q state is %s, not ACCEPTED",
+			predecessor.TaskID, predecessor.State)
 	}
-	return fmt.Errorf("enggate: cannot start successor task %q: predecessor %q state is %s, not ACCEPTED",
-		strings.TrimSpace(predecessor.TaskID), predecessor.TaskID, predecessor.State)
+	if err := ValidateTransition(predecessor.PreviousState, StateAccepted, predecessor); err != nil {
+		return fmt.Errorf("enggate: predecessor %q claims ACCEPTED but is not validly accepted: %w",
+			predecessor.TaskID, err)
+	}
+	return nil
 }
 
 // ActiveVersions exposes the active schema/baseline versions for callers (CLI,

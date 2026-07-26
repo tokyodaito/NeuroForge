@@ -191,6 +191,27 @@ func TestGateBlackBoxNegativeNextBeforeAccepted(t *testing.T) {
 	}
 }
 
+// Regression (review BLOCKER-1): a manifest that CLAIMS state=ACCEPTED but was
+// not validly accepted must NOT unlock the successor through the compiled binary.
+func TestGateBlackBoxNegativeNextFabricatedAccepted(t *testing.T) {
+	g := newGateFixture(t)
+	m := goodGateManifest()
+	m.PreviousState = enggate.StateReviewApproved
+	m.State = enggate.StateAccepted
+	// Correct schema/baseline, but self-accept and no blackbox -> ACCEPTED never earned.
+	m.Actors.Acceptor = m.Actors.Implementer
+	m.BlackBox.Status = enggate.StatusFailed
+	m.BlackBox.Scenario = ""
+	p := g.writeManifest("fabricated-accepted.json", m)
+	_, stderr, code := g.run("gate", "next", "-m", p)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for fabricated ACCEPTED claim")
+	}
+	if !strings.Contains(stderr, "not validly accepted") {
+		t.Fatalf("expected 'not validly accepted' in stderr:\n%s", stderr)
+	}
+}
+
 // TestGateBlackBoxNegativeInvalidTransition: STARTED -> ACCEPTED rejected.
 func TestGateBlackBoxNegativeInvalidTransition(t *testing.T) {
 	g := newGateFixture(t)

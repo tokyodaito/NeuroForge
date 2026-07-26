@@ -6,9 +6,10 @@
 ## SHAs
 
 - **Starting SHA:** `00e0902804cf46ca85f4602e9d36fc472cb95419` (branch `main`)
-- **Candidate SHA:** recorded at commit time (this report is committed in the
-  same atomic commit as the implementation; the candidate SHA is the resulting
-  commit, available via `git log -1 --format=%H`).
+- **Initial candidate SHA:** `9ef4eda6756cc822cef0af1486e2741d3e0f44b2`
+- **Candidate SHA (after review remediation):** produced by the remediation
+  commit `M14-00: address review findings` (this section is updated in that same
+  commit; resolve with `git log --format=%H -G 'address review findings'`).
 
 ## Goal and actual scope
 
@@ -172,3 +173,41 @@ flow and every mandatory negative case are tested; `make check` is green; the
 compiled binary demonstrates the gate end-to-end. The implementation does not
 weaken any security, autonomy, delivery, or merge-policy invariant, and does not
 modify the product specification.
+
+---
+
+## Review remediation
+
+Independent review (`docs/reviews/m14/M14-00_REVIEW.md`, verdict
+`CHANGES_REQUESTED`) raised one BLOCKER and two MINOR findings. Remediation
+applied:
+
+| Finding | Severity | Fix | Regression test |
+|---------|----------|-----|-----------------|
+| BLOCKER-1 — `forge gate next` unlocked a successor for a manifest that merely *claimed* `state: "ACCEPTED"` (bogus schema, no evidence, self-review all passed `gate next`). | BLOCKER | `enggate.CanStartNext` now calls `ValidateTransition(predecessor.PreviousState, StateAccepted, predecessor)` after the `State==ACCEPTED` check, so the ACCEPTED claim must be validly earned (schema/baseline version, evidence, actor separation, black-box, `make check`). CLI surfaces the wrapped error. | `internal/enggate.TestNegativeCanStartNextFabricatedAcceptedWrongSchema`, `TestNegativeCanStartNextFabricatedAcceptedSelfAccept`; black-box `internal/cli.TestGateBlackBoxNegativeNextFabricatedAccepted`. All three were added before the fix and confirmed to FAIL on the pre-fix code, then PASS after. |
+| MINOR-1 — baseline did not state that the validator checks structure/rules, not reference authenticity. | MINOR | Added an explicit "What the validator checks, and what it does not" paragraph to baseline §4 and a sentence to §7 noting `gate next` validates the ACCEPTED claim. | No code; doc change. Existing `TestBaselineDefinesEvidenceLevelsAndHonesty` still pins the honesty/evidence-levels section. |
+| MINOR-2 — ADR for the `internal/enggate` package boundary. | MINOR | Deferred to follow-up (FU-2); not blocking. | — |
+
+### Remediation verification (fresh re-run, post-fix)
+
+```sh
+go test ./internal/enggate/ -count=1                                 # PASS
+go test -race ./internal/enggate/                                    # PASS
+go test -race -run 'TestGateBlackBox' -count=1 ./internal/cli/       # PASS
+make check                                                           # exit 0
+gofmt -l .                                                           # clean
+
+# Counterexample now correctly rejected through the compiled binary:
+./forge gate next --manifest /tmp/evil.json   # state=ACCEPTED, schema 999, no evidence
+# -> exit 1: "predecessor ... claims ACCEPTED but is not validly accepted: schema_version 999 != active 1"
+
+# Canonical manifest still accepted:
+./forge gate validate --manifest docs/reviews/m14/M14-00.manifest.json   # exit 0
+./forge gate next    --manifest docs/reviews/m14/M14-00.manifest.json   # exit 0
+```
+
+### Updated verdict
+
+`IMPLEMENTED_TESTED` — BLOCKER-1 closed with a regression test that demonstrably
+catches the defect (it failed on the pre-fix code); MINOR-1 doc clarity applied;
+MINOR-2 deferred. The candidate is ready for re-review and acceptance.

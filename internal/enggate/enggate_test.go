@@ -164,9 +164,36 @@ func TestNegativeCanStartNextBeforeAccepted(t *testing.T) {
 		}
 	}
 	m := goodManifest()
+	m.PreviousState = StateReviewApproved
 	m.State = StateAccepted
 	if err := CanStartNext(m); err != nil {
-		t.Fatalf("CanStartNext with ACCEPTED must succeed, got: %v", err)
+		t.Fatalf("CanStartNext with a validly-earned ACCEPTED must succeed, got: %v", err)
+	}
+}
+
+// Regression (review BLOCKER-1): a manifest that CLAIMS state=ACCEPTED but was
+// not validly accepted must NOT unlock the successor. CanStartNext must verify
+// the ACCEPTED claim, not trust the bare state field.
+func TestNegativeCanStartNextFabricatedAcceptedWrongSchema(t *testing.T) {
+	m := goodManifest()
+	m.State = StateAccepted
+	m.SchemaVersion = 999 // bogus — not the active schema
+	if err := CanStartNext(m); err == nil {
+		t.Fatalf("CanStartNext must reject an ACCEPTED claim with a bogus schema_version")
+	}
+}
+
+func TestNegativeCanStartNextFabricatedAcceptedSelfAccept(t *testing.T) {
+	m := goodManifest()
+	m.PreviousState = StateReviewApproved
+	m.State = StateAccepted
+	// Correct schema/baseline, but the acceptor equals the implementer and the
+	// black-box scenario is missing — i.e. ACCEPTED was never validly earned.
+	m.Actors.Acceptor = m.Actors.Implementer
+	m.BlackBox.Status = StatusFailed
+	m.BlackBox.Scenario = ""
+	if err := CanStartNext(m); err == nil {
+		t.Fatalf("CanStartNext must reject a fabricated ACCEPTED claim (self-accept + no blackbox)")
 	}
 }
 
