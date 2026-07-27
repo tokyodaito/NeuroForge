@@ -366,3 +366,259 @@ defect and the report's incomplete "Known limitations" section warrant
 `CHANGES_REQUESTED` before the task moves to `ACCEPTED`. Once MAJOR-1 is resolved (and
 ideally the MINOR findings are addressed or explicitly deferred), the task should be
 re-reviewed and can proceed to acceptance.
+
+---
+
+# M14-02 — Independent Re-review (after remediation)
+
+**Task:** M14-02 — Deterministic Task Compiler.
+**Re-review actor:** `M14-02-rereview-session` (independent of `M14-02-impl-session`,
+`M14-02-remediation-session`, and `M14-02-review-session`).
+**Verdict:** `REVIEW_APPROVED`
+
+This section is additive; the historical review above is preserved unchanged.
+
+## Review identity
+
+- re-review actor/session ID: `M14-02-rereview-session`
+- implementation actor/session ID: `M14-02-impl-session`
+- remediation actor/session ID: `M14-02-remediation-session`
+- original review actor/session ID: `M14-02-review-session`
+- independence confirmed: yes — this is a fresh session; it authored no production code,
+  no tests, performed no remediation, and will not perform acceptance. Actor IDs are
+  distinct from implementation, remediation, original-review, and M14-01 accept actors.
+
+## Git baseline
+
+- accepted predecessor SHA (M14-01 acceptance): `f894f648fb5545b89cb5e797e6d146a35d2c379a`
+- original candidate SHA: `ee738b2edd9138e7e2ef33eb18ff05fc6e95b43d`
+- remediated candidate SHA (reviewed): `fad77d5f558bf6da840e14704c02e8d9124db4ce`
+- review report commit SHA: recorded below in the commit step (this commit).
+
+Ancestry verified:
+- `ee738b2` is an ancestor of `fad77d5` (`git merge-base --is-ancestor` → exit 0).
+- `f894f648` (M14-01 acceptance) is an ancestor of both `ee738b2` and `fad77d5`.
+- Commit chain `f894f648..fad77d5`: `ee738b2` (impl) → `92dd826` (original review) →
+  `fad77d5` (remediation). HEAD of the working tree is exactly the remediated candidate
+  (`git rev-parse HEAD` == `fad77d5…`); no newer HEAD drift.
+
+Working tree at the candidate: every M14-02 file matches the candidate SHA
+(`git status --short -- <all M14-02 paths>` is empty). The only working-tree entries are
+the pre-existing unrelated `docs/reviews/MINIMAL_RUN_*` and `docs/reviews/M12_M13_REVIEW.md`
+files (same situation as M14-00 / M14-01; they predate this task and are untouched).
+
+## Predecessor gate
+
+`forge gate next --manifest docs/reviews/m14/M14-01.manifest.json` →
+`OK: predecessor "M14-01" is ACCEPTED; successor task may start` (exit 0).
+`forge gate validate` on the M14-01 manifest → exit 0
+(`REVIEW_APPROVED -> ACCEPTED is legal under baseline v1`). The candidate was lawfully
+allowed to start; baseline version is 1.
+
+## Remediation diff (actual vs claimed)
+
+`git diff --stat ee738b2..fad77d5` touches exactly the claimed files and nothing else
+in production code:
+
+```
+docs/reviews/m14/M14-02_IMPLEMENTATION.md  | remediation section added
+docs/reviews/m14/M14-02_REVIEW.md          | original review (committed at 92dd826)
+internal/cli/help.go                       | +2/-2  (grammar + --json opt-in text)
+internal/cli/spec_cmd.go                   | +86/-35 (MAJOR-1 + MINOR-2/3/5)
+internal/cli/spec_cmd_test.go              | +136 (new: TestSplitAttachFlag_Grammar)
+internal/cli/spec_compile_blackbox_test.go | +205/-7 (MAJOR-1 + MINOR-1/3 binary tests)
+internal/task/compiler.go                  | +10/-3 (MAJOR-1 defensive empty-filename)
+internal/task/compiler_test.go             | +45/-10 (MINOR-4 in-order + MAJOR-1 regression)
+```
+
+No changes to `docs/spec/NEUROFORGE_SPEC.md`, `internal/daemon`, `internal/scheduler`,
+`internal/storage`, `internal/policy`, `internal/merge`, or any baseline/gate enforcement.
+Scope is bounded to the six findings — no scope creep, no M14-03 work, no weakened
+invariants. Legacy `hash=ROLE` form is preserved (verified in code and via binary).
+
+## Previous findings status
+
+| Finding | Fix | Regression evidence | Status |
+|---|---|---|---|
+| **MAJOR-1** CLI `--attach` cannot carry Filename/MIME/Size; attachment-only CLI emits degenerate `()` objective | `splitAttachFlag` rewritten to parse `hash=ROLE[:filename[:mimeType[:size]]]` with role + size validation; `synthesiseObjectiveFromAttachments` omits the file clause when filename is empty (`internal/task/compiler.go:507-520`); legacy form preserved; help updated | `TestSplitAttachFlag_Grammar` (14 cases), `TestCompile_Regression_AttachmentOnlyEmptyFilename`, `TestSpecCompile_BlackBox_AttachmentOnlyWithFilename`, `TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole`, `TestSpecCompile_BlackBox_InvalidAttachSizeRejected`, `TestSpecCompile_BlackBox_InvalidAttachRoleRejected`; **sensitivity check confirmed** the regression tests fail when the defensive handling is removed | **CLOSED** |
+| **MINOR-1** Text output path untested | `TestSpecCompile_BlackBox_TextOutput` added — asserts default output is text (not JSON) and contains TaskID, Objective, AC-1/AC-2, Confidence; **sensitivity check confirmed** it fails when `--json` default is reverted to `true` | as above | **CLOSED** |
+| **MINOR-2** `--json` defaulted to `true` (inconsistent) | default changed to `false` (`spec_cmd.go:79`); `--json` is opt-in; existing JSON black-box tests now pass `--json` explicitly; help documents "opt-in; default is text" | `TestSpecCompile_BlackBox_TextOutput`; explicit `--json` in `DeterministicOutput`, `VagueInputLowConfidence`, `AttachmentMetadata`, `RiskyTaskFlagsClarification` | **CLOSED** |
+| **MINOR-3** `--priority` unvalidated | `switch task.Priority(*priority)` validates against `PriorityLow/Normal/High/Urgent`; non-zero exit + clear error echoing the bad value (`spec_cmd.go:91-98`); **sensitivity check confirmed** the test fails when validation is removed | `TestSpecCompile_BlackBox_InvalidPriorityRejected` | **CLOSED** |
+| **MINOR-4** Determinism test sorted `ComplexityReasons` | `sameCompileResult` compares in-order (no sort); unused `sort` import removed; **sensitivity check confirmed** the test detects injected map-iteration nondeterminism | `TestCompile_Deterministic` | **CLOSED** |
+| **MINOR-5** Dead code `_ = i` | replaced with `for _, ac := range`; `go vet ./...` clean; `gofmt -l .` clean | `go vet` exit 0; `TestSpecCompile_BlackBox_TextOutput` exercises the rewritten loop | **CLOSED** |
+
+Every previous MAJOR and MINOR finding is closed, and each fix is guarded by a named
+regression test that I independently proved fails when the defect is reintroduced (see
+Sensitivity checks).
+
+## Acceptance matrix
+
+| Criterion | Implementation | Test evidence | Independent result | Status |
+|---|---|---|---|---|
+| **AC1** Complete valid specification for typical tasks (bugfix/feature/UI/security-auth-payment) | `Compile` (`compiler.go:101-157`); structured parser; risk + complexity cascades; `deriveVisualRequirements` | `TestCompile_Fixture_*` (6 fixtures, each re-validated through production `ValidateSpecification`); black-box `DeterministicOutput`, `AttachmentMetadata`; binary reproduces feature/UI/security scenarios with correct Risk/Visual fields | targeted tests PASS; binary reproduces feature (HIGH), UI (`VisualRequirements.Required=true`), security/auth/payment (R4) | **MET** |
+| **AC2** Unsafe ambiguities explicitly flagged (vague/attachment-only/high-risk) | `deriveConfidenceAndClarifications` (`compiler.go:691-756`): LOW + Clarification for vague/attachment-only; R4 surfaces a Clarification even with structured sections | `TestCompile_Fixture_VagueTask`, `TestCompile_Fixture_AttachmentOnly`, `TestCompile_Fixture_AuthPaymentRisky`, `TestCompile_RejectsEmptyInput`; black-box `VagueInputLowConfidence`, `RiskyTaskFlagsClarification`, `AttachmentOnly*` | binary reproduces R4 clarification + attachment-only LOW+clarification | **MET** |
+| **AC3** Identical input ⇒ deterministic output | `Compile` is pure (no I/O, no clock, no randomness); maps used only as keyed accumulators or JSON output (sorted keys); ordered slices built from input order | `TestCompile_Deterministic` (in-order `ComplexityReasons`), `TestCompile_Deterministic_AcrossVaryingWhitespace`, `TestCompile_ACsHaveStableIDs`; black-box `DeterministicOutput` (byte-identical JSON) | 20× unit PASS; 10× black-box PASS; 5× manual binary runs byte-identical (same SHA-256) | **MET** |
+| **AC4** Compiler never mutates a locked specification | `Compile` returns `Specification{Version:0, Locked:false}`; pure (no storage handle by construction); `SpecificationStore.Save` (M14-01) enforces `ErrSpecificationLocked` | `TestCompile_NeverMutatesLockedSpec`; end-to-end `TestCompile_LockedSpecCannotBeMutatedViaSave` (compile → save → lock → compile+save → locked v1 byte-identical, fresh v2 allocated) | PASS (race-clean) | **MET** |
+
+All four mandatory ACs are proven by automated evidence I independently re-ran at unit,
+black-box, and race levels.
+
+## Commands executed
+
+| Command | Exit | Result |
+|---|---:|---|
+| `go build -o /tmp/forge-m14-02-review ./cmd/forge` | 0 | binary builds |
+| `/tmp/forge-m14-02-review gate next --manifest docs/reviews/m14/M14-01.manifest.json` | 0 | predecessor ACCEPTED |
+| `/tmp/forge-m14-02-review gate validate --manifest docs/reviews/m14/M14-01.manifest.json` | 0 | transition legal |
+| `go test -count=1 -run 'TestCompile\|TestSpecCompile\|TestSplitAttachFlag' ./internal/task/ ./internal/cli/` | 0 | PASS (task 0.588s, cli 2.953s) |
+| `go test -count=20 -run 'TestCompile_Deterministic$' ./internal/task/` | 0 | PASS (20×) |
+| `go test -count=10 -run 'TestSpecCompile_BlackBox_DeterministicOutput' ./internal/cli/` | 0 | PASS (10×, byte-identical) |
+| `go test -race -count=1 -run 'TestCompile\|TestSpecCompile\|TestSplitAttachFlag' ./internal/task/ ./internal/cli/` | 0 | PASS, no race |
+| `go vet ./...` | 0 | clean |
+| `gofmt -l .` | 0 | clean (no files listed) |
+| `make check` | 0 | every package ok; FAIL_COUNT 0 |
+| `go test -race ./...` | 0 | every package ok; no FAIL, no race detected |
+
+Toolchain: `go version go1.26.5 darwin/arm64`.
+
+## Black-box verification (compiled `forge` binary, isolated temp HOME)
+
+Each scenario was driven through `/tmp/forge-m14-02-review` with an isolated
+`HOME=$(mktemp -d)` (never the user's real home):
+
+1. **Text output (no `--json`)** — exit 0; human-readable text with `TaskID:`,
+   `Objective:`, `Risk:`, `Complexity:`, `Confidence: HIGH`, `AC-1`, `AC-2`. Not JSON.
+2. **JSON output (`--json`)** — exit 0; valid JSON with `result.Specification`,
+   `Confidence`, `Clarifications`, `RiskReasons`, `ComplexityReasons`, `AttachmentRoles`.
+3. **Attachment-only with filename** (`--attach sha256:feedface=REQUIREMENTS:requirements.md:text/markdown:512`)
+   — objective = `"Implement changes based on the attached requirements (requirements.md)."`
+   (no `()`); `Confidence=LOW`; 1 clarification; role mirrored.
+4. **Attachment-only legacy** (`--attach sha256:abc=REQUIREMENTS`) — objective =
+   `"Implement changes based on the attached requirements."` (no `()`, defensive clause
+   omitted); `Confidence=LOW`.
+5. **Invalid attach size** (`...:text/markdown:notanum` and `...:-5`) — exit 1; clear
+   `--attach` error.
+6. **Invalid priority** (`--priority BOGUS`) — exit 1; `Error: --priority must be one of
+   LOW|NORMAL|HIGH|URGENT, got "BOGUS"`.
+7. **Empty description** (`""`, no attachment) — exit 1; `description or attachment is required`.
+8. **Security/auth/payment** — `Risk=R4`; clarification present; `Confidence=MEDIUM`.
+9. **UI + DESIGN_REFERENCE** — `VisualRequirements.Required=true`; references populated.
+10. **Unknown role** (`=BOGUS_ROLE`) — exit 1.
+11. **Help** — `forge help` and `forge spec compile -h` show the exact grammar
+    `hash=ROLE[:filename[:mimeType[:size]]]`, `--priority ... validated`, and
+    `--json ... opt-in; default is text`. Help matches implementation.
+
+Edge cases that behave deterministically and gracefully: size `0` accepted; empty
+filename (`hash=ROLE:`) → defensive objective; filename with spaces preserved; empty MIME
+accepted; trailing empty size (`...:m:`) tolerated; duplicate hash → last role wins
+(deterministic, content-addressed hashes are expected to be unique).
+
+## Determinism verification
+
+- `TestCompile_Deterministic` ×20: PASS (in-order `ComplexityReasons`, no sort).
+- `TestSpecCompile_BlackBox_DeterministicOutput` ×10: PASS (byte-identical JSON).
+- Manual 5× binary run (`forge spec compile --json ...`) with identical input: all five
+  outputs share SHA-256 `cb81f4893f8aa67f15f5b46fb47712d832dd7d827999463c220ad18393f62a3e`
+  — byte-identical.
+- Production map usage audited (`internal/task/compiler.go`, `internal/cli/spec_cmd.go`):
+  maps are used only as keyed lookups (`parseSections` accumulators) or as the
+  `AttachmentRoles` output field, which `encoding/json` serialises with sorted keys.
+  Ordered outputs (ACs, References, reasons) are built by appending over input slices in
+  fixed sequence. No map iteration feeds ordered output.
+
+## Sensitivity checks
+
+Performed in an isolated `git worktree` (detached at `fad77d5`); every mutation was fully
+reverted (`git diff --stat` empty afterwards) and the clean tree re-run PASSed.
+
+| Mutation | Expected failing test | Result |
+|---|---|---|
+| Revert `--json` default `false`→`true` (`spec_cmd.go`) | `TestSpecCompile_BlackBox_TextOutput` | **FAIL** (output became JSON) — test catches it ✓ |
+| Remove defensive empty-filename handling (`compiler.go:507-520`) | `TestCompile_Regression_AttachmentOnlyEmptyFilename` and `TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole` | **both FAIL** with `()` objective — tests catch it ✓ |
+| Inject map-iteration nondeterminism into `classifyComplexity` reasons | `TestCompile_Deterministic` | **FAIL** (r1 `[gamma alpha beta…]` vs r2 `[alpha beta gamma…]`) — in-order comparison catches drift the old sorted comparison hid ✓ |
+| Remove `--priority` validation switch (`spec_cmd.go:91-98`) | `TestSpecCompile_BlackBox_InvalidPriorityRejected` | **FAIL** (invalid priority no longer rejected) — test catches it ✓ |
+
+All four sensitivity checks confirm the regression tests genuinely guard the fixes.
+
+## Findings
+
+No new BLOCKER or MAJOR findings. One new MINOR observation (pre-existing, not a
+remediation regression; does not invalidate any AC and does not block approval):
+
+### [MINOR-6] Whitespace-only description is treated inconsistently with empty description at the CLI surface (pre-existing)
+
+**Location:** `internal/cli/spec_cmd.go:113-117`.
+
+**Requirement:** Baseline rules 8/10 (malformed/empty input must produce a predictable
+error and non-zero exit); task-brief mandatory input scenario "пустого или
+whitespace-only description".
+
+**Observed:** The CLI guard is `description == "" && len(attachments) == 0`. A
+whitespace-only description (`"    "`) is not `""`, so it bypasses the guard and reaches
+`Compile`, which produces `Objective=""`, `Confidence=LOW`, 1 clarification, and a spec
+that fails `ValidateSpecification` (`specification.go:162`). The empty string `""` is
+hard-rejected with exit 1. The two paths are inconsistent and the whitespace path has no
+targeted CLI test.
+
+**Evidence:**
+```
+$ forge spec compile --project p ""            → exit 1 ("description or attachment is required")
+$ forge spec compile --project p "    "        → exit 0, Objective="", Confidence=LOW (degenerate)
+```
+The guard is byte-identical in `ee738b2` and `fad77d5` (`git show <SHA>:internal/cli/spec_cmd.go`), so this is pre-existing, not introduced by remediation.
+
+**Impact:** Limited. The compiler degrades gracefully (LOW + clarification) and the
+compiled spec fails `ValidateSpecification`, so it cannot be persisted via
+`SpecificationStore`; `forge spec compile` is read-only and writes no state. AC2 is
+satisfied (ambiguity is flagged). The defect is a UX/consistency gap, not a correctness
+or safety violation.
+
+**Required fix (follow-up):** Either trim before the empty check
+(`strings.TrimSpace(description) == ""`) so whitespace-only is rejected consistently, or
+add a black-box test pinning the current graceful-degradation behaviour (LOW +
+clarification, exit code documented). Tracked as FU-M14-02-9.
+
+## Scope assessment
+
+- Remediation is strictly bounded to the six prior findings; no production behaviour
+  outside the findings was changed.
+- Product spec untouched; no security/autonomy/delivery/merge-policy invariant weakened;
+  no baseline/gate enforcement weakened.
+- No M14-03 work present (no `M14-03*` files; `forge gate next` against M14-01 is still
+  the active gate).
+- No useful old tests removed; existing JSON black-box tests were updated (not deleted) to
+  pass `--json` explicitly after the default flip.
+- Legacy `hash=ROLE` grammar preserved (verified in code, help, and binary).
+- Help text matches the actual grammar (baseline rule 11).
+
+## What remains unproven
+
+Nothing among the four mandatory ACs. All are backed by automated evidence I independently
+re-ran (unit + race + black-box + `make check` + `go test -race ./...`).
+
+MINOR-6 is a tracked follow-up (pre-existing, safe, AC-compliant); it does not require
+proof for this task's ACs.
+
+## Verdict
+
+`REVIEW_APPROVED`
+
+Rationale:
+- M14-01 is `ACCEPTED` (predecessor gate exit 0).
+- The remediated candidate `fad77d5` is a descendant of the original candidate `ee738b2`,
+  which descends from the M14-01 acceptance SHA `f894f648`.
+- All six prior findings (MAJOR-1 + MINOR-1..5) are genuinely closed; each fix is guarded
+  by named regression tests that I proved (via sensitivity/mutation checks) fail when the
+  defect is reintroduced.
+- All four mandatory ACs (AC1–AC4) are proven by automated evidence I independently
+  reproduced at unit, black-box, and race levels.
+- Determinism is proven by 20× unit, 10× black-box, and 5× manual binary runs
+  (byte-identical, same SHA-256).
+- `make check` is green (FAIL_COUNT 0); `go test -race ./...` is green (no race detected);
+  `go vet ./...` and `gofmt -l .` are clean.
+- No new BLOCKER or MAJOR finding. The single new MINOR-6 is pre-existing, AC-compliant,
+  and safe (no persistence path); it is tracked as a follow-up and does not block approval.
+- No scope creep; actor independence preserved.
+
+A separate acceptance session (distinct from this re-review) may now move M14-02 from
+`REVIEW_APPROVED` to `ACCEPTED`. This re-review session does not perform acceptance.
