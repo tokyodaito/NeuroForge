@@ -507,8 +507,17 @@ func synthesiseObjectiveFromAttachments(in CompileInput) (string, bool) {
 	}
 	a := in.Attachments[best]
 	roleLabel := strings.ToLower(strings.ReplaceAll(string(a.Role), "_", " "))
-	return fmt.Sprintf("Implement changes based on the attached %s (%s).",
-		roleLabel, a.Filename), true
+	// Defensive: when no filename was supplied (e.g. legacy `hash=ROLE` CLI
+	// form), omit the trailing file clause instead of emitting degenerate
+	// "attached requirements ()." output. The compiler is documented to
+	// consume filename metadata (spec §9.5); this guard keeps the placeholder
+	// well-formed when the upstream caller omitted it.
+	fileClause := ""
+	if a.Filename != "" {
+		fileClause = " (" + a.Filename + ")"
+	}
+	return fmt.Sprintf("Implement changes based on the attached %s%s.",
+		roleLabel, fileClause), true
 }
 
 // deriveAcceptanceCriteria returns the explicit AC list if present, else

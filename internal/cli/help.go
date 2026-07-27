@@ -47,8 +47,8 @@ Implemented commands:
 
   spec compile        Deterministically compile free-form task text into a
                       structured task.Specification (§18.1) (--project,
-                      --title, --priority, --attach hash=ROLE, --json)
-                      (M14-02)
+                      --title, --priority, --attach hash=ROLE[:filename[:mimeType[:size]]],
+                      --json opt-in for machine-readable output) (M14-02)
 
   run \"<description>\"  One-shot reliable run: create task + worktree, run one
                       production adapter (opencode), finalize + result ref.

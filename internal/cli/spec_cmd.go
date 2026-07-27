@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"neuroforge/internal/task"
@@ -44,11 +45,19 @@ Spec compile flags:
   -p, --project <id>     Project ID (required; becomes the spec's TaskID prefix)
   --task <id>            Full task ID (overrides --project)
   --title <title>        Optional task title
-  --priority <level>     LOW | NORMAL | HIGH | URGENT (default NORMAL)
-  --attach <hash=role>   Attachment metadata as hash=role, repeatable
-                         (role: DESIGN_REFERENCE|BUG_SCREENSHOT|REQUIREMENTS|
-                                LOG|API_SPECIFICATION|EXAMPLE|GENERAL_CONTEXT)
-  --json                 Emit machine-readable JSON (default)
+  --priority <level>     LOW | NORMAL | HIGH | URGENT (default NORMAL; validated)
+  --attach <spec>        Attachment metadata, repeatable. Spec grammar:
+                            hash=ROLE
+                            hash=ROLE:filename
+                            hash=ROLE:filename:mimeType
+                            hash=ROLE:filename:mimeType:size
+                         ROLE: DESIGN_REFERENCE|BUG_SCREENSHOT|REQUIREMENTS|
+                               LOG|API_SPECIFICATION|EXAMPLE|GENERAL_CONTEXT
+                         filename/mimeType/size are optional metadata the
+                         compiler consumes (it never reads attachment content).
+                         Filenames containing ':' are not supported by the
+                         inline form (drop the colon or pipe-escape elsewhere).
+  --json                 Emit machine-readable JSON (opt-in; default is text)
 
 The compiler is pure: it never calls an external model (§18.2 cascade:
 deterministic parsing -> cheap classifier). Output is the compiled
@@ -67,15 +76,25 @@ func (a *App) specCompile(args []string) int {
 	taskID := fs.String("task", "", "full task ID (overrides --project)")
 	title := fs.String("title", "", "optional task title")
 	priority := fs.String("priority", "NORMAL", "LOW | NORMAL | HIGH | URGENT")
-	jsonOut := fs.Bool("json", true, "emit machine-readable JSON")
+	jsonOut := fs.Bool("json", false, "emit machine-readable JSON")
 
 	var attachments []string
-	fs.Func("attach", "attachment metadata as hash=role (repeatable)", func(s string) error {
+	fs.Func("attach", "attachment metadata as hash=ROLE[:filename[:mimeType[:size]]] (repeatable)", func(s string) error {
 		attachments = append(attachments, s)
 		return nil
 	})
 
 	if err := fs.Parse(args); err != nil {
+		return ExitErr
+	}
+
+	// Validate --priority against the known set so a typo is reported, not
+	// silently propagated into CompileInput.Priority (MINOR-3 review fix;
+	// matches the --attach role-validation behaviour).
+	switch task.Priority(*priority) {
+	case task.PriorityLow, task.PriorityNormal, task.PriorityHigh, task.PriorityUrgent:
+	default:
+		fmt.Fprintf(a.Err, "Error: --priority must be one of LOW|NORMAL|HIGH|URGENT, got %q\n", *priority)
 		return ExitErr
 	}
 
@@ -104,15 +123,12 @@ func (a *App) specCompile(args []string) int {
 		Priority:    task.Priority(*priority),
 	}
 	for _, raw := range attachments {
-		hash, role, ok := splitAttachFlag(raw)
+		att, ok := splitAttachFlag(raw)
 		if !ok {
-			fmt.Fprintf(a.Err, "Error: --attach expects hash=ROLE, got %q\n", raw)
+			fmt.Fprintf(a.Err, "Error: --attach expects hash=ROLE[:filename[:mimeType[:size]]], got %q\n", raw)
 			return ExitErr
 		}
-		in.Attachments = append(in.Attachments, task.Attachment{
-			Hash: hash,
-			Role: task.AttachmentRole(role),
-		})
+		in.Attachments = append(in.Attachments, att)
 	}
 
 	res, err := task.Compile(in)
@@ -135,31 +151,73 @@ func (a *App) specCompile(args []string) int {
 	return ExitOK
 }
 
+// splitAttachFlag parses the `--attach` flag value into a task.Attachment.
+//
+// Accepted grammar (MAJOR-1 review fix — the CLI now carries the metadata the
+// compiler is documented to consume, spec §9.5):
+//
+//	hash=ROLE
+//	hash=ROLE:filename
+//	hash=ROLE:filename:mimeType
+//	hash=ROLE:filename:mimeType:size
+//
+// ROLE is validated against the known attachment-role set so a typo is
+// reported, not silently swallowed. Filename, mimeType and size are optional;
+// when absent the corresponding task.Attachment field stays zero-valued. A
+// filename that itself contains ':' is not representable in this inline form
+// (documented in --help); callers needing such filenames should pass them via
+// the daemon transport's task-add path, which content-addresses files.
+//
+// The legacy `hash=ROLE` form remains valid (backward compatible).
+func splitAttachFlag(s string) (task.Attachment, bool) {
+	idx := strings.IndexByte(s, '=')
+	if idx <= 0 || idx == len(s)-1 {
+		return task.Attachment{}, false
+	}
+	hash := s[:idx]
+	rest := s[idx+1:]
+	if hash == "" || strings.TrimSpace(rest) == "" {
+		return task.Attachment{}, false
+	}
+	// Split on ':' into role / filename / mimeType / size. Filenames with ':'
+	// are out of scope (see docstring).
+	parts := strings.Split(rest, ":")
+	role := strings.ToUpper(strings.TrimSpace(parts[0]))
+	if role == "" {
+		return task.Attachment{}, false
+	}
+	switch task.AttachmentRole(role) {
+	case task.RoleDesignReference, task.RoleBugScreenshot, task.RoleRequirements,
+		task.RoleLog, task.RoleAPISpec, task.RoleExample, task.RoleGeneralContext:
+	default:
+		return task.Attachment{}, false
+	}
+	att := task.Attachment{Hash: hash, Role: task.AttachmentRole(role)}
+	if len(parts) > 1 {
+		att.Filename = strings.TrimSpace(parts[1])
+	}
+	if len(parts) > 2 {
+		att.MimeType = strings.TrimSpace(parts[2])
+	}
+	if len(parts) > 3 {
+		sizeStr := strings.TrimSpace(parts[3])
+		if sizeStr == "" {
+			return att, true
+		}
+		n, err := strconv.ParseInt(sizeStr, 10, 64)
+		if err != nil || n < 0 {
+			return task.Attachment{}, false
+		}
+		att.Size = n
+	}
+	return att, true
+}
+
 // specCompileJSON wraps the CompileResult so the marshalled output is a stable
 // JSON object even when the result carries nil maps/slices (json's default
 // handling would emit null, which is awkward for downstream parsers).
 type specCompileJSON struct {
 	Result task.CompileResult `json:"result"`
-}
-
-func splitAttachFlag(s string) (hash, role string, ok bool) {
-	idx := strings.IndexByte(s, '=')
-	if idx <= 0 || idx == len(s)-1 {
-		return "", "", false
-	}
-	hash = s[:idx]
-	role = strings.ToUpper(strings.TrimSpace(s[idx+1:]))
-	if hash == "" || role == "" {
-		return "", "", false
-	}
-	// Validate the role against the known set so a typo is reported, not
-	// silently swallowed.
-	switch task.AttachmentRole(role) {
-	case task.RoleDesignReference, task.RoleBugScreenshot, task.RoleRequirements,
-		task.RoleLog, task.RoleAPISpec, task.RoleExample, task.RoleGeneralContext:
-		return hash, role, true
-	}
-	return "", "", false
 }
 
 func writeSpecCompileText(a *App, res task.CompileResult) {
@@ -169,9 +227,8 @@ func writeSpecCompileText(a *App, res task.CompileResult) {
 	fmt.Fprintf(a.Out, "Risk:       %s\n", spec.Risk)
 	fmt.Fprintf(a.Out, "Complexity: %s\n", spec.Complexity)
 	fmt.Fprintf(a.Out, "Confidence: %s\n", res.Confidence)
-	for i, ac := range spec.AcceptanceCriteria {
+	for _, ac := range spec.AcceptanceCriteria {
 		fmt.Fprintf(a.Out, "  %s: %s\n", ac.ID, ac.Statement)
-		_ = i
 	}
 	if len(spec.NonGoals) > 0 {
 		fmt.Fprintln(a.Out, "Non-goals:")

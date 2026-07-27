@@ -2,7 +2,6 @@ package task
 
 import (
 	"errors"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -418,6 +417,48 @@ func TestCompile_Regression_AttachmentRoleMapping(t *testing.T) {
 	}
 }
 
+// TestCompile_Regression_AttachmentOnlyEmptyFilename is the MAJOR-1 regression
+// test at the compiler level: when the caller omits Filename (e.g. legacy
+// `hash=ROLE` CLI form), the synthesised placeholder objective must NOT contain
+// the degenerate empty-paren clause "()" that the original implementation
+// emitted. The objective must still be non-empty and the spec must still
+// validate, with LOW confidence + a clarification.
+//
+// This test pins the defensive fix in synthesiseObjectiveFromAttachments so a
+// future refactor cannot reintroduce the "attached requirements ()." output.
+func TestCompile_Regression_AttachmentOnlyEmptyFilename(t *testing.T) {
+	t.Parallel()
+	in := CompileInput{
+		TaskID: "proj-r6",
+		Attachments: []Attachment{
+			{Hash: "sha256:abc", Role: RoleRequirements},
+		},
+	}
+	res, err := Compile(in)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	obj := res.Specification.Objective
+	if obj == "" {
+		t.Fatal("attachment-only task must still synthesise an objective")
+	}
+	if strings.Contains(obj, "()") {
+		t.Fatalf("degenerate empty-paren objective reappeared: %q", obj)
+	}
+	if !strings.Contains(obj, "requirements") {
+		t.Fatalf("objective should mention the attachment role: %q", obj)
+	}
+	if err := mustValidateSpec(t, res.Specification); err != nil {
+		t.Fatalf("compiled spec invalid: %v", err)
+	}
+	if res.Confidence != ConfidenceLow {
+		t.Fatalf("confidence = %s, want LOW (attachment-only)", res.Confidence)
+	}
+	if len(res.Clarifications) == 0 {
+		t.Fatal("attachment-only task must produce a clarification")
+	}
+}
+
 // TestCompile_NeverMutatesLockedSpec is the headline §28 invariant at the
 // compiler level: the compiler is pure and never reads or writes storage, so
 // running Compile against an input whose prior version is locked cannot change
@@ -636,12 +677,12 @@ func sameCompileResult(a, b CompileResult) bool {
 	if len(a.ComplexityReasons) != len(b.ComplexityReasons) {
 		return false
 	}
-	cR1 := append([]string(nil), a.ComplexityReasons...)
-	cR2 := append([]string(nil), b.ComplexityReasons...)
-	sort.Strings(cR1)
-	sort.Strings(cR2)
-	for i := range cR1 {
-		if cR1[i] != cR2[i] {
+	// Compare ComplexityReasons IN ORDER (MINOR-4 review fix): the production
+	// classifier appends reasons in a fixed sequence, so the determinism test
+	// must assert that ordering, not a sorted equivalence that would hide
+	// ordering drift.
+	for i := range a.ComplexityReasons {
+		if a.ComplexityReasons[i] != b.ComplexityReasons[i] {
 			return false
 		}
 	}

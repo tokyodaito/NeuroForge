@@ -34,13 +34,13 @@ func TestSpecCompile_BlackBox_DeterministicOutput(t *testing.T) {
 		"Constraints:\n" +
 		"- No new third-party dependencies."
 
-	out1, _, code := runForge(t, bin, home, "spec", "compile",
+	out1, _, code := runForge(t, bin, home, "spec", "compile", "--json",
 		"--project", "work-app", "--title", "Add retry button", desc)
 	if code != 0 {
 		t.Fatalf("spec compile: exit %d out=%s", code, out1)
 	}
 
-	out2, _, code := runForge(t, bin, home, "spec", "compile",
+	out2, _, code := runForge(t, bin, home, "spec", "compile", "--json",
 		"--project", "work-app", "--title", "Add retry button", desc)
 	if code != 0 {
 		t.Fatalf("spec compile (2): exit %d out=%s", code, out2)
@@ -111,7 +111,7 @@ func TestSpecCompile_BlackBox_VagueInputLowConfidence(t *testing.T) {
 	bin := forgeBinary(t)
 	home := t.TempDir()
 
-	out, _, code := runForge(t, bin, home, "spec", "compile", "--project", "p", "fix it")
+	out, _, code := runForge(t, bin, home, "spec", "compile", "--json", "--project", "p", "fix it")
 	if code != 0 {
 		t.Fatalf("spec compile: exit %d out=%s", code, out)
 	}
@@ -145,7 +145,7 @@ func TestSpecCompile_BlackBox_AttachmentMetadata(t *testing.T) {
 	bin := forgeBinary(t)
 	home := t.TempDir()
 
-	out, _, code := runForge(t, bin, home, "spec", "compile",
+	out, _, code := runForge(t, bin, home, "spec", "compile", "--json",
 		"--project", "p",
 		"--attach", "sha256:deadbeef=DESIGN_REFERENCE",
 		"Implement the profile header per the attached mock.")
@@ -190,7 +190,7 @@ func TestSpecCompile_BlackBox_RiskyTaskFlagsClarification(t *testing.T) {
 	bin := forgeBinary(t)
 	home := t.TempDir()
 
-	out, _, code := runForge(t, bin, home, "spec", "compile",
+	out, _, code := runForge(t, bin, home, "spec", "compile", "--json",
 		"--project", "p",
 		"Objective: Rotate OAuth client secrets and invalidate sessions.\nAcceptance Criteria:\n- Rotation completes without downtime.")
 	if code != 0 {
@@ -251,5 +251,207 @@ func TestSpecCompile_BlackBox_EmptyInput(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "description or attachment is required") {
 		t.Fatalf("stderr should mention the empty-input contract, got: %s", stderr)
+	}
+}
+
+// TestSpecCompile_BlackBox_AttachmentOnlyWithFilename is the MAJOR-1 regression
+// test at the binary level. The extended --attach grammar
+// (hash=ROLE:filename:mimeType:size) must propagate filename + mimeType + size
+// into the compiled specification, and the attachment-only task must produce a
+// non-degenerate objective (no empty "()" clause) plus LOW confidence +
+// clarification. This pins the review fix end-to-end through the production CLI.
+func TestSpecCompile_BlackBox_AttachmentOnlyWithFilename(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+
+	// Attachment-only: no description, just metadata.
+	out, _, code := runForge(t, bin, home, "spec", "compile", "--json",
+		"--project", "p",
+		"--attach", "sha256:feedface=REQUIREMENTS:requirements.md:text/markdown:512")
+	if code != 0 {
+		t.Fatalf("spec compile: exit %d out=%s", code, out)
+	}
+	var doc struct {
+		Result struct {
+			Specification struct {
+				Objective string `json:"Objective"`
+			} `json:"Specification"`
+			Confidence     string `json:"Confidence"`
+			Clarifications []struct {
+				Question string `json:"Question"`
+				Reason   string `json:"Reason"`
+			} `json:"Clarifications"`
+			AttachmentRoles map[string]string `json:"AttachmentRoles"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("parse compile output: %v\nout=%s", err, out)
+	}
+	r := doc.Result
+	obj := r.Specification.Objective
+	if obj == "" {
+		t.Fatal("attachment-only task must synthesise an objective")
+	}
+	// MAJOR-1 headline assertion: the degenerate "()" must be gone, and the
+	// filename must appear in the placeholder objective.
+	if strings.Contains(obj, "()") {
+		t.Fatalf("degenerate empty-paren objective via CLI: %q", obj)
+	}
+	if !strings.Contains(obj, "requirements.md") {
+		t.Fatalf("filename not propagated into objective: %q", obj)
+	}
+	if r.Confidence != "LOW" {
+		t.Fatalf("confidence = %q, want LOW (attachment-only, content not read)", r.Confidence)
+	}
+	if len(r.Clarifications) == 0 {
+		t.Fatal("attachment-only task must surface a clarification")
+	}
+	if r.AttachmentRoles["sha256:feedface"] != "REQUIREMENTS" {
+		t.Fatalf("attachment role lost: %v", r.AttachmentRoles)
+	}
+}
+
+// TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole proves the legacy
+// `hash=ROLE` form (no filename) still works after the MAJOR-1 grammar
+// extension and produces a valid (LOW + clarification) specification, with the
+// defensive non-degenerate objective. Backward compatibility is preserved.
+func TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+
+	out, _, code := runForge(t, bin, home, "spec", "compile", "--json",
+		"--project", "p",
+		"--attach", "sha256:abc=REQUIREMENTS")
+	if code != 0 {
+		t.Fatalf("spec compile: exit %d out=%s", code, out)
+	}
+	var doc struct {
+		Result struct {
+			Specification struct {
+				Objective string `json:"Objective"`
+			} `json:"Specification"`
+			Confidence string `json:"Confidence"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("parse compile output: %v\nout=%s", err, out)
+	}
+	r := doc.Result
+	if strings.Contains(r.Specification.Objective, "()") {
+		t.Fatalf("legacy hash=ROLE form produced degenerate objective: %q",
+			r.Specification.Objective)
+	}
+	if r.Confidence != "LOW" {
+		t.Fatalf("confidence = %q, want LOW", r.Confidence)
+	}
+}
+
+// TestSpecCompile_BlackBox_TextOutput is the MINOR-1 regression test: the
+// --json=false text formatter must produce human-readable output containing
+// TaskID, Objective, AC IDs, and Confidence. Before this fix the text path
+// had zero test coverage.
+func TestSpecCompile_BlackBox_TextOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+
+	// Default output mode is text (--json opt-in since MINOR-2).
+	out, _, code := runForge(t, bin, home, "spec", "compile",
+		"--project", "work-app",
+		"Objective: Add a retry button.\nAcceptance Criteria:\n- Button renders.\n- Retry re-submits within 500ms.")
+	if code != 0 {
+		t.Fatalf("spec compile: exit %d out=%s", code, out)
+	}
+	// The text formatter is not JSON; assert the human-readable shape.
+	if strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Fatalf("default output should be text, got JSON: %s", out)
+	}
+	mustContain := []string{
+		"TaskID:",
+		"work-app-compiled",
+		"Objective:",
+		"retry button",
+		"AC-1",
+		"AC-2",
+		"Confidence:",
+		"HIGH",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(out, want) {
+			t.Fatalf("text output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestSpecCompile_BlackBox_InvalidPriorityRejected is the MINOR-3 regression
+// test: an unknown --priority value must exit non-zero with a clear error,
+// matching the --attach role-validation behaviour.
+func TestSpecCompile_BlackBox_InvalidPriorityRejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+
+	_, stderr, code := runForge(t, bin, home, "spec", "compile",
+		"--project", "p", "--priority", "BOGUS", "fix it")
+	if code == 0 {
+		t.Fatal("invalid --priority must exit non-zero")
+	}
+	if !strings.Contains(stderr, "--priority") {
+		t.Fatalf("stderr should mention --priority, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "BOGUS") {
+		t.Fatalf("stderr should echo the bad value, got: %s", stderr)
+	}
+}
+
+// TestSpecCompile_BlackBox_InvalidAttachRoleRejected proves the --attach role
+// validation is observable through the binary (the role-validation predated
+// MAJOR-1 but had no black-box coverage).
+func TestSpecCompile_BlackBox_InvalidAttachRoleRejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+
+	_, stderr, code := runForge(t, bin, home, "spec", "compile",
+		"--project", "p", "--attach", "sha256:abc=NOT_A_ROLE", "fix it")
+	if code == 0 {
+		t.Fatal("invalid --attach role must exit non-zero")
+	}
+	if !strings.Contains(stderr, "--attach") {
+		t.Fatalf("stderr should mention --attach, got: %s", stderr)
+	}
+}
+
+// TestSpecCompile_BlackBox_InvalidAttachSizeRejected proves the --attach size
+// field (part of the MAJOR-1 grammar extension) is validated: a non-numeric
+// size is rejected at the CLI surface.
+func TestSpecCompile_BlackBox_InvalidAttachSizeRejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+
+	_, stderr, code := runForge(t, bin, home, "spec", "compile",
+		"--project", "p",
+		"--attach", "sha256:abc=REQUIREMENTS:req.md:text/markdown:not-a-number",
+		"fix it")
+	if code == 0 {
+		t.Fatal("non-numeric --attach size must exit non-zero")
+	}
+	if !strings.Contains(stderr, "--attach") {
+		t.Fatalf("stderr should mention --attach, got: %s", stderr)
 	}
 }

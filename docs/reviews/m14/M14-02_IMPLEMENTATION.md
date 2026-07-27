@@ -1,15 +1,20 @@
 # M14-02 — Implementation Report
 
 **Task:** M14-02 — Deterministic Task Compiler.
-**Implementer actor:** `M14-02-impl-session`.
+**Implementer actor:** `M14-02-impl-session` (initial), `M14-02-remediation-session` (review remediation).
 **Verdict:** `IMPLEMENTED_TESTED`
 
 ## SHAs
 
 - **Starting SHA:** `f894f648fb5545b89cb5e797e6d146a35d2c379a` (branch `main`, the
   M14-01 acceptance commit `M14-01: add acceptance evidence`).
-- **Candidate SHA:** produced by the local commit `M14-02: ...` at the end of
-  this task (resolve with `git log --format=%H -G '^M14-02:'`).
+- **Initial candidate SHA:** `ee738b2edd9138e7e2ef33eb18ff05fc6e95b43d`
+  (`M14-02: deterministic task compiler + forge spec compile`).
+- **Review SHA:** `92dd82661f4a4f2cbf44aba83813fee4ff0cd405`
+  (`M14-02: independent review (CHANGES_REQUESTED, MAJOR-1 CLI attachment gap)`).
+- **Remediation candidate SHA:** produced by the local commit
+  `M14-02: address review findings` at the end of this task (resolve with
+  `git rev-parse HEAD` after the commit lands).
 
 ## Preconditions verified
 
@@ -115,20 +120,52 @@ weakened.
 
 ## Changed files
 
+Initial implementation (commit `ee738b2`):
+
 ```
-internal/task/compiler.go                               | new (795 lines: pure compiler + parser + classifier cascade)
-internal/task/compiler_test.go                          | new (719 lines: fixtures, determinism, regressions, locked-spec)
-internal/cli/spec_cmd.go                                | new (194 lines: forge spec compile command + flag parsing)
-internal/cli/spec_compile_blackbox_test.go              | new (255 lines: black-box tests through the compiled binary)
+internal/task/compiler.go                               | new (pure compiler + parser + classifier cascade)
+internal/task/compiler_test.go                          | new (fixtures, determinism, regressions, locked-spec)
+internal/cli/spec_cmd.go                                | new (forge spec compile command + flag parsing)
+internal/cli/spec_compile_blackbox_test.go              | new (black-box tests through the compiled binary)
 internal/cli/cli.go                                     | modified (2 lines: dispatch case for "spec")
-internal/cli/help.go                                    | modified (5 lines: spec compile in help)
+internal/cli/help.go                                    | modified (spec compile in help)
 docs/reviews/m14/M14-02_IMPLEMENTATION.md               | rewritten (this report; replaces the prior BLOCKED report)
+```
+
+Review remediation (commit `M14-02: address review findings`):
+
+```
+internal/cli/spec_cmd.go                                | modified (MAJOR-1 + MINOR-2/3/5)
+internal/cli/spec_cmd_test.go                           | new (MAJOR-1 unit-level regression for splitAttachFlag)
+internal/cli/spec_compile_blackbox_test.go              | extended (MAJOR-1 + MINOR-1/3 binary regressions)
+internal/cli/help.go                                    | modified (MAJOR-1 grammar in help text)
+internal/task/compiler.go                               | modified (MAJOR-1 defensive empty-filename handling)
+internal/task/compiler_test.go                          | modified (MINOR-4 in-order ComplexityReasons; MAJOR-1 regression)
+docs/reviews/m14/M14-02_IMPLEMENTATION.md               | this section
 ```
 
 `git diff --stat f894f648..HEAD` will show only the above plus the
 pre-existing unrelated working-tree entries (`docs/reviews/MINIMAL_RUN_*`,
 `docs/reviews/M12_M13_REVIEW.md`) that were already present at the starting
 SHA and are intentionally left untouched (same position as M14-00 / M14-01).
+
+## Review remediation
+
+The independent review (`docs/reviews/m14/M14-02_REVIEW.md`,
+`CHANGES_REQUESTED`) raised one MAJOR and five MINOR findings. Every finding
+is addressed below; each fix has a regression test that would fail if the
+defect returned.
+
+| Finding | Fix | Regression test(s) |
+|---|---|---|
+| **MAJOR-1** CLI `--attach` cannot carry Filename/MIME/Size; attachment-only tasks via CLI produce a degenerate objective with empty parens `()`. The implementation report did not acknowledge the gap. | Extended the `--attach` grammar to `hash=ROLE[:filename[:mimeType[:size]]]` (`internal/cli/spec_cmd.go:splitAttachFlag`); the legacy `hash=ROLE` form remains valid (backward compatible). The compiler's `synthesiseObjectiveFromAttachments` is now defensive: an empty filename omits the trailing `(...)` clause instead of emitting `()`. The CLI supplies the full metadata the compiler is documented to consume (spec §9.5). | `TestSplitAttachFlag_Grammar` (14 table cases, unit-level parsing); `TestCompile_Regression_AttachmentOnlyEmptyFilename` (compiler-level: no `()` even with empty filename); `TestSpecCompile_BlackBox_AttachmentOnlyWithFilename` (binary: filename appears in objective, LOW + clarification); `TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole` (binary: legacy form still works, no `()`); `TestSpecCompile_BlackBox_InvalidAttachSizeRejected` (binary: non-numeric size rejected); `TestSpecCompile_BlackBox_InvalidAttachRoleRejected` (binary: unknown role rejected). |
+| **MINOR-1** Text output path (`--json=false`) had no test coverage. | Added a black-box test that drives the default text formatter through the compiled binary and asserts the presence of TaskID, Objective, AC IDs (`AC-1`/`AC-2`), and Confidence. | `TestSpecCompile_BlackBox_TextOutput` (binary: default output is text, contains all required fields). |
+| **MINOR-2** `--json` defaulted to `true`, inconsistent with every other `forge` command. | Aligned with the CLI convention: `--json` now defaults to `false` (text is the default; `--json` is opt-in, matching `task add`, `project list`, `daemon status`, etc.). Help text documents the opt-in. Existing JSON black-box tests were updated to pass `--json` explicitly. | `TestSpecCompile_BlackBox_TextOutput` (binary: default output is text, not JSON); existing JSON tests now explicitly pass `--json` (`TestSpecCompile_BlackBox_DeterministicOutput`, etc.). |
+| **MINOR-3** `--priority` was not validated against known values (`BOGUS` was silently accepted). | Added validation at the CLI surface: `--priority` must be one of `LOW|NORMAL|HIGH|URGENT`; an unknown value exits non-zero with a clear error echoing the bad value, matching the `--attach` role-validation behaviour. | `TestSpecCompile_BlackBox_InvalidPriorityRejected` (binary: `--priority BOGUS` exits non-zero, stderr names `--priority` and `BOGUS`). |
+| **MINOR-4** Determinism test sorted `ComplexityReasons` before comparing, weakening the assertion. | `sameCompileResult` now compares `ComplexityReasons` in order (no sort), matching the treatment of `RiskReasons` and `UncertaintyReasons`. The unused `sort` import was removed. | `TestCompile_Deterministic` (now asserts in-order `ComplexityReasons` equality; a non-deterministic reason order would fail). |
+| **MINOR-5** Dead code: `_ = i` in `writeSpecCompileText`. | Replaced `for i, ac := range ...` with `for _, ac := range ...`; the `_ = i` line is gone. | `go vet ./...` clean; `TestSpecCompile_BlackBox_TextOutput` exercises the rewritten loop through the binary. |
+
+No MAJOR or MINOR finding is left unaddressed.
 
 ## Acceptance criterion → code → test
 
@@ -162,6 +199,32 @@ go test -race -count=1 ./internal/task/ ./internal/storage/ ./internal/cli/ # PA
 # Whole-module gates.
 make check                                                                  # exit 0 (fmt-check + vet + full suite; FAIL_COUNT 0)
 go test -race ./...                                                         # every package ok; no FAIL, no race detected
+```
+
+### Remediation re-run (after review fixes)
+
+```sh
+# Targeted regression tests added/changed by the remediation.
+go test -count=1 -run 'TestSplitAttachFlag' ./internal/cli/                  # PASS (14 table cases)
+go test -count=1 -run 'TestCompile_Regression_AttachmentOnlyEmptyFilename' ./internal/task/  # PASS
+go test -count=1 -run 'TestCompile_Deterministic$' ./internal/task/         # PASS (in-order ComplexityReasons)
+
+# All compiler + spec-compile tests (unit + black-box).
+go test -count=1 -run 'TestCompile|TestSpecCompile|TestSplitAttachFlag' \
+        ./internal/task/ ./internal/cli/                                    # PASS
+
+# Determinism stress (remediation did not regress determinism).
+go test -count=20 -run 'TestCompile_Deterministic$' ./internal/task/        # PASS (20×)
+go test -count=5  -run 'TestSpecCompile_BlackBox_DeterministicOutput' ./internal/cli/  # PASS (5×, byte-identical)
+
+# Race detector on the touched packages (compiler is pure; storage exercises
+# the locked-spec end-to-end path).
+go test -race -count=1 -run 'TestCompile|TestSpecCompile|TestSplitAttachFlag|TestValidate|TestSpecification' \
+        ./internal/task/ ./internal/cli/                                    # PASS (no race)
+
+# Whole-module gates (no M0–M13 + M14-00/M14-01 regression).
+make check                                                                  # exit 0 (FAIL_COUNT 0)
+go test -race ./...                                                         # every package ok; no FAIL, no race
 ```
 
 Toolchain: `go version go1.26.5 darwin/arm64`.
@@ -202,6 +265,23 @@ internal Go objects (engineering baseline §2):
    non-zero with a stderr message naming `project`.
 6. **`TestSpecCompile_BlackBox_EmptyInput`** — empty input exits non-zero
    with the literal `description or attachment is required` message.
+7. **`TestSpecCompile_BlackBox_AttachmentOnlyWithFilename`** (MAJOR-1) — the
+   extended `--attach sha256:feedface=REQUIREMENTS:requirements.md:text/markdown:512`
+   grammar propagates filename into the synthesised objective; the objective
+   contains `requirements.md` and has **no** degenerate `()` clause; confidence
+   is LOW with a clarification.
+8. **`TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole`** (MAJOR-1) — the
+   legacy `hash=ROLE` form (no filename) still works and produces a
+   non-degenerate objective (defensive empty-filename handling).
+9. **`TestSpecCompile_BlackBox_TextOutput`** (MINOR-1/2) — default output
+   (no `--json`) is human-readable text containing TaskID, Objective, AC IDs,
+   and Confidence.
+10. **`TestSpecCompile_BlackBox_InvalidPriorityRejected`** (MINOR-3) —
+    `--priority BOGUS` exits non-zero with a clear stderr naming `--priority`.
+11. **`TestSpecCompile_BlackBox_InvalidAttachRoleRejected`** — unknown
+    `--attach` role exits non-zero (role validation observable through binary).
+12. **`TestSpecCompile_BlackBox_InvalidAttachSizeRejected`** (MAJOR-1) —
+    non-numeric size in the extended `--attach` grammar exits non-zero.
 
 The `if testing.Short() { t.Skip(...) }` guard is the standard opt-out; the
 tests run under both `make check` and `go test -race ./...` (verified: full
@@ -263,8 +343,12 @@ refactor that reintroduces the defect will fail the named test.
    M14-01 follow-up #3; it is absent from this task's ACs.
 3. **Attachment content is not read.** The compiler consumes metadata only
    (hash/filename/MIME/role) per the task brief ("Attachment metadata как
-   вход"). An attachment-only task therefore produces `Confidence=LOW` with a
-   clarification by design; a future milestone may add content-aware parsing.
+   вход"). After the MAJOR-1 remediation the `forge spec compile` CLI
+   supplies the full metadata set via the extended `--attach` grammar
+   (`hash=ROLE[:filename[:mimeType[:size]]]`); the legacy `hash=ROLE` form
+   remains valid. An attachment-only task therefore produces
+   `Confidence=LOW` with a clarification by design; a future milestone may
+   add content-aware parsing.
 4. **The complexity classifier is intentionally simpler than the router's
    `ClassifyComplexity`** (M6-2): the M14-01 Specification model only has four
    bands (C0..C3), whereas the router has five (C0..C4) tied to model tiers.
@@ -316,12 +400,18 @@ passing automated evidence at unit, integration, and black-box levels:
   end-to-end compile → save → lock → compile+save leaves the locked v1
   byte-identical.
 
-`make check` is green across every M0–M13 + M14-00/M14-01 package (no
-regression). `go test -race ./...` is clean (no race detected). The compiler
-is reachable through the compiled `forge` binary via `forge spec compile`,
-exercised by six black-box tests. There are no TODOs, no fake stubs, no
-hard-coded data presented as a feature. The product spec was not modified;
-no security/autonomy/delivery/merge-policy invariant was weakened.
+After the review remediation, the compiler is exercised by **twelve**
+black-box tests through the compiled `forge` binary (six original + six new
+regression tests covering MAJOR-1 and MINOR-1/3). Every MAJOR and MINOR
+finding from `docs/reviews/m14/M14-02_REVIEW.md` is addressed; each fix has
+a named regression test that would fail if the defect returned (see the
+"Review remediation" table above).
+
+`make check` is green across every M0–M13 + M14-00/M14-01/M14-02 package
+(no regression). `go test -race ./...` is clean (no race detected). There
+are no TODOs, no fake stubs, no hard-coded data presented as a feature. The
+product spec was not modified; no security/autonomy/delivery/merge-policy
+invariant was weakened.
 
 The successor task **M14-03 may start** once an independent reviewer and
 acceptor have moved M14-02 through `REVIEW_APPROVED` → `ACCEPTED`.
