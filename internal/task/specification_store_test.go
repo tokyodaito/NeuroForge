@@ -395,3 +395,266 @@ func itoa(i int) string {
 	}
 	return string(b[pos:])
 }
+
+// ---- SaveIfChanged (M14-03 MAJOR-1 concurrency remediation) ----
+
+// TestSaveIfChanged_IdempotentReuse proves the single-threaded idempotency
+// contract: calling SaveIfChanged twice with the same semantic content returns
+// the same version with created=false on the second call, and no duplicate
+// version is persisted.
+func TestSaveIfChanged_IdempotentReuse(t *testing.T) {
+	store, _, taskID := newSpecStoreDB(t)
+	ctx := context.Background()
+	spec := fullSpec(taskID)
+
+	saved1, created1, err := store.SaveIfChanged(ctx, spec)
+	if err != nil {
+		t.Fatalf("SaveIfChanged #1: %v", err)
+	}
+	if !created1 {
+		t.Fatalf("SaveIfChanged #1 created=false, want true (first save)")
+	}
+	if saved1.Version != 1 {
+		t.Fatalf("SaveIfChanged #1 Version=%d, want 1", saved1.Version)
+	}
+
+	// Second call with the same semantic content must be idempotent.
+	saved2, created2, err := store.SaveIfChanged(ctx, spec)
+	if err != nil {
+		t.Fatalf("SaveIfChanged #2: %v", err)
+	}
+	if created2 {
+		t.Fatalf("SaveIfChanged #2 created=true, want false (idempotent reuse)")
+	}
+	if saved2.Version != saved1.Version {
+		t.Fatalf("SaveIfChanged #2 Version=%d, want %d", saved2.Version, saved1.Version)
+	}
+
+	versions, err := store.ListVersions(ctx, taskID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 1 || versions[0] != 1 {
+		t.Fatalf("versions=%v, want [1]", versions)
+	}
+}
+
+// TestSaveIfChanged_ConcurrentIdenticalCreatesSingleVersion is the core MAJOR-1
+// regression test: 40 goroutines fire the SAME semantic specification through
+// the production SpecificationStore.SaveIfChanged concurrently against one
+// task. Exactly ONE semantic version must be persisted (created count == 1),
+// and every non-error response must reference version 1.
+//
+// This test MUST fail on the original candidate (78d1ff1) where the
+// TOCTOU GetLatest→compare→Save produced up to 7 duplicate versions.
+func TestSaveIfChanged_ConcurrentIdenticalCreatesSingleVersion(t *testing.T) {
+	store, _, taskID := newSpecStoreDB(t)
+	ctx := context.Background()
+
+	const n = 40
+	spec := fullSpec(taskID)
+
+	errs := make([]error, n)
+	results := make([]Specification, n)
+	created := make([]bool, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			saved, didCreate, err := store.SaveIfChanged(ctx, spec)
+			errs[i] = err
+			results[i] = saved
+			created[i] = didCreate
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d error: %v", i, err)
+		}
+	}
+
+	createdCount := 0
+	for i := 0; i < n; i++ {
+		if created[i] {
+			createdCount++
+		}
+		if results[i].Version != 1 {
+			t.Errorf("goroutine %d: Version=%d, want 1", i, results[i].Version)
+		}
+		if results[i].Objective != spec.Objective {
+			t.Errorf("goroutine %d: Objective differs from input", i)
+		}
+	}
+	if createdCount != 1 {
+		t.Errorf("created count = %d, want 1 (exactly one goroutine should win)", createdCount)
+	}
+
+	versions, err := store.ListVersions(ctx, taskID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 1 || versions[0] != 1 {
+		t.Fatalf("persisted versions=%v, want exactly [1]", versions)
+	}
+}
+
+// TestSaveIfChanged_ConcurrentDifferentTasksDoNotBlock proves the keyed lock
+// does not globally serialize unrelated tasks. Two tasks' SaveIfChanged calls
+// run concurrently; both complete without error and each persists exactly one
+// version. If the lock were global (a single mutex for all tasks), the test
+// would still pass functionally — so this test is paired with the daemon-level
+// concurrency test (TestSpecAdapter_ConcurrentDifferentTasksDoNotBlockEachOther)
+// that uses controlled barriers to prove overlap.
+func TestSaveIfChanged_ConcurrentDifferentTasksDoNotBlock(t *testing.T) {
+	store, db, _ := newSpecStoreDB(t)
+	ctx := context.Background()
+
+	task1 := seedDomainTask(t, db)
+	task2 := seedDomainTask(t, db)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, 2)
+
+	doSave := func(taskID string, idx int) {
+		defer wg.Done()
+		<-start
+		spec := fullSpec(taskID)
+		_, _, errs[idx] = store.SaveIfChanged(ctx, spec)
+	}
+
+	wg.Add(2)
+	go doSave(task1, 0)
+	go doSave(task2, 1)
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: %v", i, err)
+		}
+	}
+
+	v1, err := store.ListVersions(ctx, task1)
+	if err != nil {
+		t.Fatalf("ListVersions task1: %v", err)
+	}
+	if len(v1) != 1 || v1[0] != 1 {
+		t.Fatalf("task1 versions=%v, want [1]", v1)
+	}
+	v2, err := store.ListVersions(ctx, task2)
+	if err != nil {
+		t.Fatalf("ListVersions task2: %v", err)
+	}
+	if len(v2) != 1 || v2[0] != 1 {
+		t.Fatalf("task2 versions=%v, want [1]", v2)
+	}
+}
+
+// TestSaveIfChanged_ChangedInputMintsNewVersion proves that when the semantic
+// content differs from the latest, a new version is allocated rather than
+// silently overwriting (M14-03 MAJOR-2 B1: the "differs" branch is a defensive
+// fallback, not an in-place replace).
+func TestSaveIfChanged_ChangedInputMintsNewVersion(t *testing.T) {
+	store, _, taskID := newSpecStoreDB(t)
+	ctx := context.Background()
+	spec := fullSpec(taskID)
+
+	saved1, created1, err := store.SaveIfChanged(ctx, spec)
+	if err != nil {
+		t.Fatalf("SaveIfChanged #1: %v", err)
+	}
+	if !created1 {
+		t.Fatalf("created1=false, want true")
+	}
+
+	// Change the objective (semantic content differs).
+	changed := spec
+	changed.Objective = "A completely different objective."
+
+	saved2, created2, err := store.SaveIfChanged(ctx, changed)
+	if err != nil {
+		t.Fatalf("SaveIfChanged #2: %v", err)
+	}
+	if !created2 {
+		t.Fatalf("created2=false, want true (content differs)")
+	}
+	if saved2.Version != saved1.Version+1 {
+		t.Fatalf("changed input Version=%d, want %d (new version)", saved2.Version, saved1.Version+1)
+	}
+
+	// Both versions must be durable.
+	got1, err := store.Get(ctx, taskID, saved1.Version)
+	if err != nil {
+		t.Fatalf("Get v%d: %v", saved1.Version, err)
+	}
+	if got1.Objective != spec.Objective {
+		t.Fatalf("v%d objective changed: %q", saved1.Version, got1.Objective)
+	}
+	got2, err := store.Get(ctx, taskID, saved2.Version)
+	if err != nil {
+		t.Fatalf("Get v%d: %v", saved2.Version, err)
+	}
+	if got2.Objective != changed.Objective {
+		t.Fatalf("v%d objective not persisted: %q", saved2.Version, got2.Objective)
+	}
+
+	versions, err := store.ListVersions(ctx, taskID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("versions=%v, want 2", versions)
+	}
+}
+
+// TestSaveIfChanged_IdempotentAfterLock proves that after a version is locked,
+// a semantically equal SaveIfChanged still returns that locked version
+// unchanged with created=false (no new version, no mutation).
+func TestSaveIfChanged_IdempotentAfterLock(t *testing.T) {
+	store, _, taskID := newSpecStoreDB(t)
+	ctx := context.Background()
+	spec := fullSpec(taskID)
+
+	saved1, created1, err := store.SaveIfChanged(ctx, spec)
+	if err != nil {
+		t.Fatalf("SaveIfChanged #1: %v", err)
+	}
+	if !created1 {
+		t.Fatalf("created1=false, want true")
+	}
+	if _, err := store.Lock(ctx, taskID, saved1.Version, "reviewer"); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+
+	// SaveIfChanged with the same content after lock must return the locked
+	// version unchanged.
+	saved2, created2, err := store.SaveIfChanged(ctx, spec)
+	if err != nil {
+		t.Fatalf("SaveIfChanged after lock: %v", err)
+	}
+	if created2 {
+		t.Fatalf("created2=true after lock, want false (idempotent reuse)")
+	}
+	if saved2.Version != saved1.Version {
+		t.Fatalf("Version after lock =%d, want %d", saved2.Version, saved1.Version)
+	}
+	if !saved2.Locked {
+		t.Fatalf("Locked=false after lock, want true")
+	}
+
+	versions, err := store.ListVersions(ctx, taskID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("versions=%v, want [1]", versions)
+	}
+}

@@ -198,24 +198,45 @@ changed.
 ## Idempotency design (for the reviewer)
 
 The compile-and-save idempotency rule is implemented in
-`internal/daemon/spec_api.go:CompileSpec` and is summarised by the decision
-table:
+`task.SpecificationStore.SaveIfChanged` (called by the daemon adapter's
+`CompileSpec`). The decision table below reflects the **honest, proven
+contract** after MAJOR-2 remediation (the unreachable "differs → replace in
+place" branch has been removed; see Review remediation):
 
-| Compiled content vs latest | Latest state | Action |
-|---|---|---|
-| (no latest exists) | — | `Save(Version=0)` → mints v1; `Created=true` |
-| semantically equal | unlocked | return latest unchanged; `Created=false` (no Save) |
-| semantically equal | locked | return latest unchanged; `Created=false` (no Save) |
-| differs | unlocked | `Save(Version=latest.Version)` → replace in place; `Created=true` |
-| differs | locked | `Save(Version=0)` → mints new version; `Created=true` (locked snapshot preserved) |
+| Compiled content vs latest | Action |
+|---|---|
+| (no latest exists) | `Save(Version=0)` → mints v1; `Created=true` |
+| semantically equal (any lock state) | return latest unchanged; `Created=false` (no Save, no audit event) |
+| content differs | `Save(Version=0)` → mints a new version; `Created=true` (defensive fallback; **not reachable via any current public API** — see FU-M14-03-5) |
 
-Semantic equality (`specificationsSemanticallyEqual`) compares Objective,
-AcceptanceCriteria (ordered), NonGoals, Assumptions, Constraints, Risk,
-Complexity, ProposedScope, VisualRequirements. It deliberately ignores
-Version, lock state, timestamps and provenance — those are durability
-metadata, not content. The compiler is deterministic (proven by M14-02's
-20× unit + 10× black-box byte-identity tests), so for any fixed task state
-the compiled content is byte-identical and the idempotent path is taken.
+The "content differs" row is a safe defensive fallback: if the semantic
+comparison detects a difference, a new version is allocated (the old version is
+preserved, never overwritten in place). It is **not** reachable through the
+current daemon CLI/API because a task's description — and therefore its
+compiled content — is immutable after `task add` (no `UpdateTask`/task-edit
+endpoint exists). The original report's "differs | unlocked → replace in place"
+and "differs | locked → mint new version" branches were aspirational dead
+code; the replace-in-place variant has been removed. A future public API for
+recompiling a task from revised inputs is tracked as FU-M14-03-5.
+
+Semantic equality (`task.specificationsSemanticallyEqual`) compares Objective,
+AcceptanceCriteria (ordered, element-wise ID + Statement; count + order),
+NonGoals, Assumptions, Constraints, Risk, Complexity, ProposedScope, and
+VisualRequirements (Required, Viewport, Theme, Locale, Density, References).
+It deliberately ignores Version, lock state, timestamps and provenance — those
+are durability metadata, not content. The function is exhaustively unit-tested
+(`TestSpecificationsSemanticallyEqual`, 30 cases — one per meaningful field)
+so a mutation to any single comparison is caught.
+
+The compare-and-save critical section is serialised **per task** via a keyed
+mutex inside `SpecificationStore` (`compileLocks`). The compile step
+(`task.Compile`, pure CPU, no I/O) runs OUTSIDE the critical section; only
+GetLatest → semantic compare → Save is inside. Unrelated tasks proceed in
+parallel. See MAJOR-1 remediation for details and concurrency proof.
+
+The compiler is deterministic (proven by M14-02's 20× unit + 10× black-box
+byte-identity tests), so for any fixed task state the compiled content is
+byte-identical and the idempotent path is taken.
 
 ## Pre-existing defect fixed (regression-tested)
 
@@ -312,6 +333,22 @@ error as a not-found case).
   error-message substring (`getJSON` returns a plain error, not `*APIError`).
   If the codebase later unifies GET/POST error typing, tighten the assertion
   to a type assertion + status-code check.
+- **FU-M14-03-5:** Public API for recompiling a task from revised inputs.
+  Today the task description is immutable after `task add`, so the
+  `SaveIfChanged` "content differs → new version" branch is a defensive
+  fallback that is not reachable via any current public CLI/API endpoint.
+  When a task-mutation or explicit re-compile-from-revised-input surface is
+  added, it must be backed by a black-box test proving version 2 is created
+  and the decision-table "differs" row is genuinely exercised.
+- **FU-M14-03-6:** Multi-daemon / multi-process idempotency. The per-task
+  keyed mutex in `SpecificationStore` serialises the compare-and-save critical
+  section **within a single daemon process** (and across goroutines sharing the
+  same store). It does NOT protect against two separate daemon processes
+  writing to the same SQLite database. NeuroForge currently runs a single
+  daemon per database, so this is not a practical limitation; if multi-daemon
+  deployment is ever supported, the compare-and-mint must be pushed into a
+  storage-level `BEGIN IMMEDIATE` transaction (Variant A) so the serialization
+  is cross-process.
 
 ## Verdict
 
@@ -340,3 +377,121 @@ Rationale:
 
 `IMPLEMENTED_TESTED` is permitted: every mandatory AC is backed by passing
 automated evidence, including the black-box requirement.
+
+---
+
+## Review remediation
+
+This section documents the fixes for the two MAJOR findings raised by the
+independent review (`M14-03_REVIEW.md`, verdict `CHANGES_REQUESTED`).
+
+### Remediation identity
+
+- remediation actor/session ID: `M14-03-remediation-session` (fresh, independent
+  session; performed no implementation, no review, no acceptance of the
+  original candidate `78d1ff1`).
+- original candidate SHA: `78d1ff170d925de4ce5e319ddf7c272b2d261d37`
+- review report commit SHA: `9859c0860801e4f55cf814ecccba57e3caf0368f`
+- new candidate SHA: this report's commit.
+
+### Finding → Root cause → Fix → Regression test → Result
+
+| Finding | Root cause | Fix | Regression test | Result |
+| ------- | ---------- | --- | --------------- | ------ |
+| **MAJOR-1** — Concurrent identical compile mints duplicate versions (TOCTOU) | `CompileSpec` performed `GetLatest → semantic compare → Save` as three non-atomic steps. Between `GetLatest` and `Save`, N goroutines could observe the same "no latest" (or same latest) state and each call `Save(Version=0)`, each allocating its own version. 20 concurrent identical compiles reproduced up to 7 duplicate versions. | Moved the compare-and-save critical section into `task.SpecificationStore.SaveIfChanged` (`internal/task/specification.go`), which acquires a **per-task keyed mutex** (`compileLocks`) around `GetLatest → compare → Save`. The compile step (`task.Compile`, pure CPU) runs OUTSIDE the lock so unrelated tasks are not blocked. Variant B (process-local keyed serialization) was chosen; multi-daemon protection is tracked as FU-M14-03-6. The unreachable "differs → replace in place" branch was also removed (see MAJOR-2). | `TestSaveIfChanged_ConcurrentIdenticalCreatesSingleVersion` (task, 40 goroutines, production `SpecificationStore.SaveIfChanged`, asserts `[1]` + created==1); `TestSpecAdapter_ConcurrentIdenticalCompileCreatesSingleVersion` (daemon, 30 goroutines through the REAL transport); `TestSpecSave_BlackBox_ConcurrentIdenticalSaveCreatesSingleVersion` (compiled binary, 20 concurrent `forge spec save` + restart + repeat). | **CLOSED** — all concurrency tests pass ×20 (task) and ×5 (daemon) with `-race`; black-box lifecycle green. Sensitivity check (disable the lock) reproduced 6 duplicate versions. |
+| **MAJOR-2** — Semantic equality under-tested; "differs" decision-table branches unreachable | (a) `specificationsSemanticallyEqual` was only exercised on the "equal" path; removing the `Objective` comparison did not break any test. (b) The report's "differs | unlocked → replace in place" and "differs | locked → mint new version" branches were unreachable via any public API (no task-mutation endpoint exists). | (a) Moved `specificationsSemanticallyEqual` to the `task` package (`internal/task/specification.go`) and added `TestSpecificationsSemanticallyEqual` — a table-driven unit test with 30 cases covering every meaningful field (Objective, Risk, Complexity, NonGoals, Assumptions, Constraints, ProposedScope, AC ID, AC statement, AC count, AC order, VisualRequirements.Required/Viewport/Theme/Locale/Density/References) plus every persistence-only field that must NOT break equality (Version, CreatedAt, Locked, LockedBy, LockedAt, CreatedBy). (b) Chose **B1** (delete unreachable branch): the `differs → replace in place` logic was removed from `SaveIfChanged`; a genuine difference now defensively mints a new version (safe, no history loss). The decision table was updated to reflect the honest contract; FU-M14-03-5 tracks a future public recompile API. | `TestSpecificationsSemanticallyEqual` (task, 30 cases); `TestSaveIfChanged_IdempotentReuse` / `TestSaveIfChanged_ChangedInputMintsNewVersion` / `TestSaveIfChanged_IdempotentAfterLock` (task); `TestSpecAdapter_ConcurrentChangedInputCreatesDistinctVersions` (daemon, different tasks compiled concurrently — no content lost). | **CLOSED** — sensitivity checks (remove Objective comparison → FAIL; remove VisualRequirements.Required comparison → FAIL) confirm the test catches mutations. |
+
+### Concurrency solution: Variant B (keyed per-task serialization)
+
+Chosen over Variant A (transactional compare-and-create) because:
+- The `SpecificationStore.Save` already manages its own transaction with audit
+  atomicity; refactoring it to accept an externally-provided transaction (or to
+  use `BEGIN IMMEDIATE` for the compare-and-create) would be a larger change
+  than the remediation scope warrants.
+- The keyed mutex is minimal, correct, and handles the production composition
+  (one daemon → one `SpecificationStore` → one lock registry shared by all
+  goroutines and adapter instances).
+- Multi-process protection is not needed today (single daemon per database);
+  FU-M14-03-6 records the future requirement.
+
+**Proof of no global serialization:**
+- `compileLocks` is keyed by task ID: `acquire(taskID)` creates/looks-up a
+  per-task `sync.Mutex`; `release(taskID)` decrements a waiter count and
+  deletes the entry when it reaches zero (no unbounded growth).
+- Unrelated task IDs use independent mutexes.
+- `TestSpecAdapter_ConcurrentDifferentTasksDoNotBlockEachOther` and
+  `TestSaveIfChanged_ConcurrentDifferentTasksDoNotBlock` exercise two tasks
+  concurrently; both complete without error and each persists exactly `[1]`.
+- The compile step (`task.Compile`) is explicitly OUTSIDE the critical section
+  (called by the adapter before `SaveIfChanged`), so deterministic CPU work
+  does not block unrelated tasks.
+
+### Audit semantics verification
+
+After MAJOR-1 fix, concurrent identical compiles produce exactly ONE
+`task.specification.saved` audit event (for the winner). The losers take the
+idempotent-reuse path (`SaveIfChanged` returns `created=false`, no `Save`, no
+audit event). Verified by `TestSpecAdapter_ConcurrentIdempotentReuseAudit`
+(20 concurrent compiles → exactly 1 `task.specification.saved` event).
+
+### Sensitivity checks performed
+
+All mutations were applied inline, the failing test was confirmed, then the
+mutation was fully reverted. The working tree was verified clean before
+committing.
+
+| Mutation | Expected failing test | Result |
+|---|---|---|
+| Disable `compileLocks` in `SaveIfChanged` (revert to TOCTOU) | `TestSaveIfChanged_ConcurrentIdenticalCreatesSingleVersion` | **CAUGHT** — reproduced 6 duplicate versions (`[1 2 3 4 5 6]`). |
+| Remove `Objective` comparison from `specificationsSemanticallyEqual` | `TestSpecificationsSemanticallyEqual/different_Objective_is_NOT_equal` | **CAUGHT** — equality returned `true` for different objectives. |
+| Remove `VisualRequirements.Required` comparison from `visualRequirementsEqual` | `TestSpecificationsSemanticallyEqual/different_VisualRequirements.Required_is_NOT_equal` | **CAUGHT** — equality returned `true` for different `Required`. |
+
+### Commands executed and results
+
+| Command | Exit | Result |
+|---|---:|---|
+| `go test -count=20 -run 'TestSpecAdapter_ConcurrentIdenticalCompileCreatesSingleVersion' ./internal/daemon/` | 0 | 20× PASS, no duplicate versions |
+| `go test -race -count=10 -run 'TestSpecAdapter_Concurrent\|TestSpecificationsSemanticallyEqual' ./internal/daemon/ ./internal/task/` | 0 | 10× PASS, race-clean |
+| `go test -count=1 -run 'TestSpecAPI\|TestSpecAdapter\|TestSpecSave\|TestSpecificationsSemanticallyEqual' ./internal/transport/ ./internal/daemon/ ./internal/cli/` | 0 | all PASS |
+| `go test -race -count=1 -run 'TestSpecAPI\|TestSpecAdapter\|TestSpecSave\|TestSpecificationsSemanticallyEqual' ./internal/transport/ ./internal/daemon/ ./internal/cli/` | 0 | all PASS, race-clean |
+| `go test -count=1 -run 'TestSpecCompile_BlackBox' ./internal/cli/` | 0 | M14-02 offline regression PASS |
+| `go test -count=10 -run 'TestCompile_Deterministic$' ./internal/task/` | 0 | 10× PASS |
+| `go test -count=1 ./internal/task/... ./internal/storage/... ./internal/transport/... ./internal/daemon/... ./internal/cli/...` | 0 | all packages ok |
+| `go vet ./...` | 0 | clean |
+| `gofmt -l .` | 0 | no affected Go files |
+| `make check` | 0 | FAIL_COUNT 0; gofmt + vet + tests green |
+| `go test -race ./...` | 0 | every package ok; no race detected |
+| Black-box: 20 concurrent `forge spec save` (compiled binary, isolated HOME) → `forge spec versions` | 0 | `[1]` only; after restart + repeat → still `[1]` |
+
+### Files changed in remediation
+
+Production code:
+- `internal/task/specification.go` — added `compileLocks` (keyed per-task
+  mutex), `SaveIfChanged` method, `specificationsSemanticallyEqual` (moved
+  from daemon), `stringSliceEqual`, `visualRequirementsEqual`.
+- `internal/daemon/spec_api.go` — simplified `CompileSpec` to call
+  `SaveIfChanged`; removed the moved equality functions; removed the
+  unreachable "differs → replace in place" branch (B1).
+
+Test code:
+- `internal/task/specification_semantic_equal_test.go` (NEW) —
+  `TestSpecificationsSemanticallyEqual` (30 table-driven cases).
+- `internal/task/specification_store_test.go` — `TestSaveIfChanged_*` (5 tests:
+  idempotent reuse, concurrent identical, concurrent different tasks, changed
+  input, idempotent after lock).
+- `internal/daemon/spec_api_test.go` —
+  `TestSpecAdapter_ConcurrentIdenticalCompileCreatesSingleVersion`,
+  `TestSpecAdapter_ConcurrentDifferentTasksDoNotBlockEachOther`,
+  `TestSpecAdapter_ConcurrentChangedInputCreatesDistinctVersions`,
+  `TestSpecAdapter_ConcurrentIdempotentReuseAudit`.
+- `internal/cli/spec_save_blackbox_test.go` —
+  `TestSpecSave_BlackBox_ConcurrentIdenticalSaveCreatesSingleVersion`.
+
+Documentation:
+- `docs/reviews/m14/M14-03_IMPLEMENTATION.md` — this section + updated
+  idempotency decision table + FU-M14-03-5/FU-M14-03-6.
+
+No changes to: `docs/reviews/m14/M14-03_REVIEW.md`,
+`docs/reviews/m14/M14-02.manifest.json`, `docs/spec/**`,
+`docs/engineering/**`, gate/baseline enforcement, or any adapter/core package
+boundary.

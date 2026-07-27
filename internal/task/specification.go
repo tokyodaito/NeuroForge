@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"neuroforge/internal/audit"
@@ -211,6 +212,67 @@ func trim(s string) string {
 	return s
 }
 
+// compileLocks provides per-task serialization for the compile-and-save
+// idempotency critical section. It is a keyed mutex: each task ID gets its own
+// lock, so concurrent compiles for DIFFERENT tasks proceed in parallel, while
+// concurrent compiles for the SAME task are serialised so that only one can
+// observe "no latest" (or observe a given latest) and allocate a version.
+//
+// Entries are reference-counted: when the last waiter releases a task's lock
+// the entry is removed from the map, so the registry does not grow
+// unboundedly with the number of historical tasks.
+//
+// This is process-local serialization (Variant B of the M14-03 MAJOR-1 fix).
+// It protects against concurrent goroutines AND against multiple adapter
+// instances that share the same SpecificationStore (which is the production
+// composition: one store per daemon). It does NOT protect against multiple
+// daemon processes writing to the same SQLite database — that requires
+// transactional compare-and-create at the storage level and is tracked as
+// FU-M14-03-6.
+type compileLocks struct {
+	mu    sync.Mutex
+	items map[string]*compileLockEntry
+}
+
+type compileLockEntry struct {
+	mu      sync.Mutex
+	waiters int
+}
+
+func newCompileLocks() *compileLocks {
+	return &compileLocks{items: make(map[string]*compileLockEntry)}
+}
+
+// acquire locks the per-task mutex. It increments the entry's waiter count
+// under the coordinator mutex so the entry is not removed while a new caller
+// is waiting on it.
+func (c *compileLocks) acquire(taskID string) {
+	c.mu.Lock()
+	e, ok := c.items[taskID]
+	if !ok {
+		e = &compileLockEntry{}
+		c.items[taskID] = e
+	}
+	e.waiters++
+	c.mu.Unlock()
+	e.mu.Lock()
+}
+
+// release unlocks the per-task mutex and removes the entry from the registry
+// when the last waiter is done, preventing unbounded growth. The entry is
+// removed under the coordinator mutex BEFORE unlocking, so no new caller can
+// observe the stale entry; a concurrent caller will create a fresh one.
+func (c *compileLocks) release(taskID string) {
+	c.mu.Lock()
+	e := c.items[taskID]
+	e.waiters--
+	if e.waiters == 0 {
+		delete(c.items, taskID)
+	}
+	c.mu.Unlock()
+	e.mu.Unlock()
+}
+
 // SpecificationStore is the domain service that persists compiled
 // specifications. It enforces domain validation before any write and records
 // every mutation to the audit trail atomically with the storage change (spec
@@ -220,6 +282,7 @@ type SpecificationStore struct {
 	audit  *audit.Recorder
 	logger *slog.Logger
 	now    func() time.Time
+	locks  *compileLocks
 }
 
 // NewSpecificationStore creates a store backed by db. The recorder may be nil
@@ -233,6 +296,7 @@ func NewSpecificationStore(db *storage.DB, rec *audit.Recorder, logger *slog.Log
 		audit:  rec,
 		logger: logger,
 		now:    func() time.Time { return time.Now().UTC() },
+		locks:  newCompileLocks(),
 	}
 }
 
@@ -311,6 +375,59 @@ func (s *SpecificationStore) Save(ctx context.Context, spec Specification) (Spec
 		"task", spec.TaskID, "version", spec.Version,
 		"acceptance_criteria", len(spec.AcceptanceCriteria))
 	return spec, nil
+}
+
+// SaveIfChanged is the compile-and-save idempotency primitive. It serialises
+// the compare-and-mint critical section PER TASK so that N concurrent
+// identical compile requests for the same task produce exactly one persisted
+// semantic version.
+//
+// Contract:
+//
+//  1. The caller compiles the task FIRST (task.Compile is pure, no I/O) and
+//     passes the result here. The compile step is intentionally OUTSIDE the
+//     critical section so unrelated tasks are not blocked by deterministic
+//     CPU work.
+//  2. Inside the per-task lock, the latest persisted version is fetched and
+//     compared semantically to spec.
+//  3. If the latest exists and is semantically equal, it is returned unchanged
+//     with created=false — no Save, no audit "saved" event. This is the
+//     idempotent reuse path.
+//  4. Otherwise (no latest, or content differs) spec is persisted via Save
+//     (which allocates a new version when spec.Version == 0) and returned with
+//     created=true.
+//
+// The per-task lock is process-local. The production daemon constructs exactly
+// one SpecificationStore (and thus one lock registry), so all goroutines and
+// all adapter instances in the same daemon share it. Multi-daemon writers to a
+// single SQLite database are not protected by this mechanism (FU-M14-03-6).
+//
+// spec.Version is always reset to 0 before Save so a new version is allocated;
+// in-place replacement of an existing version is intentionally not supported
+// here (the "differs" branch is not reachable via any current public API — see
+// M14-03 MAJOR-2 remediation and FU-M14-03-5).
+func (s *SpecificationStore) SaveIfChanged(ctx context.Context, spec Specification) (Specification, bool, error) {
+	s.locks.acquire(spec.TaskID)
+	defer s.locks.release(spec.TaskID)
+
+	latest, err := s.GetLatest(ctx, spec.TaskID)
+	if err == nil {
+		if specificationsSemanticallyEqual(spec, latest) {
+			return latest, false, nil
+		}
+		// Content differs from the latest version. Mint a new version rather
+		// than replacing in place (FU-M14-03-5 tracks the public contract for
+		// recompiling a task from revised inputs).
+		spec.Version = 0
+	} else if !errors.Is(err, ErrSpecificationNotFound) {
+		return Specification{}, false, fmt.Errorf("spec: load latest: %w", err)
+	}
+
+	saved, err := s.Save(ctx, spec)
+	if err != nil {
+		return Specification{}, false, err
+	}
+	return saved, true, nil
 }
 
 // Get returns one version of a task's specification, fully reconstructed from
@@ -450,4 +567,71 @@ func rowToSpec(row storage.SpecificationRow, acs []storage.AcceptanceCriterionRo
 		CreatedAt:          createdAt,
 		CreatedBy:          row.CreatedBy,
 	}, nil
+}
+
+// specificationsSemanticallyEqual reports whether two specifications carry the
+// same compiled content, ignoring Version, lock state, timestamps and
+// provenance. It is the heart of the compile-and-save idempotency rule: the
+// compiler is deterministic, so two compiles of the same task produce
+// semantically equal specifications, and the second call must NOT mint a new
+// version.
+//
+// Compared fields (a mutation to ANY one must break equality so a changed
+// input is never silently treated as idempotent):
+//   - Objective
+//   - Risk, Complexity
+//   - NonGoals, Assumptions, Constraints, ProposedScope (ordered)
+//   - VisualRequirements (Required, Viewport, Theme, Locale, Density, References)
+//   - AcceptanceCriteria (ordered, element-wise ID + Statement; count + order)
+//
+// Intentionally ignored (durability/provenance metadata, not content):
+//   - Version, Locked, LockedAt, LockedBy, CreatedAt, CreatedBy
+func specificationsSemanticallyEqual(a, b Specification) bool {
+	if a.Objective != b.Objective {
+		return false
+	}
+	if a.Risk != b.Risk || a.Complexity != b.Complexity {
+		return false
+	}
+	if !stringSliceEqual(a.NonGoals, b.NonGoals) ||
+		!stringSliceEqual(a.Assumptions, b.Assumptions) ||
+		!stringSliceEqual(a.Constraints, b.Constraints) ||
+		!stringSliceEqual(a.ProposedScope, b.ProposedScope) {
+		return false
+	}
+	if !visualRequirementsEqual(a.VisualRequirements, b.VisualRequirements) {
+		return false
+	}
+	if len(a.AcceptanceCriteria) != len(b.AcceptanceCriteria) {
+		return false
+	}
+	for i := range a.AcceptanceCriteria {
+		if a.AcceptanceCriteria[i] != b.AcceptanceCriteria[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func visualRequirementsEqual(a, b VisualRequirements) bool {
+	if a.Required != b.Required ||
+		a.Viewport != b.Viewport ||
+		a.Theme != b.Theme ||
+		a.Locale != b.Locale ||
+		a.Density != b.Density {
+		return false
+	}
+	return stringSliceEqual(a.References, b.References)
 }

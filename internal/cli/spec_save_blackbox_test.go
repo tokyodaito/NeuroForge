@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -515,4 +516,159 @@ func waitForDaemonStopped(t *testing.T, bin, home string, timeout time.Duration)
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// TestSpecSave_BlackBox_ConcurrentIdenticalSaveCreatesSingleVersion is the
+// mandatory compiled-binary black-box regression for M14-03 MAJOR-1: 20
+// concurrent `forge spec save` invocations against one task must produce
+// exactly one version. After a daemon restart, a repeat concurrent identical
+// save must still yield exactly [1].
+//
+// Each `forge spec save` is a separate process that auto-connects to the
+// daemon; the concurrency barrier (close(start)) guarantees they overlap at
+// the daemon level.
+func TestSpecSave_BlackBox_ConcurrentIdenticalSaveCreatesSingleVersion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("black-box test spawns the compiled forge binary")
+	}
+	bin := forgeBinary(t)
+	home := t.TempDir()
+	withDaemonCleanup(t, bin, home)
+	repoPath := makeTestGitRepo(t)
+
+	// 1. Start daemon.
+	if out, _, code := runForge(t, bin, home, "daemon", "start"); code != ExitOK {
+		t.Fatalf("daemon start: exit %d out=%s", code, out)
+	}
+	if !waitForDaemonRunning(t, bin, home, 10*time.Second) {
+		t.Fatalf("daemon did not reach running state")
+	}
+
+	// 2. Project + task setup.
+	out, _, code := runForge(t, bin, home, "project", "add", "--json", repoPath)
+	if code != ExitOK {
+		t.Fatalf("project add: exit %d out=%s", code, out)
+	}
+	var proj transport.ProjectDTO
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &proj); err != nil {
+		t.Fatalf("decode project: %v\n%s", err, out)
+	}
+	desc := "Objective: Concurrent black-box idempotency.\nAcceptance Criteria:\n- One version under concurrency."
+	out, _, code = runForge(t, bin, home, "task", "add", "-p", proj.ID, "--json", desc)
+	if code != ExitOK {
+		t.Fatalf("task add: exit %d out=%s", code, out)
+	}
+	var taskDTO transport.TaskDTO
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &taskDTO); err != nil {
+		t.Fatalf("decode task: %v\n%s", err, out)
+	}
+	taskID := taskDTO.ID
+
+	// 3. First spec save → version 1.
+	out, _, code = runForge(t, bin, home, "spec", "save", "-t", taskID, "--json")
+	if code != ExitOK {
+		t.Fatalf("first spec save: exit %d out=%s", code, out)
+	}
+
+	// 4. 20 concurrent identical spec save via separate processes.
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	exitCodes := make([]int, n)
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, exitCodes[i] = runForge(t, bin, home, "spec", "save", "-t", taskID, "--json")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, c := range exitCodes {
+		if c != ExitOK {
+			t.Errorf("concurrent save goroutine %d: exit %d, want %d", i, c, ExitOK)
+		}
+	}
+
+	// 5. Versions → exactly [1].
+	out, _, code = runForge(t, bin, home, "spec", "versions", "-t", taskID, "--json")
+	if code != ExitOK {
+		t.Fatalf("spec versions: exit %d out=%s", code, out)
+	}
+	var versions []int
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &versions); err != nil {
+		t.Fatalf("decode versions: %v\n%s", err, out)
+	}
+	if len(versions) != 1 || versions[0] != 1 {
+		t.Fatalf("versions=%v, want exactly [1] (MAJOR-1 invariant)", versions)
+	}
+
+	// 6. spec show still works and returns version 1.
+	out, _, code = runForge(t, bin, home, "spec", "show", "-t", taskID, "--json")
+	if code != ExitOK {
+		t.Fatalf("spec show: exit %d out=%s", code, out)
+	}
+	var shown transport.SpecificationDTO
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &shown); err != nil {
+		t.Fatalf("decode spec show: %v\n%s", err, out)
+	}
+	if shown.Version != 1 {
+		t.Errorf("spec show Version=%d, want 1", shown.Version)
+	}
+
+	// 7. Daemon restart.
+	if _, _, code := runForge(t, bin, home, "daemon", "stop"); code != ExitOK {
+		t.Fatalf("daemon stop: exit %d", code)
+	}
+	if !waitForDaemonStopped(t, bin, home, 10*time.Second) {
+		t.Fatalf("daemon did not stop")
+	}
+	if _, _, code := runForge(t, bin, home, "daemon", "start"); code != ExitOK {
+		t.Fatalf("daemon restart: exit %d", code)
+	}
+	if !waitForDaemonRunning(t, bin, home, 10*time.Second) {
+		t.Fatalf("daemon did not restart")
+	}
+
+	// 8. Repeat concurrent identical save after restart.
+	var wg2 sync.WaitGroup
+	start2 := make(chan struct{})
+	exitCodes2 := make([]int, n)
+	for i := 0; i < n; i++ {
+		i := i
+		wg2.Add(1)
+		go func() {
+			defer wg2.Done()
+			<-start2
+			_, _, exitCodes2[i] = runForge(t, bin, home, "spec", "save", "-t", taskID, "--json")
+		}()
+	}
+	close(start2)
+	wg2.Wait()
+
+	for i, c := range exitCodes2 {
+		if c != ExitOK {
+			t.Errorf("post-restart concurrent save goroutine %d: exit %d, want %d", i, c, ExitOK)
+		}
+	}
+
+	// 9. Versions still [1].
+	out, _, code = runForge(t, bin, home, "spec", "versions", "-t", taskID, "--json")
+	if code != ExitOK {
+		t.Fatalf("spec versions after restart: exit %d out=%s", code, out)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &versions); err != nil {
+		t.Fatalf("decode versions after restart: %v\n%s", err, out)
+	}
+	if len(versions) != 1 || versions[0] != 1 {
+		t.Fatalf("post-restart versions=%v, want exactly [1]", versions)
+	}
+
+	// 10. Daemon stop.
+	if _, _, code := runForge(t, bin, home, "daemon", "stop"); code != ExitOK {
+		t.Fatalf("daemon stop final: exit %d", code)
+	}
 }

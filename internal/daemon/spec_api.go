@@ -54,20 +54,18 @@ const defaultLockedBy = "daemon"
 //     task.ErrNotFound ("task not found"), which writeAPIError maps to 404.
 //  2. task.Compile produces a deterministic specification from the task's
 //     description + attachment metadata. Identical task state ⇒ identical
-//     compiled content.
-//  3. The latest existing version is fetched (if any). If its content is
-//     semantically equal to the freshly compiled content, the existing
-//     version is returned unchanged and no new persistence occurs
-//     (Created=false). This is the idempotent re-compile case.
-//  4. Otherwise the freshly compiled spec is persisted:
-//     - If the latest version is UNLOCKED, it is replaced in place (same
-//     version number) — this is the "task description was edited" case.
-//     - If the latest version is LOCKED, a NEW version is allocated (the
-//     locked snapshot is preserved by task.SpecificationStore.Save).
+//     compiled content. The compile step is PURE and runs OUTSIDE the
+//     compare-and-save critical section.
+//  3. task.SpecificationStore.SaveIfChanged serialises the compare-and-mint
+//     critical section PER TASK (process-local keyed mutex). If the latest
+//     persisted version is semantically equal to the freshly compiled content,
+//     it is returned unchanged with Created=false (no Save, no audit event).
+//     Otherwise a new version is allocated and persisted atomically.
 //
-// All persistence goes through task.SpecificationStore.Save, which validates,
-// opens a transaction, allocates the version atomically, and records the
-// task.specification.saved audit event in the same transaction (spec §11.4).
+// Under concurrent identical compiles for the same task, exactly one caller
+// wins the per-task lock, persists version N, and returns Created=true; every
+// other caller observes that version and returns Created=false. No duplicate
+// semantic versions are minted (M14-03 MAJOR-1 fix).
 func (a *specAPIAdapter) CompileSpec(ctx context.Context, req transport.CompileSpecRequest) (transport.CompileSpecResultDTO, error) {
 	if a.svc.Specs == nil {
 		return transport.CompileSpecResultDTO{}, errors.New("spec store not configured")
@@ -84,7 +82,9 @@ func (a *specAPIAdapter) CompileSpec(ctx context.Context, req transport.CompileS
 	}
 
 	// 2. Run the pure compiler over the task's durable fields. The compiler
-	//    does no I/O; identical task state ⇒ identical compiled content.
+	//    does no I/O; identical task state ⇒ identical compiled content. This
+	//    step is intentionally OUTSIDE the compare-and-save critical section so
+	//    unrelated tasks are not blocked by deterministic CPU work.
 	res, err := task.Compile(task.CompileInput{
 		TaskID:      t.ID,
 		Title:       t.Title,
@@ -103,44 +103,20 @@ func (a *specAPIAdapter) CompileSpec(ctx context.Context, req transport.CompileS
 	compiled := res.Specification
 	compiled.CreatedBy = createdBy
 
-	// 3. Idempotency: compare the freshly compiled content to the latest
-	//    persisted version. Semantic equality (ignoring Version/CreatedAt/
-	//    Locked*/CreatedBy) means the caller is repeating the same compile;
-	//    return the durable version unchanged and skip Save.
-	latest, latestErr := a.svc.Specs.GetLatest(ctx, req.TaskID)
-	if latestErr == nil {
-		if specificationsSemanticallyEqual(compiled, latest) {
-			a.svc.Bus.Publish("task.specification.compiled", map[string]any{
-				"task_id": req.TaskID, "version": latest.Version, "created": false,
-			})
-			return compileResultDTO(latest, res, false), nil
-		}
-		// Latest exists but content differs.
-		if !latest.Locked {
-			// Replace the unlocked latest in place — same version number, new
-			// content. This matches the spec's "task description was edited,
-			// re-compile" semantics without minting a new version per call.
-			compiled.Version = latest.Version
-		}
-		// If latest is LOCKED and content differs, leave Version=0 so Save
-		// allocates a fresh version (the locked snapshot is preserved).
-	} else if !errors.Is(latestErr, task.ErrSpecificationNotFound) {
-		// A real storage error (not "absent"). Surface it.
-		return transport.CompileSpecResultDTO{}, fmt.Errorf("compile: load latest: %w", latestErr)
-	}
-
-	// 4. Persist. SpecificationStore.Save runs validation, opens a tx,
-	//    allocates the version (if Version==0), writes the row + ACs, records
-	//    the audit event atomically, and commits.
-	saved, err := a.svc.Specs.Save(ctx, compiled)
+	// 3. Compare-and-save inside the per-task critical section. SaveIfChanged
+	//    fetches the latest, compares semantically, and either returns the
+	//    existing version (created=false) or persists a new one (created=true).
+	//    The per-task keyed mutex ensures concurrent identical compiles produce
+	//    exactly one semantic version.
+	saved, created, err := a.svc.Specs.SaveIfChanged(ctx, compiled)
 	if err != nil {
-		return transport.CompileSpecResultDTO{}, fmt.Errorf("compile: save: %w", err)
+		return transport.CompileSpecResultDTO{}, fmt.Errorf("compile: %w", err)
 	}
 
 	a.svc.Bus.Publish("task.specification.compiled", map[string]any{
-		"task_id": saved.TaskID, "version": saved.Version, "created": true,
+		"task_id": saved.TaskID, "version": saved.Version, "created": created,
 	})
-	return compileResultDTO(saved, res, true), nil
+	return compileResultDTO(saved, res, created), nil
 }
 
 // GetSpecification implements transport.SpecAPI.GetSpecification. version<=0
@@ -282,60 +258,4 @@ func compileResultDTO(spec task.Specification, res task.CompileResult, created b
 		}
 	}
 	return out
-}
-
-// specificationsSemanticallyEqual reports whether two specifications carry the
-// same compiled content, ignoring Version, lock state, timestamps and
-// provenance. It is the heart of the compile-and-save idempotency rule: the
-// compiler is deterministic, so two compiles of the same task produce
-// semantically equal specifications, and the second call must NOT mint a new
-// version.
-func specificationsSemanticallyEqual(a, b task.Specification) bool {
-	if a.Objective != b.Objective {
-		return false
-	}
-	if a.Risk != b.Risk || a.Complexity != b.Complexity {
-		return false
-	}
-	if !stringSliceEqual(a.NonGoals, b.NonGoals) ||
-		!stringSliceEqual(a.Assumptions, b.Assumptions) ||
-		!stringSliceEqual(a.Constraints, b.Constraints) ||
-		!stringSliceEqual(a.ProposedScope, b.ProposedScope) {
-		return false
-	}
-	if !visualRequirementsEqual(a.VisualRequirements, b.VisualRequirements) {
-		return false
-	}
-	if len(a.AcceptanceCriteria) != len(b.AcceptanceCriteria) {
-		return false
-	}
-	for i := range a.AcceptanceCriteria {
-		if a.AcceptanceCriteria[i] != b.AcceptanceCriteria[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func stringSliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func visualRequirementsEqual(a, b task.VisualRequirements) bool {
-	if a.Required != b.Required ||
-		a.Viewport != b.Viewport ||
-		a.Theme != b.Theme ||
-		a.Locale != b.Locale ||
-		a.Density != b.Density {
-		return false
-	}
-	return stringSliceEqual(a.References, b.References)
 }
