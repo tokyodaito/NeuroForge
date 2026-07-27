@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "baseline_version": "1",
+  "task_id": "M14-02",
+  "predecessor_task_id": "M14-01",
+  "previous_state": "REVIEW_APPROVED",
+  "state": "ACCEPTED",
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "The compiler deterministically produces a complete, valid Specification for typical tasks (bugfix, feature, UI, auth/security/payment) with all applicable fields (objective, acceptance criteria, non-goals, assumptions, constraints, risk, complexity, proposed scope, visual requirements).",
+      "mandatory": true
+    },
+    {
+      "id": "AC2",
+      "description": "Unsafe ambiguity is explicitly flagged: vague/attachment-only input gets Confidence=LOW + a clarification; high-risk (security/auth/payment) tasks surface a clarification even with structured sections; no fabricated requirements; safe fallback for attachment-only input.",
+      "mandatory": true
+    },
+    {
+      "id": "AC3",
+      "description": "Identical input produces identical output: the compiler is pure; CLI output is deterministic across repeated runs with fixed ComplexityReasons, acceptance-criteria, and list ordering (no test-only sorting).",
+      "mandatory": true
+    },
+    {
+      "id": "AC4",
+      "description": "The compiler never mutates a locked specification: it returns Version=0/Locked=false, has no storage handle by construction, and the production storage layer rejects mutation of a locked version (compile -> save -> lock -> compile+save leaves the locked version byte-identical and allocates a new version).",
+      "mandatory": true
+    },
+    {
+      "id": "AC5",
+      "description": "CLI production path: forge spec compile is registered in the dispatcher, help is available, default output is text, --json emits valid JSON, invalid priority/malformed attachment size/unknown role exit non-zero, attachment-only and legacy grammar work, output is deterministic, and validation failure does not persist partial durable state.",
+      "mandatory": true
+    },
+    {
+      "id": "AC6",
+      "description": "All remediation findings (MAJOR-1, MINOR-1..5) are closed and each guarded by a named regression test; MINOR-6 is accepted as a non-blocking follow-up (FU-M14-02-9).",
+      "mandatory": true
+    }
+  ],
+  "evidence": [
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Fixture_Feature",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Fixture_Bugfix",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Fixture_UITask",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Fixture_AuthPaymentRisky",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_RiskLevels",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_ACsHaveStableIDs",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_DeterministicOutput",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_AttachmentMetadata",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Fixture_VagueTask",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Fixture_AttachmentOnly",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_RejectsEmptyInput",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_VagueInputLowConfidence",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_RiskyTaskFlagsClarification",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Deterministic",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Deterministic_AcrossVaryingWhitespace",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_DeterministicOutput",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_NeverMutatesLockedSpec",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "integration",
+      "reference": "internal/task.TestCompile_LockedSpecCannotBeMutatedViaSave",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_TextOutput",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_InvalidPriorityRejected",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_InvalidAttachSizeRejected",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_InvalidAttachRoleRejected",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_AttachmentOnlyWithFilename",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_AttachmentOnlyLegacyHashRole",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_EmptyInput",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC6",
+      "level": "unit",
+      "reference": "internal/cli.TestSplitAttachFlag_Grammar",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC6",
+      "level": "unit",
+      "reference": "internal/task.TestCompile_Regression_AttachmentOnlyEmptyFilename",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC6",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_AttachmentOnlyWithFilename",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC6",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecCompile_BlackBox_InvalidPriorityRejected",
+      "status": "passed",
+      "automated": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "make check",
+      "status": "passed"
+    },
+    {
+      "label": "go test -race ./...",
+      "status": "passed"
+    }
+  ],
+  "actors": {
+    "implementer": "M14-02-impl-session",
+    "reviewer": "M14-02-rereview-session",
+    "acceptor": "M14-02-accept-session"
+  },
+  "reports": {
+    "implementation": "docs/reviews/m14/M14-02_IMPLEMENTATION.md",
+    "review": "docs/reviews/m14/M14-02_REVIEW.md",
+    "acceptance": "docs/reviews/m14/M14-02_ACCEPTANCE.md"
+  },
+  "blackbox": {
+    "compiled_binary": "forge",
+    "scenario": "forge spec compile: default text output + --json valid JSON; attachment grammar hash=ROLE[:filename[:mimeType[:size]]] and legacy hash=ROLE; invalid priority/size/role exit non-zero; security task -> R4 + clarification; UI + DESIGN_REFERENCE -> VisualRequirements.Required=true; output byte-identical across 10 binary runs (SHA-256 87a6bc71...); read-only (no durable state). Driven through the compiled /tmp/forge-m14-02-accept binary in an isolated temp HOME.",
+    "status": "passed",
+    "exempt": false,
+    "exempt_reason": ""
+  },
+  "remediation_note": "Remediation performed by M14-02-remediation-session on candidate ee738b2, addressing MAJOR-1 (extended --attach grammar hash=ROLE[:filename[:mimeType[:size]]] + defensive empty-filename handling, legacy form preserved) and MINOR-1..5 (text-output binary test, --json default false, --priority validation, in-order ComplexityReasons determinism comparison, dead-code removal). Re-reviewed by M14-02-rereview-session on remediated candidate fad77d5 (verdict REVIEW_APPROVED). MINOR-6 (pre-existing whitespace-only CLI empty-check inconsistency) accepted as non-blocking follow-up FU-M14-02-9: reproduced independently, degrades safely (LOW + clarification), compiled spec fails ValidateSpecification, no durable state written.",
+  "git": {
+    "implementation_starting_sha": "f894f648fb5545b89cb5e797e6d146a35d2c379a",
+    "implementation_candidate_sha": "ee738b2edd9138e7e2ef33eb18ff05fc6e95b43d",
+    "remediated_candidate_sha": "fad77d5f558bf6da840e14704c02e8d9124db4ce",
+    "review_commit_sha": "02726b89949fbe160cb35b0c70a2669bb3c0ed18",
+    "acceptance_starting_head": "02726b89949fbe160cb35b0c70a2669bb3c0ed18"
+  },
+  "predecessor_gate": {
+    "predecessor_task_id": "M14-01",
+    "predecessor_state": "ACCEPTED",
+    "predecessor_manifest": "docs/reviews/m14/M14-01.manifest.json",
+    "gate_next_result": "exit 0"
+  },
+  "review_findings": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 1,
+    "minor_summary": [
+      "MINOR-6 (FU-M14-02-9): whitespace-only description bypasses the CLI empty-check (pre-existing); degrades safely to LOW + clarification; compiled spec fails ValidateSpecification; no durable state. Accepted non-blocking follow-up."
+    ]
+  },
+  "actor_independence": {
+    "implementer": "M14-02-impl-session",
+    "remediation": "M14-02-remediation-session",
+    "reviewer_original": "M14-02-review-session",
+    "reviewer_rereview": "M14-02-rereview-session",
+    "acceptor": "M14-02-accept-session",
+    "pairwise_distinct": true
+  },
+  "accepted_follow_ups": [
+    "FU-M14-02-9 (MINOR-6): whitespace-only description CLI empty-check inconsistency"
+  ],
+  "acceptance_date": "2026-07-27"
+}
