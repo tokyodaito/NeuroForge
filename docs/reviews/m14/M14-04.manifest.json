@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "baseline_version": "1",
+  "task_id": "M14-04",
+  "predecessor_task_id": "M14-03",
+  "previous_state": "REVIEW_APPROVED",
+  "state": "ACCEPTED",
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Every package is linked to an objective/AC (non-empty Objective enforced; >=1 AcceptedACID enforced; AC->package mapping exposed via PackageForAC).",
+      "mandatory": true
+    },
+    {
+      "id": "AC2",
+      "description": "An invalid DAG cannot be persisted as runnable (ValidatedWorkGraph only constructible through the validators; every negative path returns (nil, err)).",
+      "mandatory": true
+    },
+    {
+      "id": "AC3",
+      "description": "The graph is deterministic for an identical specification (Decompose is pure; MarshalWorkGraph canonicalises; byte-identical across re-decomposition).",
+      "mandatory": true
+    }
+  ],
+  "evidence": [
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_EmptyObjective",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_PackageOwnsNoAC",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_CompositeDiamond (PackageForAC lookup)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestDecompose_ACOverageAndChainShape",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/workgraph.TestIntegration_CompileThenDecompose (real task.Compile output: every compiler-produced AC owned exactly once with non-empty objective)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_Cycle_TwoNode / _SelfDependency / _ThreeNode",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_MissingEdge / _MissingEdge_OneOfSeveral",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_DuplicateACOwner / _DuplicateACOwner_WithinPackage",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidate_UnreachableNode_DisconnectedSibling / _DisconnectedChain",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestValidateAgainstSpec_OwnedACNotInSpec / _CoverageGap / _InvalidSpec",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "integration",
+      "reference": "internal/workgraph.TestIntegration_CompileVagueInputDecomposesSafely (LOW-confidence compiler output never yields an invalid runnable)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/workgraph.TestDecompose_DeterministicFromSpec (10x byte-identity)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/workgraph.TestSerialize_Deterministic_10Runs / _Canonical_IgnoresInputOrdering / _Canonical_SortsPerPackageLists",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/workgraph.TestIntegration_CompileThenDecompose (re-decompose byte-identical; real task.Compile composition)",
+      "status": "passed",
+      "automated": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "make check",
+      "status": "passed"
+    },
+    {
+      "label": "go test -race ./...",
+      "status": "passed"
+    },
+    {
+      "label": "go test -count=1 ./internal/workgraph/...",
+      "status": "passed"
+    }
+  ],
+  "actors": {
+    "implementer": "M14-04-impl-session-3",
+    "reviewer": "M14-04-review-session-1",
+    "acceptor": "M14-04-accept-session"
+  },
+  "reports": {
+    "implementation": "docs/reviews/m14/M14-04_IMPLEMENTATION.md",
+    "review": "docs/reviews/m14/M14-04_REVIEW.md",
+    "acceptance": "docs/reviews/m14/M14-04_ACCEPTANCE.md"
+  },
+  "blackbox": {
+    "compiled_binary": "forge",
+    "scenario": "M14-04 ships no production wiring (no daemon endpoint, no CLI command, no storage table, no scheduler hook) -- it is a pure domain library in internal/workgraph/. Per Engineering Baseline v1 section 3 rule 3, acceptance still requires a blackbox scenario with status=passed (no exemption at acceptance); the documented equivalent is the gate tooling itself driven through the compiled binary. Observed this session against a freshly compiled /tmp/forge-m14-04-accept: (1) `forge gate baseline` -> exit 0 (active schema_version 1, baseline_version 1, doc docs/engineering/ENGINEERING_BASELINE.md); (2) `forge gate validate --manifest docs/reviews/m14/M14-03.manifest.json` -> exit 0 'OK: task M14-03 transition REVIEW_APPROVED -> ACCEPTED is legal under baseline v1'; (3) `forge gate next --manifest docs/reviews/m14/M14-03.manifest.json` -> exit 0 'OK: predecessor M14-03 is ACCEPTED; successor task may start'; (4) `forge gate validate --manifest docs/reviews/m14/M14-04.manifest.json` -> exit 0 (this manifest's REVIEW_APPROVED -> ACCEPTED transition is legal). The product-criteria evidence (AC1/AC2/AC3) is at unit + integration levels exercising the real internal/task.Compile compiler -> workgraph.Decompose composition (TestIntegration_CompileThenDecompose / TestIntegration_CompileVagueInputDecomposesSafely); the compiled-binary blackbox for the work-graph domain surface itself is deferred to FU-M14-04-3 when a CLI/daemon surface lands.",
+    "status": "passed",
+    "exempt": false,
+    "exempt_reason": ""
+  },
+  "remediation_note": "No remediation was required between REVIEW_APPROVED and ACCEPTED: the review returned REVIEW_APPROVED with zero BLOCKER and zero MAJOR findings (six MINOR follow-ups). The candidate production/test code at HEAD is byte-identical to the reviewed candidate 099bda3 (the only delta is docs/reviews/m14/M14-04_REVIEW.md). The acceptor created this manifest + docs/reviews/m14/M14-04_ACCEPTANCE.md to close MINOR-5 (FU-M14-04-R5: no manifest existed at review time). No production code was modified during acceptance; only acceptance artifacts were authored.",
+  "git": {
+    "implementation_starting_sha": "a1e11cf9a40e9ab7d00d0e67fbb95f5e9c98b8d8",
+    "implementation_candidate_sha": "099bda34c39f3d3bf58d86507259063e48350252",
+    "review_commit_sha": "11a9893c44ffaecf6bd37aef1750e28e9882bf1d",
+    "acceptance_starting_head": "11a9893c44ffaecf6bd37aef1750e28e9882bf1d"
+  },
+  "predecessor_gate": {
+    "predecessor_task_id": "M14-03",
+    "predecessor_state": "ACCEPTED",
+    "predecessor_manifest": "docs/reviews/m14/M14-03.manifest.json",
+    "gate_next_result": "exit 0"
+  },
+  "review_findings": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 6,
+    "minor_summary": [
+      "MINOR-1 (FU-M14-04-R1): empty PackageState does not default to pending despite the code comment claiming it does (dead code at graph.go:355-362)",
+      "MINOR-2 (FU-M14-04-R2): cross-task packages are silently accepted (graph TaskID and package TaskID not reconciled)",
+      "MINOR-3 (FU-M14-04-R3): self-dependency is reported twice (missing-edge pass + detectCycle)",
+      "MINOR-4 (FU-M14-04-R4): TestTopologicalOrder_CycleRejected does not actually call TopologicalOrder (misleading name)",
+      "MINOR-5 (FU-M14-04-R5): no M14-04.manifest.json existed at review time (recording gap; closed by this acceptance)",
+      "MINOR-6 (FU-M14-04-R6): ValidateWorkGraph mutates the caller's input slice (undocumented in-place normalisation)"
+    ]
+  },
+  "actor_independence": {
+    "implementer": "M14-04-impl-session-3",
+    "reviewer": "M14-04-review-session-1",
+    "acceptor": "M14-04-accept-session",
+    "pairwise_distinct": true
+  },
+  "accepted_follow_ups": [
+    "FU-M14-04-1: richer stage-based decomposition (research -> contract fan-out -> integration -> verification)",
+    "FU-M14-04-2: durable persistence -- work_packages / dependencies SQLite tables + WorkGraphStore that accepts only *ValidatedWorkGraph (migration v9)",
+    "FU-M14-04-3: daemon transport + forge workgraph CLI commands + compiled-binary black-box test (closes the work-graph black-box gap)",
+    "FU-M14-04-4: finer AllowedScope partitioning (disjoint proposed-scope slices per sibling package)",
+    "FU-M14-04-5: integrate package AllowedScope with the lease manager (LeaseManager.AcquirePath)",
+    "FU-M14-04-6: TUI bindings for visualising the work graph",
+    "FU-M14-04-R1 (MINOR-1): fix empty-PackageState default-vs-error inconsistency + regression test",
+    "FU-M14-04-R2 (MINOR-2): enforce p.TaskID == g.TaskID for every package + negative test",
+    "FU-M14-04-R3 (MINOR-3): de-duplicate self-cycle error",
+    "FU-M14-04-R4 (MINOR-4): rename or remove TestTopologicalOrder_CycleRejected",
+    "FU-M14-04-R6 (MINOR-6): document or remove in-place mutation of input slice by ValidateWorkGraph"
+  ],
+  "acceptance_date": "2026-07-27"
+}
