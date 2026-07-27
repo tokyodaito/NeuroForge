@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "baseline_version": "1",
+  "task_id": "M14-03",
+  "predecessor_task_id": "M14-02",
+  "previous_state": "REVIEW_APPROVED",
+  "state": "ACCEPTED",
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "The user can obtain a compiled specification through the real CLI/API (daemon-mediated forge spec save / POST /tasks/{id}/specification/compile + GET /tasks/{id}/specification + forge spec show).",
+      "mandatory": true
+    },
+    {
+      "id": "AC2",
+      "description": "The compiled result survives a daemon restart (objective, AC IDs, version, lock state, and lock provenance byte-identical after stop/start).",
+      "mandatory": true
+    },
+    {
+      "id": "AC3",
+      "description": "A repeat compile/save request is idempotent (same version, Created=false, no new audit event, no duplicate version); concurrent identical compiles mint exactly one version.",
+      "mandatory": true
+    },
+    {
+      "id": "AC4",
+      "description": "Black-box evidence is required (unit-only wiring is insufficient): the create -> compile -> show -> lock -> restart -> show lifecycle is proven through the compiled forge binary against an isolated NEUROFORGE_HOME.",
+      "mandatory": true
+    }
+  ],
+  "evidence": [
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/transport.TestSpecAPI_Compile_HappyPath",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/transport.TestSpecAPI_Get_LatestAndVersion",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/daemon.TestSpecAdapter_CompileAndGetAndLock",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_CreateCompileShowLockRestart",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "integration",
+      "reference": "internal/daemon.TestSpecAdapter_PersistsAcrossRestart",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_CreateCompileShowLockRestart (steps 9-11)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/task.TestSaveIfChanged_IdempotentReuse",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/task.TestSaveIfChanged_IdempotentAfterLock",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/daemon.TestSpecAdapter_LockedUpdateRejected",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_LockedSpecNoNewVersion",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/daemon.TestSpecAdapter_ConcurrentIdenticalCompileCreatesSingleVersion",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_ConcurrentIdenticalSaveCreatesSingleVersion",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_CreateCompileShowLockRestart",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_InvalidTask",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_TextOutput",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecSave_BlackBox_FlagValidation",
+      "status": "passed",
+      "automated": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "make check",
+      "status": "passed"
+    },
+    {
+      "label": "go test -race ./...",
+      "status": "passed"
+    }
+  ],
+  "actors": {
+    "implementer": "M14-03-impl-session",
+    "reviewer": "M14-03-rereview-session",
+    "acceptor": "M14-03-accept-session"
+  },
+  "reports": {
+    "implementation": "docs/reviews/m14/M14-03_IMPLEMENTATION.md",
+    "review": "docs/reviews/m14/M14-03_REVIEW.md",
+    "acceptance": "docs/reviews/m14/M14-03_ACCEPTANCE.md"
+  },
+  "blackbox": {
+    "compiled_binary": "forge",
+    "scenario": "forge daemon start -> forge project add (real git repo) -> forge task add -> forge spec save (version 1, Created=true, objective + AC-1 + R1/C1) -> forge spec show (same persisted spec) -> forge spec save again (Created=false, idempotent) -> forge spec lock -v 1 --by alice (locked=true) -> forge spec versions ([1]) -> forge daemon stop -> forge daemon start -> forge spec show (version 1, same objective, AC-1, locked=true, locked_by=alice; provenance survives restart) -> forge spec save after restart (Created=false, version 1) -> 20 concurrent forge spec save -> forge spec versions still [1]. Driven through the compiled /tmp/forge-m14-03-accept binary in an isolated temp HOME.",
+    "status": "passed",
+    "exempt": false,
+    "exempt_reason": ""
+  },
+  "remediation_note": "Remediation performed by M14-03-remediation-session on original candidate 78d1ff1, addressing MAJOR-1 (TOCTOU concurrency: moved compare-and-mint into task.SpecificationStore.SaveIfChanged serialised by a per-task keyed mutex; compile runs outside the lock; dead 'differs -> replace in place' branch removed) and MAJOR-2 (moved specificationsSemanticallyEqual to the task package with a 30-case table test; deleted the unreachable 'replace in place' branch; honest 'differs -> new version' fallback directly exercised). Re-reviewed by M14-03-rereview-session on remediated candidate a9869f9 (verdict REVIEW_APPROVED). Three non-blocking MINOR findings accepted as follow-ups: MINOR-1 (unnecessary defensive sleep in audit-count test, masks nothing), MINOR-2 (spec show error wording for missing task, pre-existing FU-M14-03-4), MINOR-3 (latent compileLocks.release double-release guard, unreachable by any current caller).",
+  "git": {
+    "implementation_starting_sha": "5ed8b72f97d0ea0dbf5a762f7aec8bd15cf1c2b8",
+    "implementation_candidate_sha": "78d1ff170d925de4ce5e319ddf7c272b2d261d37",
+    "remediated_candidate_sha": "a9869f9d15f2f717abcebd6018abbc61de11a3cf",
+    "review_commit_sha": "3c26aa0b4351f0ac5869290cb242190d5eb7de7d",
+    "acceptance_starting_head": "086748a56619dede8a64a4cee2c8cb1103d0a71f"
+  },
+  "predecessor_gate": {
+    "predecessor_task_id": "M14-02",
+    "predecessor_state": "ACCEPTED",
+    "predecessor_manifest": "docs/reviews/m14/M14-02.manifest.json",
+    "gate_next_result": "exit 0"
+  },
+  "review_findings": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 3,
+    "minor_summary": [
+      "MINOR-1: unnecessary defensive time.Sleep in TestSpecAdapter_ConcurrentIdempotentReuseAudit (masks nothing; transactional audit write is verified)",
+      "MINOR-2 (FU-M14-03-4): spec show on a missing task returns 'specification not found' rather than 'task not found' (pre-existing; both HTTP 404; CLI contract holds)",
+      "MINOR-3: compileLocks.release would panic on a double-release (latent; not reachable by any current caller)"
+    ]
+  },
+  "actor_independence": {
+    "implementer": "M14-03-impl-session",
+    "remediation": "M14-03-remediation-session",
+    "reviewer_original": "M14-03-review-session",
+    "reviewer_rereview": "M14-03-rereview-session",
+    "acceptor": "M14-03-accept-session",
+    "pairwise_distinct": true
+  },
+  "accepted_follow_ups": [
+    "FU-M14-03-1: TUI bindings for spec endpoints (out of scope)",
+    "FU-M14-03-2: opt-in --compile flag on forge task add (out of scope)",
+    "FU-M14-03-3: order-independent AC-set equality (theoretical; compiler appends in input order)",
+    "FU-M14-03-4 (MINOR-2): typed GET errors / spec show error wording for missing task (pre-existing, non-blocking)",
+    "FU-M14-03-5: public API for recompiling a task from revised inputs (SaveIfChanged 'differs -> new version' branch currently unreachable via any public endpoint)",
+    "FU-M14-03-6: multi-daemon/multi-process idempotency (keyed mutex is process-local; single daemon per DB today)",
+    "MINOR-1 (cosmetic): remove unnecessary defensive time.Sleep in audit-count test",
+    "MINOR-3 (latent): harden compileLocks.release against double-release"
+  ],
+  "authorization_note": "Acceptance opened at the explicit instruction of the human project owner (meta-independent authority above all agent actors), who confirmed M14-03 acceptance had been authorised. The acceptor actor itself remains role-distinct from the implementer and the reviewer per baseline rule 3 / actor-independence rule. No mandatory criterion was waived.",
+  "acceptance_date": "2026-07-27"
+}
