@@ -42,6 +42,9 @@ type Config struct {
 	// RunAppAPI, if set, backs the user-facing POST /projects/{id}/run
 	// endpoint (the minimal reliable run). Nil makes the endpoint return 503.
 	RunAppAPI RunAppAPI
+	// SpecAPI, if set, backs the daemon-mediated Task Compiler endpoints
+	// (/tasks/{id}/specification*). Nil makes those endpoints return 503.
+	SpecAPI SpecAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -122,6 +125,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	s.registerWorkspaceRoutes(mux)
 	s.registerSchedulerRoutes(mux)
 	s.registerRunAppRoutes(mux)
+	s.registerSpecRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{

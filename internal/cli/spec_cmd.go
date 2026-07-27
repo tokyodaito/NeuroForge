@@ -1,20 +1,24 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"neuroforge/internal/task"
+	"neuroforge/internal/transport"
 )
 
 // runSpec dispatches `forge spec <subcommand>`. M14-02 implements the
-// deterministic task compiler surface (§18.1) via `forge spec compile`. Spec
-// CRUD (create/get/lock/versions) over the daemon transport is a follow-up:
-// here the compiler is exercised directly so the command works without a
-// running daemon (the compiler is pure: no I/O, no clock).
+// deterministic task compiler surface (§18.1) via `forge spec compile` (the
+// offline pure compiler probe). M14-03 adds the daemon-mediated,
+// durable, idempotent compile-and-save path plus the spec CRUD commands
+// (`save`/`show`/`lock`/`versions`) that reach the same store through the
+// loopback transport.
 func (a *App) runSpec(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(a.Err, specUsage)
@@ -25,6 +29,14 @@ func (a *App) runSpec(args []string) int {
 	switch sub {
 	case "compile":
 		return a.specCompile(rest)
+	case "save":
+		return a.specSave(rest)
+	case "show":
+		return a.specShow(rest)
+	case "lock":
+		return a.specLock(rest)
+	case "versions":
+		return a.specVersions(rest)
 	case "-h", "--help":
 		fmt.Fprintln(a.Out, specUsage)
 		return ExitOK
@@ -38,8 +50,25 @@ func (a *App) runSpec(args []string) int {
 const specUsage = `Usage: forge spec <subcommand> [flags]
 
 Subcommands:
-  compile [flags] <description>   Deterministically compile free-form task text
-                                  into a structured task.Specification (§18.1).
+  compile [flags] <description>
+                            Deterministically compile free-form task text into a
+                            structured task.Specification (§18.1) OFFLINE. The
+                            compiler is pure (no I/O, no clock, no daemon).
+  save -t <id> [--by <actor>] [--json]
+                            Daemon-mediated compile-and-save: read the task from
+                            the backlog, run the deterministic compiler, and
+                            durably persist the resulting specification
+                            (idempotent: a re-compile of an unchanged task
+                            returns the existing version without minting a new
+                            one). Survives daemon restart.
+  show -t <id> [-v <ver>] [--json]
+                            Read the latest (or a specific) persisted
+                            specification for a task.
+  lock -t <id> -v <ver> [--by <actor>] [--json]
+                            Mark a specification version immutable (§28).
+  versions -t <id> [--json]
+                            List every persisted specification version for a
+                            task.
 
 Spec compile flags:
   -p, --project <id>     Project ID (required; becomes the spec's TaskID prefix)
@@ -47,21 +76,27 @@ Spec compile flags:
   --title <title>        Optional task title
   --priority <level>     LOW | NORMAL | HIGH | URGENT (default NORMAL; validated)
   --attach <spec>        Attachment metadata, repeatable. Spec grammar:
-                            hash=ROLE
-                            hash=ROLE:filename
-                            hash=ROLE:filename:mimeType
-                            hash=ROLE:filename:mimeType:size
-                         ROLE: DESIGN_REFERENCE|BUG_SCREENSHOT|REQUIREMENTS|
-                               LOG|API_SPECIFICATION|EXAMPLE|GENERAL_CONTEXT
-                         filename/mimeType/size are optional metadata the
-                         compiler consumes (it never reads attachment content).
-                         Filenames containing ':' are not supported by the
-                         inline form (drop the colon or pipe-escape elsewhere).
+                             hash=ROLE
+                             hash=ROLE:filename
+                             hash=ROLE:filename:mimeType
+                             hash=ROLE:filename:mimeType:size
+                          ROLE: DESIGN_REFERENCE|BUG_SCREENSHOT|REQUIREMENTS|
+                                LOG|API_SPECIFICATION|EXAMPLE|GENERAL_CONTEXT
+                          filename/mimeType/size are optional metadata the
+                          compiler consumes (it never reads attachment content).
+                          Filenames containing ':' are not supported by the
+                          inline form (drop the colon or pipe-escape elsewhere).
   --json                 Emit machine-readable JSON (opt-in; default is text)
 
-The compiler is pure: it never calls an external model (§18.2 cascade:
-deterministic parsing -> cheap classifier). Output is the compiled
-specification + confidence + clarifications. No daemon is required.`
+Spec save / show / lock / versions flags:
+  -t, --task <id>        Task ID (required)
+  -v, --version <n>      Specification version (show/lock); <=0 means "latest"
+                          (show only)
+      --by <actor>       Provenance actor recorded on the audit trail
+                          (save/lock; default: "daemon")
+      --json             Emit machine-readable JSON (opt-in; default is text)
+
+The compile subcommand is offline; save/show/lock/versions talk to the daemon.`
 
 // specCompile implements `forge spec compile` — the deterministic task compiler
 // (M14-02). It exercises the production task.Compile function directly so
@@ -247,5 +282,243 @@ func writeSpecCompileText(a *App, res task.CompileResult) {
 		for _, c := range res.Clarifications {
 			fmt.Fprintf(a.Out, "  - %s (%s)\n", c.Question, c.Reason)
 		}
+	}
+}
+
+// ---- daemon-mediated spec subcommands (M14-03) ----
+//
+// specSave implements `forge spec save -t <id>`: compile the task's
+// description through the daemon and durably persist the resulting
+// specification. Idempotent — a re-compile of an unchanged task returns the
+// existing version without minting a new one.
+func (a *App) specSave(args []string) int {
+	fs := flag.NewFlagSet("spec save", flag.ContinueOnError)
+	fs.SetOutput(a.Err)
+	fs.Usage = func() { fmt.Fprintln(a.Err, specUsage) }
+	taskID := fs.String("task", "", "task ID (required)")
+	fs.StringVar(taskID, "t", "", "shortcut for --task")
+	lockedBy := fs.String("by", "", "provenance actor (default: daemon)")
+	jsonOut := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return ExitErr
+	}
+	if *taskID == "" {
+		fmt.Fprintln(a.Err, "Error: --task (-t) is required")
+		return ExitErr
+	}
+
+	cli, err := a.ensureDaemon()
+	if err != nil {
+		a.errf("connect to daemon: %v", err)
+		return ExitErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res, err := cli.CompileSpec(ctx, *taskID, transport.CompileSpecRequest{LockedBy: *lockedBy})
+	if err != nil {
+		if *jsonOut {
+			fmt.Fprintln(a.Out, jsonError(err))
+		} else {
+			a.errf("spec save: %v", err)
+		}
+		return ExitErr
+	}
+	if *jsonOut {
+		b, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Fprintln(a.Out, string(b))
+		return ExitOK
+	}
+	writeSpecDTOText(a, res.Specification)
+	createdTag := "returned (idempotent)"
+	if res.Created {
+		createdTag = "created"
+	}
+	fmt.Fprintf(a.Out, "Confidence: %s\n", res.Confidence)
+	fmt.Fprintf(a.Out, "Saved:      %s\n", createdTag)
+	if len(res.Clarifications) > 0 {
+		fmt.Fprintln(a.Out, "Clarifications:")
+		for _, c := range res.Clarifications {
+			fmt.Fprintf(a.Out, "  - %s (%s)\n", c.Question, c.Reason)
+		}
+	}
+	return ExitOK
+}
+
+// specShow implements `forge spec show -t <id> [-v <ver>]`: read the latest
+// (or a specific) persisted specification for a task.
+func (a *App) specShow(args []string) int {
+	fs := flag.NewFlagSet("spec show", flag.ContinueOnError)
+	fs.SetOutput(a.Err)
+	fs.Usage = func() { fmt.Fprintln(a.Err, specUsage) }
+	taskID := fs.String("task", "", "task ID (required)")
+	fs.StringVar(taskID, "t", "", "shortcut for --task")
+	version := fs.Int("version", 0, "specification version (<=0 means latest)")
+	fs.IntVar(version, "v", 0, "shortcut for --version")
+	jsonOut := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return ExitErr
+	}
+	if *taskID == "" {
+		fmt.Fprintln(a.Err, "Error: --task (-t) is required")
+		return ExitErr
+	}
+
+	cli, err := a.ensureDaemon()
+	if err != nil {
+		a.errf("connect to daemon: %v", err)
+		return ExitErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	spec, err := cli.GetSpecification(ctx, *taskID, *version)
+	if err != nil {
+		if *jsonOut {
+			fmt.Fprintln(a.Out, jsonError(err))
+		} else {
+			a.errf("spec show: %v", err)
+		}
+		return ExitErr
+	}
+	if *jsonOut {
+		b, _ := json.MarshalIndent(spec, "", "  ")
+		fmt.Fprintln(a.Out, string(b))
+		return ExitOK
+	}
+	writeSpecDTOText(a, spec)
+	return ExitOK
+}
+
+// specLock implements `forge spec lock -t <id> -v <ver>`: mark a specification
+// version immutable (§28). Idempotent.
+func (a *App) specLock(args []string) int {
+	fs := flag.NewFlagSet("spec lock", flag.ContinueOnError)
+	fs.SetOutput(a.Err)
+	fs.Usage = func() { fmt.Fprintln(a.Err, specUsage) }
+	taskID := fs.String("task", "", "task ID (required)")
+	fs.StringVar(taskID, "t", "", "shortcut for --task")
+	version := fs.Int("version", 0, "specification version to lock (required, >0)")
+	fs.IntVar(version, "v", 0, "shortcut for --version")
+	lockedBy := fs.String("by", "", "provenance actor (default: daemon)")
+	jsonOut := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return ExitErr
+	}
+	if *taskID == "" {
+		fmt.Fprintln(a.Err, "Error: --task (-t) is required")
+		return ExitErr
+	}
+	if *version <= 0 {
+		fmt.Fprintln(a.Err, "Error: --version (-v) is required and must be > 0")
+		return ExitErr
+	}
+
+	cli, err := a.ensureDaemon()
+	if err != nil {
+		a.errf("connect to daemon: %v", err)
+		return ExitErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	spec, err := cli.LockSpecification(ctx, *taskID, transport.LockSpecRequest{
+		Version:  *version,
+		LockedBy: *lockedBy,
+	})
+	if err != nil {
+		if *jsonOut {
+			fmt.Fprintln(a.Out, jsonError(err))
+		} else {
+			a.errf("spec lock: %v", err)
+		}
+		return ExitErr
+	}
+	if *jsonOut {
+		b, _ := json.MarshalIndent(spec, "", "  ")
+		fmt.Fprintln(a.Out, string(b))
+		return ExitOK
+	}
+	writeSpecDTOText(a, spec)
+	fmt.Fprintf(a.Out, "Locked:     %v\n", spec.Locked)
+	return ExitOK
+}
+
+// specVersions implements `forge spec versions -t <id>`: list every persisted
+// specification version for a task, ascending.
+func (a *App) specVersions(args []string) int {
+	fs := flag.NewFlagSet("spec versions", flag.ContinueOnError)
+	fs.SetOutput(a.Err)
+	fs.Usage = func() { fmt.Fprintln(a.Err, specUsage) }
+	taskID := fs.String("task", "", "task ID (required)")
+	fs.StringVar(taskID, "t", "", "shortcut for --task")
+	jsonOut := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return ExitErr
+	}
+	if *taskID == "" {
+		fmt.Fprintln(a.Err, "Error: --task (-t) is required")
+		return ExitErr
+	}
+
+	cli, err := a.ensureDaemon()
+	if err != nil {
+		a.errf("connect to daemon: %v", err)
+		return ExitErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	versions, err := cli.ListSpecificationVersions(ctx, *taskID)
+	if err != nil {
+		if *jsonOut {
+			fmt.Fprintln(a.Out, jsonError(err))
+		} else {
+			a.errf("spec versions: %v", err)
+		}
+		return ExitErr
+	}
+	if *jsonOut {
+		b, _ := json.MarshalIndent(versions, "", "  ")
+		fmt.Fprintln(a.Out, string(b))
+		return ExitOK
+	}
+	if len(versions) == 0 {
+		fmt.Fprintln(a.Out, "No persisted specification versions.")
+		return ExitOK
+	}
+	fmt.Fprintf(a.Out, "Versions for %s:\n", *taskID)
+	for _, v := range versions {
+		fmt.Fprintf(a.Out, "  v%d\n", v)
+	}
+	return ExitOK
+}
+
+// writeSpecDTOText renders a transport.SpecificationDTO as human-readable text.
+// Mirrors writeSpecCompileText's shape so `forge spec compile` and
+// `forge spec save`/`show`/`lock` share a consistent text format.
+func writeSpecDTOText(a *App, spec transport.SpecificationDTO) {
+	fmt.Fprintf(a.Out, "TaskID:     %s\n", spec.TaskID)
+	fmt.Fprintf(a.Out, "Version:    %d\n", spec.Version)
+	fmt.Fprintf(a.Out, "Objective:  %s\n", spec.Objective)
+	fmt.Fprintf(a.Out, "Risk:       %s\n", spec.Risk)
+	fmt.Fprintf(a.Out, "Complexity: %s\n", spec.Complexity)
+	for _, ac := range spec.AcceptanceCriteria {
+		fmt.Fprintf(a.Out, "  %s: %s\n", ac.ID, ac.Statement)
+	}
+	if len(spec.NonGoals) > 0 {
+		fmt.Fprintln(a.Out, "Non-goals:")
+		for _, ng := range spec.NonGoals {
+			fmt.Fprintf(a.Out, "  - %s\n", ng)
+		}
+	}
+	if len(spec.Constraints) > 0 {
+		fmt.Fprintln(a.Out, "Constraints:")
+		for _, c := range spec.Constraints {
+			fmt.Fprintf(a.Out, "  - %s\n", c)
+		}
+	}
+	if spec.Locked {
+		fmt.Fprintf(a.Out, "Locked:     true (by %s at %s)\n", spec.LockedBy, spec.LockedAt)
 	}
 }

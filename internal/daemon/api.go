@@ -19,6 +19,7 @@ import (
 type Services struct {
 	Projects *project.Registry
 	Tasks    *task.Backlog
+	Specs    *task.SpecificationStore
 	Bus      *transport.Bus
 }
 
@@ -27,6 +28,7 @@ func NewServices(db *storage.DB, rec *audit.Recorder, artifactsDir string, bus *
 	return &Services{
 		Projects: project.NewRegistry(db, rec, logger),
 		Tasks:    task.NewBacklog(db, rec, artifactsDir, logger),
+		Specs:    task.NewSpecificationStore(db, rec, logger),
 		Bus:      bus,
 	}
 }

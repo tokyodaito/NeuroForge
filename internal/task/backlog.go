@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -220,10 +221,19 @@ func (b *Backlog) Add(ctx context.Context, req AddRequest) (Task, error) {
 	return t, nil
 }
 
-// Get returns a task by id, including its attachments.
+// Get returns a task by id, including its attachments. A missing task returns
+// ErrNotFound ("task not found") so callers can branch with errors.Is and the
+// transport layer maps it to HTTP 404.
 func (b *Backlog) Get(ctx context.Context, id string) (Task, error) {
 	st, err := b.db.GetTask(ctx, id)
 	if err != nil {
+		// storage.GetTask wraps sql.ErrNoRows as
+		// `storage: get task %q: sql: no rows in result set`; translate to the
+		// documented sentinel so callers (incl. writeAPIError's "not found"
+		// case) see a clean "task not found".
+		if errors.Is(err, sql.ErrNoRows) {
+			return Task{}, ErrNotFound
+		}
 		return Task{}, err
 	}
 	t := fromStorage(st)

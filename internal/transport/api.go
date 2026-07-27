@@ -317,6 +317,13 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		code = http.StatusBadRequest
 	case strings.Contains(msg, "invalid transition"):
 		code = http.StatusConflict
+	case strings.Contains(msg, "is locked"):
+		// ErrSpecificationLocked ("specification is locked") and any future
+		// locked-state conflict map to 409 Conflict, matching the existing
+		// conflict semantics (already registered / invalid transition). Without
+		// this case the error would surface as 500, hiding the lock conflict
+		// from clients (M14-03).
+		code = http.StatusConflict
 	case strings.Contains(msg, "is required"):
 		code = http.StatusBadRequest
 	case strings.Contains(msg, "invalid"):

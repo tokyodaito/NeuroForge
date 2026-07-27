@@ -129,6 +129,11 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// loopback API.
 	services := NewServices(db, recorder, cfg.Dirs.ArtifactsDir, bus, logger)
 	apiAdapter := newAPIAdapter(services)
+	// 4a-2. Daemon-mediated Task Compiler adapter (M14-03): wraps the pure
+	// task.Compile with durable persistence through task.SpecificationStore so
+	// a compiled specification is reachable through the transport and survives
+	// daemon restart.
+	specAdapter := newSpecAPIAdapter(services)
 
 	// 4b. Lease manager + supervisor (M3, spec §17/§18/§12).
 	// The workspace manager was created at step 2a (before reconciliation).
@@ -204,6 +209,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		WorkspaceAPI:      wsAdapter,
 		SchedulerAPI:      schedAdapter,
 		RunAppAPI:         runAppAdapter,
+		SpecAPI:           specAdapter,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)

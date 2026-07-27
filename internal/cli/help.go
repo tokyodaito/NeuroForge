@@ -49,6 +49,13 @@ Implemented commands:
                       structured task.Specification (§18.1) (--project,
                       --title, --priority, --attach hash=ROLE[:filename[:mimeType[:size]]],
                       --json opt-in for machine-readable output) (M14-02)
+  spec save           Daemon-mediated compile-and-save: read a task, compile
+                      it, durably persist the resulting Specification
+                      (idempotent; survives restart) (M14-03)
+  spec show           Show the latest (or --version) persisted Specification
+                      for a task (M14-03)
+  spec lock           Mark a Specification version immutable (§28) (M14-03)
+  spec versions       List persisted Specification versions for a task (M14-03)
 
   run \"<description>\"  One-shot reliable run: create task + worktree, run one
                       production adapter (opencode), finalize + result ref.
