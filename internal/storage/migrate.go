@@ -310,6 +310,57 @@ CREATE TABLE IF NOT EXISTS finalize_intents (
 CREATE INDEX IF NOT EXISTS idx_finalize_intents_phase ON finalize_intents (phase);
 `,
 	},
+	{
+		Version:     8,
+		Description: "create task_specifications and task_acceptance_criteria tables (M14-01, compiled task specification)",
+		Up: `
+-- Compiled task specifications (spec §18.1, §9, milestone M14-01).
+-- One row per (task_id, version): the structured specification produced by the
+-- task compiler. Versions are immutable once locked (specification_locked is a
+-- Merge Governor gate, §28). The compiler itself lands in a later milestone;
+-- this table is the durable, versioned substrate.
+CREATE TABLE IF NOT EXISTS task_specifications (
+	task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+	version     INTEGER NOT NULL,
+	objective   TEXT NOT NULL DEFAULT '',
+	risk        TEXT NOT NULL DEFAULT '',     -- R0..R4 (spec §26)
+	complexity  TEXT NOT NULL DEFAULT '',     -- C0..C3
+	payload     TEXT NOT NULL DEFAULT '{}',   -- JSON: non_goals, assumptions, constraints, proposed_scope, visual_requirements
+	locked      INTEGER NOT NULL DEFAULT 0,
+	locked_at   TEXT NOT NULL DEFAULT '',
+	locked_by   TEXT NOT NULL DEFAULT '',
+	created_at  TEXT NOT NULL,
+	created_by  TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (task_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_task_specifications_task ON task_specifications (task_id);
+
+-- Acceptance criteria with stable ids (spec §27, §18.1). Each criterion has a
+-- durable, human-stable identifier (e.g. "AC-1") stored in its own column — not
+-- a positional list — so the id survives reordering, partial updates and
+-- round-trips through SQLite. Scoped to (task_id, version): a new version is a
+-- new snapshot.
+CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
+	task_id    TEXT NOT NULL,
+	version    INTEGER NOT NULL,
+	ac_id      TEXT NOT NULL,
+	statement  TEXT NOT NULL,
+	ordinal    INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (task_id, version, ac_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_ac_task_version ON task_acceptance_criteria (task_id, version);
+
+-- Per-task monotonic version counter for compiled specifications. Mirrors
+-- task_sequences: reserving a version is an atomic UPSERT-increment so two
+-- concurrent compilers/daemons cannot receive the same version number
+-- (race-free version allocation under SQLite's single-writer serialisation,
+-- spec §11.4). Versions are never reused.
+CREATE TABLE IF NOT EXISTS task_specification_sequences (
+	task_id       TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+	next_version  INTEGER NOT NULL DEFAULT 1
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running
