@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "baseline_version": "1",
+  "task_id": "M14-01",
+  "predecessor_task_id": "M14-00",
+  "previous_state": "REVIEW_APPROVED",
+  "state": "ACCEPTED",
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Durable round trip: the compiled specification is fully saved to real SQLite and restored after close/reopen (objective, acceptance criteria, AC IDs + order, non-goals, assumptions, constraints, risk, complexity, proposed scope, visual requirements, version, lock state, provenance/timestamps).",
+      "mandatory": true
+    },
+    {
+      "id": "AC2",
+      "description": "Stable acceptance criterion IDs: AC IDs remain stable after save/load, restart, idempotent re-save, and within a saved version; duplicate AC IDs are rejected by validation/schema.",
+      "mandatory": true
+    },
+    {
+      "id": "AC3",
+      "description": "Locked version immutability: a locked version cannot be mutated silently or concurrently (objective, any list, AC, AC ID, risk/complexity, visual requirements); lock provenance is preserved; a new version is still allowed.",
+      "mandatory": true
+    },
+    {
+      "id": "AC4",
+      "description": "Migration compatibility: migration v8 is additive, forward-only, idempotent, safe for an existing v7 DB, correct for a new empty DB, applied by the production daemon startup path, repeatable on stop/start, and cannot record a false schema version on a failed transaction.",
+      "mandatory": true
+    },
+    {
+      "id": "AC5",
+      "description": "Atomic version allocation: version allocation is safe under concurrency (no duplicate versions, no lost updates, multiple goroutines and store instances on the same DB, no reliance on a process-local mutex, rollback semantics, correct sequence initialisation relative to existing max version).",
+      "mandatory": true
+    },
+    {
+      "id": "AC6",
+      "description": "Storage and audit consistency: audit is recorded for successful mutations, rejected operations do not create a misleading successful audit event, a rolled-back storage mutation does not appear committed, an audit failure does not leave an inconsistent storage result (shared transaction), and current audit-architecture limitations are honestly documented.",
+      "mandatory": true
+    }
+  ],
+  "evidence": [
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/task.TestSpecificationStore_SaveGetRoundTrip",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/task.TestSpecificationStore_RestartRecovery",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/storage.TestSaveAndGetSpecification_RoundTrip",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "integration",
+      "reference": "internal/storage.TestSaveAndGetSpecification_RoundTrip",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "integration",
+      "reference": "internal/storage.TestSaveSpecification_IdempotentResave",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "integration",
+      "reference": "internal/task.TestSpecificationStore_RestartRecovery",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/task.TestValidateSpecification_TableDriven",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/storage.TestSaveSpecification_LockedVersionRejected",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/storage.TestSaveSpecification_ConcurrentLockedGuard",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/storage.TestLockSpecification_IdempotentAndNotFound",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/task.TestSpecificationStore_LockedVersionCannotBeMutated",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "integration",
+      "reference": "internal/storage.TestMigrate_FromV7_AddsSpecificationTables",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "integration",
+      "reference": "internal/storage.TestMigrate_IdempotentOnV8Schema",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC4",
+      "level": "blackbox",
+      "reference": "internal/cli.TestSpecMigration_BlackBox_DaemonAppliesV8",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "integration",
+      "reference": "internal/storage.TestNextSpecificationVersion_MonotonicAndRaceFree",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "integration",
+      "reference": "internal/storage.TestNextSpecificationVersion_ConcurrentNoCollisions",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC5",
+      "level": "integration",
+      "reference": "internal/task.TestSpecificationStore_ConcurrentNewVersionsNoCollisions",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC6",
+      "level": "integration",
+      "reference": "internal/task.TestSpecificationStore_AuditRecorded",
+      "status": "passed",
+      "automated": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "make check",
+      "status": "passed"
+    },
+    {
+      "label": "go test -race ./...",
+      "status": "passed"
+    }
+  ],
+  "actors": {
+    "implementer": "M14-01-impl-session",
+    "reviewer": "M14-01-review-session",
+    "acceptor": "M14-01-accept-session"
+  },
+  "reports": {
+    "implementation": "docs/reviews/m14/M14-01_IMPLEMENTATION.md",
+    "review": "docs/reviews/m14/M14-01_REVIEW.md",
+    "acceptance": "docs/reviews/m14/M14-01_ACCEPTANCE.md"
+  },
+  "blackbox": {
+    "compiled_binary": "forge",
+    "scenario": "forge daemon start applies migration v8; forge doctor reports schema v8; production DB file contains task_specifications/task_acceptance_criteria/task_specification_sequences; daemon stop/start restart is idempotent (TestSpecMigration_BlackBox_DaemonAppliesV8)",
+    "status": "passed",
+    "exempt": false,
+    "exempt_reason": ""
+  },
+  "remediation_note": "",
+  "git": {
+    "implementation_starting_sha": "7499d2ea97ca349e05977fa1806055226bf69360",
+    "implementation_candidate_sha": "48b059ccb82d146e25961fdc0402149751f4df8b",
+    "review_commit_sha": "eec8276ba57f4add274f848991fd457b5b293537",
+    "administrative_starting_head": "94c88381e9c9d29ef73f8c80b494d2384a422ec9"
+  },
+  "predecessor_gate": {
+    "predecessor_task_id": "M14-00",
+    "predecessor_state": "ACCEPTED",
+    "predecessor_manifest": "docs/reviews/m14/M14-00.manifest.json",
+    "gate_next_result": "exit 0"
+  },
+  "review_findings": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 3,
+    "minor_summary": [
+      "idempotent re-lock emits a duplicate audit event whose `by` payload disagrees with durable locked_by (audit fidelity, no-op)",
+      "no negative audit regression tests (correct behaviour unguarded)",
+      "implementation report SHA metadata typo + candidate SHA not stated explicitly"
+    ]
+  },
+  "acceptance_date": "2026-07-27"
+}
