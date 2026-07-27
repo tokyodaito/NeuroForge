@@ -1,16 +1,55 @@
 # M14-04 — Implementation Report
 
 **Task:** M14-04 — Work Graph domain, DAG validation and AC mapping.
-**Implementer actor:** `M14-04-impl-session`.
+**Implementer actor:** `M14-04-impl-session` (re-verified by
+`M14-04-impl-session-2`).
 **Verdict:** `BLOCKED`
+
+## Re-verification (fresh independent session `M14-04-impl-session-2`)
+
+This section records an independent re-verification performed in a brand-new
+session that did **not** trust the prior session's conclusions. The task brief
+explicitly requires step 1 ("Убедись, что предыдущая задача имеет verdict
+`ACCEPTED`. Если нет — поставь `BLOCKED`, ничего не реализуй.") to be re-run
+against the current repo state.
+
+**Starting SHA (this session):** `3f039797619469a74218eff7b66713970bdfcc6b`
+(the committed `BLOCKED` M14-04 report itself; current `HEAD` of `main`).
+
+Independent evidence gathered in this session against the compiled `./forge`
+binary at this SHA:
+
+| Check | Expected for `ACCEPTED` predecessor | Observed | Result |
+|---|---|---|---|
+| `ls docs/reviews/m14/M14-03_ACCEPTANCE.md` | present, verdict `ACCEPTED` | `No such file or directory` | MISSING |
+| `ls docs/reviews/m14/M14-03.manifest.json` | present, `state: "ACCEPTED"`, `baseline_version: 1` | `No such file or directory` | MISSING |
+| `grep -E "^\*\*REVIEW_APPROVED\*\*|^\*\*ACCEPTED\*\*$" docs/reviews/m14/M14-03_REVIEW.md` | `**ACCEPTED**` | `**REVIEW_APPROVED**` (last verdict line) | NOT ACCEPTED |
+| `./forge gate baseline` | exit 0, baseline v1 | exit 0 (baseline v1, schema v1) | OK (baseline itself is fine) |
+| `./forge gate next --manifest docs/reviews/m14/M14-03.manifest.json` | exit 0 (predecessor ACCEPTED) | exit 1 — `load predecessor manifest: open docs/reviews/m14/M14-03.manifest.json: no such file or directory` | GATE CLOSED |
+| `./forge gate validate --manifest docs/reviews/m14/M14-03.manifest.json` | exit 0 | exit 1 — `open …: no such file or directory` | GATE CLOSED |
+
+Conclusion of re-verification: **the blocker persists unchanged.** No
+production code, test code, spec, baseline, or gate enforcement was modified
+in this session. Only this "Re-verification" section was added to the
+existing report, plus the SHAs block below now records both sessions. The
+pre-existing working-tree noise
+(`docs/reviews/MINIMAL_RUN_*`, `docs/reviews/M12_M13_REVIEW.md`) predates
+both sessions and was not touched.
+
+The scope carried forward for the unblocking session is unchanged — see
+"Scope NOT started" near the end of this report.
 
 ## SHAs
 
-- **Starting SHA:** `3c26aa0b4351f0ac5869290cb242190d5eb7de7d`
-  (`M14-03: re-review after remediation (REVIEW_APPROVED)`, current `HEAD` of
+- **Starting SHA (original session `M14-04-impl-session`):**
+  `3c26aa0b4351f0ac5869290cb242190d5eb7de7d`
+  (`M14-03: re-review after remediation (REVIEW_APPROVED)`, prior `HEAD` of
   `main`).
+- **Starting SHA (re-verification session `M14-04-impl-session-2`):**
+  `3f039797619469a74218eff7b66713970bdfcc6b` (the committed `BLOCKED`
+  M14-04 report; current `HEAD` of `main`).
 - **Candidate SHA:** this report's commit. No production code, no test code
-  changed. The only file added is this report itself.
+  changed. The only file modified is this report itself.
 
 ## Preconditions checked
 
