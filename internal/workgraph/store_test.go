@@ -559,6 +559,7 @@ func TestScheduler_ClaimSuccess(t *testing.T) {
 
 	res, err := sched.Claim(ctx, workgraph.ClaimRequest{
 		TaskID:      taskID,
+		ProjectID:   "proj",
 		PackageID:   taskID + "-AC-1",
 		WorkspaceID: "ws-1",
 	})
@@ -573,7 +574,7 @@ func TestScheduler_ClaimSuccess(t *testing.T) {
 	}
 	// Package is now "running" — re-claiming must fail.
 	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
-		TaskID: taskID, PackageID: taskID + "-AC-1", WorkspaceID: "ws-2",
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-1", WorkspaceID: "ws-2",
 	}); err == nil {
 		t.Fatal("re-claim of running package must fail")
 	}
@@ -592,7 +593,7 @@ func TestScheduler_ClaimBlockedByDependency(t *testing.T) {
 	}
 	// AC-2 depends on AC-1; AC-1 is still pending. Claim must refuse.
 	_, err := sched.Claim(ctx, workgraph.ClaimRequest{
-		TaskID: taskID, PackageID: taskID + "-AC-2", WorkspaceID: "ws-1",
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-2", WorkspaceID: "ws-1",
 	})
 	if err == nil {
 		t.Fatal("Claim should fail for unmet dependency")
@@ -609,7 +610,7 @@ func TestScheduler_ClaimBlockedByDependency(t *testing.T) {
 	}
 
 	// No leases should have been acquired.
-	active, _ := lm.ListActiveByProject(ctx, taskID)
+	active, _ := lm.ListActiveByProject(ctx, "proj")
 	if len(active) != 0 {
 		t.Fatalf("expected 0 active leases after blocked claim, got %d", len(active))
 	}
@@ -627,13 +628,14 @@ func TestScheduler_ClaimBlockedByLeaseConflict(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// A different workspace pre-leases src/a.go.
-	if _, err := lm.AcquirePath(ctx, taskID, "other-ws", "src/a.go"); err != nil {
+	// A different workspace pre-leases src/a.go at the PROJECT scope (the
+	// scope Claim uses since the MAJOR-1 fix).
+	if _, err := lm.AcquirePath(ctx, "proj", "other-ws", "src/a.go"); err != nil {
 		t.Fatalf("AcquirePath: %v", err)
 	}
 
 	_, err := sched.Claim(ctx, workgraph.ClaimRequest{
-		TaskID: taskID, PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
 	})
 	if err == nil {
 		t.Fatal("Claim should fail due to path-lease conflict")
@@ -672,6 +674,7 @@ func TestScheduler_ClaimSemanticTTL(t *testing.T) {
 	// ws-1 claims AC-1 (no deps) with a semantic lease on database_schema.
 	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
 		TaskID:         taskID,
+		ProjectID:      "proj",
 		PackageID:      taskID + "-AC-1",
 		WorkspaceID:    "ws-1",
 		PathLeases:     []string{"src/a.go"},
@@ -695,12 +698,13 @@ func TestScheduler_ClaimSemanticTTL(t *testing.T) {
 	// ws-1 still holds. Note: ws-1's path leases were released above, but the
 	// semantic was acquired through a separate Claim that did NOT release —
 	// the test re-establishes the semantic for ws-1 via a fresh acquire.
-	if _, err := lm.AcquireSemantic(ctx, taskID, "ws-1", workgraph.SemDatabaseSchema); err != nil {
+	if _, err := lm.AcquireSemantic(ctx, "proj", "ws-1", workgraph.SemDatabaseSchema); err != nil {
 		t.Fatalf("AcquireSemantic ws-1: %v", err)
 	}
 
 	_, err := sched.Claim(ctx, workgraph.ClaimRequest{
 		TaskID:         taskID,
+		ProjectID:      "proj",
 		PackageID:      taskID + "-AC-2",
 		WorkspaceID:    "ws-2",
 		SemanticLeases: []workgraph.SemanticResource{workgraph.SemDatabaseSchema},
@@ -718,6 +722,158 @@ func TestScheduler_ClaimSemanticTTL(t *testing.T) {
 	}
 }
 
+// TestScheduler_CrossTaskLeaseConflict_ProjectScoped is the regression test
+// for the M14-05 MAJOR-1 defect (ClaimRequest.ProjectID() returned TaskID,
+// weakening lease isolation to per-task instead of per-project). It proves
+// that two work packages in DIFFERENT tasks of the SAME project cannot
+// concurrently lease the same file path: ws-A claims src/shared.go on behalf
+// of task T-A; ws-B's claim for task T-B (same project, same path) must fail
+// with ErrLeaseConflict and an explainable cause naming the path + ws-A.
+//
+// Before the fix this test failed: T-B's claim succeeded because leases were
+// scoped to (project, TaskID) and T-A/T-B have distinct task IDs.
+func TestScheduler_CrossTaskLeaseConflict_ProjectScoped(t *testing.T) {
+	// Build a DB with one project and TWO tasks in it.
+	home := t.TempDir()
+	db, err := storage.Open(context.Background(), home+"/state.db", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := db.CreateProject(context.Background(), storage.Project{
+		ID: "proj", Name: "T", Path: home, State: "IDLE",
+		Profile: "LOCAL_REVIEW", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tid := range []string{"T-A", "T-B"} {
+		if err := db.CreateTask(context.Background(), storage.Task{
+			ID: tid, ProjectID: "proj", Title: "demo", Description: "d",
+			Priority: "NORMAL", State: "NEW", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := workgraph.NewWorkGraphStore(db, nil, nil)
+	lm := workgraph.NewLeaseManager(db)
+	sched := workgraph.NewScheduler(store, lm)
+	ctx := context.Background()
+
+	// Both tasks own a package whose AllowedScope collides on src/shared.go.
+	// This mirrors the real hazard: two tasks touching the same shared file.
+	mkGraph := func(taskID string) *workgraph.ValidatedWorkGraph {
+		p := workgraph.WorkPackage{
+			ID: taskID + "-pkg", TaskID: taskID, Stage: workgraph.StageImplementation,
+			Title: "p", Objective: "o", AcceptedACIDs: []string{"AC-1"},
+			AllowedScope: []string{"src/shared.go"},
+			State:        workgraph.PackagePending,
+		}
+		v, err := workgraph.ValidateWorkGraph(workgraph.WorkGraph{TaskID: taskID, Packages: []workgraph.WorkPackage{p}})
+		if err != nil {
+			t.Fatalf("ValidateWorkGraph %s: %v", taskID, err)
+		}
+		return v
+	}
+	if _, err := store.Save(ctx, mkGraph("T-A")); err != nil {
+		t.Fatalf("Save T-A: %v", err)
+	}
+	if _, err := store.Save(ctx, mkGraph("T-B")); err != nil {
+		t.Fatalf("Save T-B: %v", err)
+	}
+
+	// ws-A claims T-A's package — succeeds and acquires a project-scoped
+	// lease on src/shared.go.
+	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: "T-A", ProjectID: "proj", PackageID: "T-A-pkg", WorkspaceID: "ws-A",
+	}); err != nil {
+		t.Fatalf("Claim T-A (should succeed): %v", err)
+	}
+
+	// ws-B claims T-B's package — must FAIL because src/shared.go is already
+	// leased at the project scope by ws-A. This is the cross-task isolation
+	// the spec §18.4 contract guarantees.
+	_, err = sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: "T-B", ProjectID: "proj", PackageID: "T-B-pkg", WorkspaceID: "ws-B",
+	})
+	if err == nil {
+		t.Fatal("Cross-task defect: T-B claim succeeded even though ws-A holds src/shared.go in the same project (MAJOR-1 regression)")
+	}
+	// The block may surface as ErrLeaseConflict (acquire path) or
+	// ErrPackageNotReady (readiness pre-check sees the path-lease conflict).
+	// Both satisfy the spec: the conflicting lease blocks execution.
+	blocked := errors.Is(err, workgraph.ErrLeaseConflict) || errors.Is(err, workgraph.ErrPackageNotReady)
+	if !blocked {
+		t.Fatalf("expected ErrLeaseConflict or ErrPackageNotReady, got %v", err)
+	}
+	// The cause must name the conflicting path AND the holding workspace so
+	// the dispatcher / user can act on it.
+	if !containsSubstr(err.Error(), "src/shared.go") {
+		t.Errorf("error should name the conflicting path src/shared.go: %v", err)
+	}
+	if !containsSubstr(err.Error(), "ws-A") {
+		t.Errorf("error should name the holding workspace ws-A: %v", err)
+	}
+
+	// T-B's package must remain pending (the failed claim must not transition).
+	pb, _ := store.GetPackage(ctx, "T-B", "T-B-pkg")
+	if pb.State != workgraph.PackagePending {
+		t.Errorf("T-B-pkg state = %q want pending (failed claim must not transition)", pb.State)
+	}
+
+	// A different path in the same project does NOT conflict: ws-B can claim
+	// src/other.go (no collision with ws-A's src/shared.go). This proves the
+	// isolation is per-resource, not a blanket per-project lock.
+	pOther := workgraph.WorkPackage{
+		ID: "T-B-pkg2", TaskID: "T-B", Stage: workgraph.StageImplementation,
+		Title: "p2", Objective: "o", AcceptedACIDs: []string{"AC-2"},
+		AllowedScope: []string{"src/other.go"},
+		State:        workgraph.PackagePending,
+	}
+	v2, err := workgraph.ValidateWorkGraph(workgraph.WorkGraph{TaskID: "T-B", Packages: []workgraph.WorkPackage{pOther}})
+	if err != nil {
+		t.Fatalf("ValidateWorkGraph T-B-pkg2: %v", err)
+	}
+	if _, err := store.Save(ctx, v2); err != nil {
+		t.Fatalf("Save T-B-pkg2: %v", err)
+	}
+	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: "T-B", ProjectID: "proj", PackageID: "T-B-pkg2", WorkspaceID: "ws-B",
+	}); err != nil {
+		t.Fatalf("Claim T-B-pkg2 on a non-colliding path should succeed: %v", err)
+	}
+}
+
+// TestScheduler_ClaimMissingProjectID proves the scheduler rejects a Claim
+// that does not identify the project. This guards the MAJOR-1 fix: a missing
+// ProjectID must fail loudly rather than silently fall back to the TaskID
+// (the old defect).
+func TestScheduler_ClaimMissingProjectID(t *testing.T) {
+	db, taskID := setupWGDB(t)
+	store := workgraph.NewWorkGraphStore(db, nil, nil)
+	lm := workgraph.NewLeaseManager(db)
+	sched := workgraph.NewScheduler(store, lm)
+	ctx := context.Background()
+	v := helperValidatedGraph(t, taskID)
+	if _, err := store.Save(ctx, v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	_, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: taskID, PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
+		// ProjectID intentionally omitted.
+	})
+	if err == nil {
+		t.Fatal("Claim without ProjectID must fail (MAJOR-1 guard)")
+	}
+	if !containsSubstr(err.Error(), "project_id") {
+		t.Errorf("error should mention project_id: %v", err)
+	}
+}
+
 func TestScheduler_RenewAndRelease(t *testing.T) {
 	db, taskID := setupWGDB(t)
 	store := workgraph.NewWorkGraphStore(db, nil, nil)
@@ -730,7 +886,7 @@ func TestScheduler_RenewAndRelease(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
-		TaskID: taskID, PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
 		TTL: 100 * time.Millisecond,
 	}); err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -779,7 +935,7 @@ func TestScheduler_ConcurrentClaimRace(t *testing.T) {
 			defer wg.Done()
 			sched := workgraph.NewScheduler(store, lm)
 			_, err := sched.Claim(ctx, workgraph.ClaimRequest{
-				TaskID: taskID, PackageID: taskID + "-AC-1",
+				TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-1",
 				WorkspaceID: fmt.Sprintf("ws-%d", i),
 			})
 			if err == nil {
@@ -808,7 +964,7 @@ func TestScheduler_ConcurrentClaimRace(t *testing.T) {
 		t.Fatalf("loser returned an unexpected error type: %v", firstErr)
 	}
 	// Exactly one active lease for src/a.go (the winner's).
-	active, err := lm.ListActiveByProject(ctx, taskID)
+	active, err := lm.ListActiveByProject(ctx, "proj")
 	if err != nil {
 		t.Fatalf("ListActiveByProject: %v", err)
 	}
@@ -857,7 +1013,7 @@ func TestStore_RestartRecoversGraphAndLeases(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	if _, err := sched1.Claim(ctx, workgraph.ClaimRequest{
-		TaskID: "T-1", PackageID: "T-1-AC-1", WorkspaceID: "ws-1",
+		TaskID: "T-1", ProjectID: "proj", PackageID: "T-1-AC-1", WorkspaceID: "ws-1",
 		TTL: time.Hour,
 	}); err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -903,7 +1059,7 @@ func TestStore_RestartRecoversGraphAndLeases(t *testing.T) {
 		t.Errorf("AC-1 attempts after restart = %d want 1", len(p1.Attempts))
 	}
 	// Leases survive.
-	active, err := lm2.ListActiveByProject(ctx, "T-1")
+	active, err := lm2.ListActiveByProject(ctx, "proj")
 	if err != nil {
 		t.Fatalf("ListActiveByProject after restart: %v", err)
 	}
@@ -917,7 +1073,7 @@ func TestStore_RestartRecoversGraphAndLeases(t *testing.T) {
 	// Re-claiming AC-1 (now running) must fail for any new workspace.
 	sched2 := workgraph.NewScheduler(store2, lm2)
 	if _, err := sched2.Claim(ctx, workgraph.ClaimRequest{
-		TaskID: "T-1", PackageID: "T-1-AC-1", WorkspaceID: "ws-2",
+		TaskID: "T-1", ProjectID: "proj", PackageID: "T-1-AC-1", WorkspaceID: "ws-2",
 	}); err == nil {
 		t.Fatal("Claim after restart on already-running package must fail")
 	}

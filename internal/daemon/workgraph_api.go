@@ -42,6 +42,22 @@ func (a *workGraphAPIAdapter) GetWorkGraph(ctx context.Context, taskID string) (
 		return transport.WorkGraphDTO{}, fmt.Errorf("task_id is required")
 	}
 
+	// Resolve the project ID once from the task row. The lease layer scopes
+	// leases to (scope="project", scope_id=projectID) so that two packages in
+	// DIFFERENT tasks of the SAME project cannot concurrently lease the same
+	// path or semantic resource (spec §18.4). Using the task ID here (the
+	// M14-05 MAJOR-1 defect) would weaken isolation to per-task and let
+	// cross-task conflicts through. The task service is always wired in
+	// production (NewServices); a nil Tasks means the daemon is misconfigured.
+	if a.svc.Tasks == nil {
+		return transport.WorkGraphDTO{}, errors.New("task service not configured")
+	}
+	task, err := a.svc.Tasks.Get(ctx, taskID)
+	if err != nil {
+		return transport.WorkGraphDTO{}, err
+	}
+	projectID := task.ProjectID
+
 	graph, err := a.svc.Graphs.LoadValidated(ctx, taskID)
 	if err != nil {
 		return transport.WorkGraphDTO{}, err
@@ -49,13 +65,12 @@ func (a *workGraphAPIAdapter) GetWorkGraph(ctx context.Context, taskID string) (
 
 	// Compute readiness against the current active leases. The readiness
 	// calculator needs the active-lease snapshot; we read it through the
-	// lease manager (project-scoped). The scope_id for the lease is the
-	// task ID — this is the same scope Claim uses, so a lease held by a
-	// package's workspace is observed here as a non-conflict (it is the
-	// caller's own).
+	// lease manager, scoped to the project (matching the scope Claim uses so
+	// a lease held by a package's workspace in any task of this project is
+	// observed here).
 	var leases []workgraph.Lease
 	if a.svc.Leases != nil {
-		leases, err = a.svc.Leases.ListActiveByProject(ctx, taskID)
+		leases, err = a.svc.Leases.ListActiveByProject(ctx, projectID)
 		if err != nil {
 			return transport.WorkGraphDTO{}, fmt.Errorf("list leases: %w", err)
 		}

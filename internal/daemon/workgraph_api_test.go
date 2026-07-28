@@ -142,13 +142,16 @@ func TestWorkGraphAdapter_ShowThroughTransport(t *testing.T) {
 	// 2. A path-lease conflict surfaces in the readiness verdict. Acquire
 	//    the first package's allowed-scope path from a different workspace,
 	//    then re-fetch; the verdict must now report "blocked" with the
-	//    explainable cause.
+	//    explainable cause. The lease is scoped to the PROJECT (spec §18.4:
+	//    project-wide resource isolation; MAJOR-1 fix) — the daemon adapter
+	//    resolves the project ID from the task row, so the lease must be
+	//    acquired with proj.ID, not taskID.
 	lm := workgraph.NewLeaseManager(db2)
 	firstPkg := dto.Packages[0]
 	if len(firstPkg.AllowedScope) == 0 {
 		t.Fatalf("first package has empty AllowedScope; cannot test path-lease conflict")
 	}
-	if _, err := lm.AcquirePath(ctx, taskID, "other-ws", firstPkg.AllowedScope[0]); err != nil {
+	if _, err := lm.AcquirePath(ctx, proj.ID, "other-ws", firstPkg.AllowedScope[0]); err != nil {
 		t.Fatalf("AcquirePath: %v", err)
 	}
 	dto2, err := cli.GetWorkGraph(ctx, taskID)

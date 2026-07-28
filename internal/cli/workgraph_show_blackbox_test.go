@@ -153,13 +153,16 @@ func TestWorkGraphShow_BlackBox_CreateShowAndExplainConflict(t *testing.T) {
 
 	// 8. Acquire a path lease for the FIRST package's scope from a different
 	//    workspace, then re-run the show. The verdict must surface the
-	//    explainable cause.
+	//    explainable cause. The lease is scoped to the PROJECT (spec §18.4:
+	//    project-wide resource isolation; MAJOR-1 fix) — the daemon adapter
+	//    resolves the project ID from the task row, so the lease must be
+	//    acquired with proj.ID, not taskID.
 	firstPkg := dto.Packages[0]
 	if len(firstPkg.AllowedScope) == 0 {
 		t.Fatalf("first package has empty AllowedScope; cannot test path-lease conflict")
 	}
 	lm := workgraph.NewLeaseManager(db2)
-	if _, err := lm.AcquirePath(ctx, taskID, "other-ws", firstPkg.AllowedScope[0]); err != nil {
+	if _, err := lm.AcquirePath(ctx, proj.ID, "other-ws", firstPkg.AllowedScope[0]); err != nil {
 		t.Fatalf("AcquirePath: %v", err)
 	}
 	out, _, code = runForge(t, bin, home, "workgraph", "show", "-t", taskID, "--json")

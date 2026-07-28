@@ -73,8 +73,17 @@ func NewScheduler(store *WorkGraphStore, lease *LeaseManager) *Scheduler {
 // transition; the package's AllowedScope is the default PathLeases when
 // PathLeases is nil (mirroring the spec §18.4 contract that a package's
 // allowed scope is leased on its behalf).
+//
+// ProjectID is the project the task belongs to. The lease layer scopes leases
+// to (scope="project", scope_id=ProjectID) so that two work packages in
+// DIFFERENT tasks of the SAME project cannot concurrently lease the same file
+// path or semantic resource (spec §18.4: project-wide resource isolation).
+// The caller must resolve ProjectID from the task's storage row once — the
+// scheduler does not infer it from TaskID (that was the M14-05 MAJOR-1
+// defect: per-task instead of per-project isolation).
 type ClaimRequest struct {
 	TaskID         string
+	ProjectID      string
 	PackageID      string
 	WorkspaceID    string
 	PathLeases     []string // optional override; nil → package.AllowedScope
@@ -102,6 +111,9 @@ func (s *Scheduler) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 	if req.TaskID == "" || req.PackageID == "" {
 		return ClaimResult{}, fmt.Errorf("workgraph: claim: task_id and package_id are required")
 	}
+	if req.ProjectID == "" {
+		return ClaimResult{}, fmt.Errorf("workgraph: claim: project_id is required")
+	}
 	if req.WorkspaceID == "" {
 		return ClaimResult{}, fmt.Errorf("workgraph: claim: workspace_id is required")
 	}
@@ -125,7 +137,7 @@ func (s *Scheduler) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 	if err != nil {
 		return ClaimResult{}, fmt.Errorf("workgraph: claim: load graph: %w", err)
 	}
-	active, err := s.lease.ListActiveByProject(ctx, req.ProjectID())
+	active, err := s.lease.ListActiveByProject(ctx, req.ProjectID)
 	if err != nil {
 		return ClaimResult{}, fmt.Errorf("workgraph: claim: list leases: %w", err)
 	}
@@ -182,12 +194,12 @@ func (s *Scheduler) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 
 func (s *Scheduler) acquireClaim(ctx context.Context, req ClaimRequest, kind LeaseKind, resource string) (Lease, error) {
 	if kind == LeasePath {
-		return s.lease.AcquirePathTTL(ctx, req.ProjectID(), req.WorkspaceID, resource, req.TTL)
+		return s.lease.AcquirePathTTL(ctx, req.ProjectID, req.WorkspaceID, resource, req.TTL)
 	}
 	if !IsValidSemantic(SemanticResource(resource)) {
 		return Lease{}, fmt.Errorf("workgraph: invalid semantic resource %q", resource)
 	}
-	return s.lease.AcquireSemanticTTL(ctx, req.ProjectID(), req.WorkspaceID, SemanticResource(resource), req.TTL)
+	return s.lease.AcquireSemanticTTL(ctx, req.ProjectID, req.WorkspaceID, SemanticResource(resource), req.TTL)
 }
 
 // releaseAllAcquired is the compensating-action path on Claim failure. It is
@@ -206,17 +218,6 @@ func (s *Scheduler) releaseAllAcquired(ctx context.Context, workspaceID string, 
 		}
 	}
 }
-
-// ProjectID returns the project identifier for the request. The lease layer
-// scopes leases to (scope="project", scope_id=projectID). For M14-05 the
-// Claim request is per-task and tasks belong to projects; rather than require
-// every caller to pass both IDs we resolve the project ID via the task's
-// storage row. To keep this leaf scheduler self-contained (no task.Backlog
-// dependency) we treat the TaskID itself as the project scope id; the
-// production daemon's dispatch layer will pass a fully-scoped request via a
-// richer API when it lands. This is honest: the field is named ProjectID and
-// currently sourced from TaskID, and a follow-up tracks the richer scoping.
-func (req ClaimRequest) ProjectID() string { return req.TaskID }
 
 // Renew extends the TTL of every active lease held by workspaceID to now+ttl.
 // Returns the number of leases actually renewed. Idempotent: renewing an
