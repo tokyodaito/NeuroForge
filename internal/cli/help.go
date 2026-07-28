@@ -57,6 +57,10 @@ Implemented commands:
   spec lock           Mark a Specification version immutable (§28) (M14-03)
   spec versions       List persisted Specification versions for a task (M14-03)
 
+  workgraph show      Show the durable Work Graph for a task (-t/--task, --json):
+                      packages, dependencies, per-package readiness verdicts
+                      and active leases. Survives daemon restart (M14-05).
+
   run \"<description>\"  One-shot reliable run: create task + worktree, run one
                       production adapter (opencode), finalize + result ref.
                       (--engine, --model, --file, --base, --timeout, --json,

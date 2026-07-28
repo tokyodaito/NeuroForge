@@ -361,6 +361,94 @@ CREATE TABLE IF NOT EXISTS task_specification_sequences (
 );
 `,
 	},
+	{
+		Version:     9,
+		Description: "create work_packages, work_package_dependencies, work_package_attempts tables and add leases.expires_at (M14-05, durable work graph)",
+		Up: `
+-- Durable Work Graph (spec §18.3, §31, milestone M14-05). One row per work
+-- package, keyed by (task_id, package_id). The graph is reconstructed by
+-- loading every package for a task plus its dependency rows. AC ownership and
+-- allowed scope are JSON columns: they are advisory inputs to the lease layer,
+-- not query keys, so normalising them into rows would add complexity without
+-- value. Attempts are stored as a JSON column on the package for the same
+-- reason (history records, never queried individually).
+--
+-- Only a *workgraph.ValidatedWorkGraph can be persisted (enforced by the
+-- domain store, not the schema), so an invalid DAG cannot become durable
+-- runnable state (M14-04 AC2 carried forward).
+CREATE TABLE IF NOT EXISTS work_packages (
+	task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+	package_id       TEXT NOT NULL,
+	stage            TEXT NOT NULL,
+	title            TEXT NOT NULL DEFAULT '',
+	objective        TEXT NOT NULL,
+	accepted_ac_ids  TEXT NOT NULL DEFAULT '[]',  -- JSON array of stable AC ids
+	allowed_scope    TEXT NOT NULL DEFAULT '[]',  -- JSON array of path prefixes
+	dependencies     TEXT NOT NULL DEFAULT '[]',  -- JSON array of package ids (denormalised for atomic save)
+	state            TEXT NOT NULL DEFAULT 'pending',
+	attempts         TEXT NOT NULL DEFAULT '[]',  -- JSON array of Attempt records
+	graph_version    INTEGER NOT NULL DEFAULT 1,  -- bumped on each replace
+	created_at       TEXT NOT NULL,
+	updated_at       TEXT NOT NULL,
+	PRIMARY KEY (task_id, package_id)
+);
+CREATE INDEX IF NOT EXISTS idx_work_packages_task  ON work_packages (task_id);
+CREATE INDEX IF NOT EXISTS idx_work_packages_state ON work_packages (state);
+
+-- Dependency edges (spec §18.3 DAG). Stored both as a denormalised JSON column
+-- on work_packages (for atomic save/load) and as this normalised table (for
+-- future graph-walk queries without a JSON parse). The two are kept in sync by
+-- WorkGraphStore within a single transaction.
+CREATE TABLE IF NOT EXISTS work_package_dependencies (
+	task_id     TEXT NOT NULL,
+	package_id  TEXT NOT NULL,
+	depends_on  TEXT NOT NULL,
+	PRIMARY KEY (task_id, package_id, depends_on)
+);
+CREATE INDEX IF NOT EXISTS idx_work_package_deps_pkg ON work_package_dependencies (task_id, package_id);
+CREATE INDEX IF NOT EXISTS idx_work_package_deps_dep ON work_package_dependencies (task_id, depends_on);
+
+-- Per-package attempt history (spec §31 "attempts" table). Mirrors the
+-- WorkPackage.Attempts slice as rows so individual attempts are queryable
+-- independently of the package row. package_attempts_seq is the attempt index
+-- within the package (0-based, monotonic).
+CREATE TABLE IF NOT EXISTS work_package_attempts (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id       TEXT NOT NULL,
+	package_id    TEXT NOT NULL,
+	attempt_index INTEGER NOT NULL,
+	state         TEXT NOT NULL,
+	started_at    TEXT NOT NULL,
+	finished_at   TEXT NOT NULL DEFAULT '',
+	failure_reason TEXT NOT NULL DEFAULT '',
+	exit_code     INTEGER NOT NULL DEFAULT 0,
+	agent_run_id  TEXT NOT NULL DEFAULT '',
+	UNIQUE (task_id, package_id, attempt_index)
+);
+CREATE INDEX IF NOT EXISTS idx_work_package_attempts_pkg ON work_package_attempts (task_id, package_id, attempt_index);
+
+-- Forward-compatible TTL column for leases (M14-05). Empty string means "no
+-- expiry" (perpetual until explicitly released), preserving the M3 contract for
+-- pre-existing rows. Non-empty RFC3339Nano timestamp means the lease is
+-- logically expired once that time has passed; the row stays state='active'
+-- until ExpireLeases sweeps it to 'expired', so the expiry transition is
+-- auditable rather than silent.
+ALTER TABLE leases ADD COLUMN expires_at TEXT NOT NULL DEFAULT '';
+
+-- Active-resource uniqueness (M14-05 concurrent-claim race fix). At most one
+-- ACTIVE lease may exist per (scope, scope_id, kind, resource): the SELECT-
+-- then-INSERT pattern in LeaseManager.acquire is otherwise racy under
+-- concurrent claims (two callers can both pass the conflict SELECT and both
+-- succeed at the INSERT). SQLite's partial UNIQUE index plus its single-writer
+-- serialisation make the INSERT the linearisation point — the second writer
+-- blocks on busy_timeout, then receives a UNIQUE violation that
+-- LeaseManager.acquire maps to a typed ConflictError. The "WHERE state =
+-- 'active'" predicate keeps historical rows (released / expired) unconstrained
+-- so the audit/history trail stays append-only.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_unique_active_resource
+ON leases (scope, scope_id, kind, resource) WHERE state = 'active';
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running

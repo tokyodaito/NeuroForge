@@ -45,6 +45,9 @@ type Config struct {
 	// SpecAPI, if set, backs the daemon-mediated Task Compiler endpoints
 	// (/tasks/{id}/specification*). Nil makes those endpoints return 503.
 	SpecAPI SpecAPI
+	// WorkGraphAPI, if set, backs the work-graph inspection endpoint
+	// (GET /tasks/{id}/workgraph). Nil makes that endpoint return 503.
+	WorkGraphAPI WorkGraphAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -126,6 +129,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	s.registerSchedulerRoutes(mux)
 	s.registerRunAppRoutes(mux)
 	s.registerSpecRoutes(mux)
+	s.registerWorkGraphRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{

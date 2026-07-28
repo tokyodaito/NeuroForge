@@ -324,6 +324,16 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		// this case the error would surface as 500, hiding the lock conflict
 		// from clients (M14-03).
 		code = http.StatusConflict
+	case strings.Contains(msg, "lease conflict"):
+		// Lease conflicts (spec §18.4 BLOCKED_LEASE, M14-05) map to 409
+		// Conflict so clients can distinguish "another workspace holds the
+		// resource" from a generic 500.
+		code = http.StatusConflict
+	case strings.Contains(msg, "not ready"):
+		// Readiness violations from the work-graph scheduler surface a 409
+		// (preconditions not met) rather than a 500; the dispatcher / user
+		// can act on the explainable reasons.
+		code = http.StatusConflict
 	case strings.Contains(msg, "is required"):
 		code = http.StatusBadRequest
 	case strings.Contains(msg, "invalid"):

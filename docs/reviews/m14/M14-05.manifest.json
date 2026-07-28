@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "baseline_version": "1",
+  "task_id": "M14-05",
+  "predecessor_task_id": "M14-04",
+  "previous_state": "STARTED",
+  "state": "IMPLEMENTED_TESTED",
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Package not runnable until completion dependencies (ComputeReadiness enforces every dependency state=succeeded; Scheduler.Claim re-checks readiness inside the claim path and refuses with NotReadyError listing the unmet dependency by ID and current state).",
+      "mandatory": true
+    },
+    {
+      "id": "AC2",
+      "description": "Conflicting lease blocks execution with explainable cause (LeaseManager.acquire + ComputeReadiness both produce typed *ConflictError / *NotReadyError whose reasons name the resource, the holding workspace and (when known) the expiry; writeAPIError maps to HTTP 409).",
+      "mandatory": true
+    },
+    {
+      "id": "AC3",
+      "description": "After restart graph and leases recover safely (WorkGraphStore.Save persists via migration v9 substrate; LeaseManager is backed by durable leases table with TTL; re-opening the DB and re-running Migrate is a no-op; the daemon wires Graphs+Leases into Services so GET /tasks/{id}/workgraph recomputes the readiness verdict against the persisted graph + leases).",
+      "mandatory": true
+    }
+  ],
+  "evidence": [
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestReadiness_BlockedByDependency",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestReadiness_UnblocksAfterDependencySucceeds",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestReadiness_TerminalStateNotReady",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestReadiness_Deterministic",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestScheduler_ClaimSuccess",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestScheduler_ClaimBlockedByDependency",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "integration",
+      "reference": "internal/workgraph.TestIntegration_CompileDecomposeSaveReadiness (real task.Compile -> workgraph.Decompose -> WorkGraphStore.Save -> ComputeReadiness; only chain head is ready)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "blackbox",
+      "reference": "internal/cli.TestWorkGraphShow_BlackBox_CreateShowAndExplainConflict step 6 (compiled forge workgraph show lists every package with Readiness: ready for the chain head and Readiness: blocked for the rest, plus dependency-not-succeeded reason in stdout)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestLease_ConflictExplainsCause (errors.Is(err, ErrLeaseConflict) + *ConflictError.Reasons[0] carries resource, workspace and HeldBy)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestLease_TTL_ExpiryReclaim",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestLease_Renew",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestLease_RenewDoesNotAffectPerpetual",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestLease_SweeperIdempotent",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestReadiness_BlockedByPathLease (static path-lease conflict reported with path + workspace)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestScheduler_ClaimBlockedByLeaseConflict (claim fails with cause naming path + workspace; package stays pending)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "unit",
+      "reference": "internal/workgraph.TestScheduler_ClaimSemanticTTL (semantic conflict at acquire time -> ErrLeaseConflict)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "integration",
+      "reference": "internal/daemon.TestWorkGraphAdapter_ShowThroughTransport (in-process transport: lease acquired -> readiness verdict reports blocked with cause)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC2",
+      "level": "blackbox",
+      "reference": "internal/cli.TestWorkGraphShow_BlackBox_CreateShowAndExplainConflict step 8 (compiled forge workgraph show --json exposes the conflicting path AND the holding workspace in the readiness verdict)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "unit",
+      "reference": "internal/workgraph.TestStore_RestartRecoversGraphAndLeases (close DB handle to simulate crash; re-open same file; packages + state + attempts + active leases all survive; re-claim of running package fails)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/workgraph.TestWorkGraphStore_SaveIsIdempotentAndPreservesAttempts (idempotent re-save preserves runtime state + attempts)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "integration",
+      "reference": "internal/workgraph.TestWorkGraphStore_SaveAndLoad (round-trip stability; dependencies + allowed scope survive)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestWorkGraphShow_BlackBox_CreateShowAndExplainConflict step 9 (daemon stop -> daemon start -> forge workgraph show; both the package set AND the active lease survive)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC3",
+      "level": "blackbox",
+      "reference": "internal/cli.TestWorkGraphShow_BlackBox_MigrationV9Applied (compiled-binary: doctor reports schema v9; new tables + leases.expires_at + idx_leases_unique_active_resource present; idempotent across restart)",
+      "status": "passed",
+      "automated": true
+    },
+    {
+      "criterion": "AC1",
+      "level": "unit",
+      "reference": "internal/workgraph.TestScheduler_ConcurrentClaimRace (16 goroutines racing the same package; exactly 1 winner; 15 losers with typed ErrLeaseConflict or ErrPackageNotReady; exactly 1 surviving lease; race detector clean)",
+      "status": "passed",
+      "automated": true
+    }
+  ],
+  "commands": [
+    {
+      "label": "make check",
+      "status": "passed"
+    },
+    {
+      "label": "go test -race ./...",
+      "status": "passed"
+    },
+    {
+      "label": "go test -count=1 ./internal/workgraph/...",
+      "status": "passed"
+    },
+    {
+      "label": "go test -count=1 -run TestWorkGraph ./internal/daemon/ ./internal/cli/",
+      "status": "passed"
+    }
+  ],
+  "actors": {
+    "implementer": "M14-05-impl-session-1"
+  },
+  "reports": {
+    "implementation": "docs/reviews/m14/M14-05_IMPLEMENTATION.md"
+  },
+  "blackbox": {
+    "compiled_binary": "forge",
+    "scenario": "M14-05 ships a full production path: migration v9 + storage substrate + domain WorkGraphStore + Readiness calculator + Scheduler.Claim/Renew/Release/Expire + transport /tasks/{id}/workgraph endpoint + daemon adapter + forge workgraph show CLI. Two compiled-binary black-box tests cover it: (1) TestWorkGraphShow_BlackBox_CreateShowAndExplainConflict drives the production CLI end-to-end through the real daemon: daemon start -> project add -> task add -> spec save (--json) -> seed Work Graph through the daemon's own WorkGraphStore (the dispatch layer that does this internally is a later milestone; here we prove the read path + readiness surface are correct) -> forge workgraph show -t <id> (text) -> forge workgraph show -t <id> --json (machine-readable) -> AcquirePath from a different workspace -> forge workgraph show -t <id> --json (must show blocked + reason naming path + workspace) -> daemon stop -> daemon start (restart recovery) -> forge workgraph show -t <id> --json (graph AND lease survive) -> forge workgraph show -t bogus --json (404 + 'not found'). Every step passed this session against a freshly compiled forge. (2) TestWorkGraphShow_BlackBox_MigrationV9Applied proves the production daemon applies migration v9 (work_packages, work_package_dependencies, work_package_attempts, leases.expires_at, idx_leases_unique_active_resource) and that re-migration is idempotent across a daemon restart (schema version unchanged, tables + UNIQUE index still present). The in-process transport-level evidence (TestWorkGraphAdapter_ShowThroughTransport) exercises the same path through the real loopback transport against the real SQLite driver and the real daemon Run. The mandatory concurrent-claim race test (TestScheduler_ConcurrentClaimRace, 16 goroutines, -race clean) and restart-recovery test (TestStore_RestartRecoversGraphAndLeases, simulated crash via DB close) are unit/integration-level and complement the black-box evidence.",
+    "status": "passed",
+    "exempt": false,
+    "exempt_reason": ""
+  },
+  "remediation_note": "N/A: this is the initial IMPLEMENTED_TESTED manifest for M14-05. No review or remediation has occurred yet.",
+  "git": {
+    "implementation_starting_sha": "56f7107bb08698f448c7afe6388d2e0d51cf6c3c",
+    "implementation_candidate_sha": "this commit (M14-05: durable Work Graph, leases and readiness -- production code and manifest in one commit)"
+  },
+  "predecessor_gate": {
+    "predecessor_task_id": "M14-04",
+    "predecessor_state": "ACCEPTED",
+    "predecessor_manifest": "docs/reviews/m14/M14-04.manifest.json",
+    "gate_next_result": "exit 0"
+  },
+  "accepted_follow_ups": [
+    "FU-M14-05-1: dispatch hook wiring Scheduler.Claim into the daemon's scheduler service",
+    "FU-M14-05-2: daemon endpoints for claim/release lifecycle + matching CLI",
+    "FU-M14-05-3: forge workgraph decompose CLI command",
+    "FU-M14-05-4: per-lease Renew(leaseID, ttl) instead of workspace-scoped RenewAll",
+    "FU-M14-05-5: multi-daemon writer coordination for the Work Graph",
+    "FU-M14-05-6: per-package SemanticNeeds field so the readiness calculator can predict semantic conflicts statically",
+    "FU-M14-05-7: TUI bindings for visualising the work graph",
+    "FU-M14-05-8 (inherited from M14-04 R1): ValidateWorkGraph empty-state-default inconsistency",
+    "FU-M14-05-9: document the M3 lease-race defect this task closed (partial UNIQUE index) in an ADR if the project's ADR conventions require it"
+  ],
+  "implementation_date": "2026-07-28"
+}

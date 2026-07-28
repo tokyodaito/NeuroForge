@@ -73,6 +73,8 @@ func (a *App) Run(args []string) int {
 		return a.runTask(args[1:])
 	case "spec":
 		return a.runSpec(args[1:])
+	case "workgraph":
+		return a.runWorkGraph(args[1:])
 	case "workspace":
 		return a.runWorkspace(args[1:])
 	case "run":

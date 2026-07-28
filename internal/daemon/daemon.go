@@ -134,6 +134,12 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// a compiled specification is reachable through the transport and survives
 	// daemon restart.
 	specAdapter := newSpecAPIAdapter(services)
+	// 4a-3. Daemon-mediated Work-Graph inspection adapter (M14-05): wraps the
+	// WorkGraphStore + LeaseManager + ComputeReadiness so a single
+	// GET /tasks/{id}/workgraph round-trip returns the graph and its
+	// dispatchability map. Durable state (graph + leases) survives daemon
+	// restart (mandatory AC).
+	workGraphAdapter := newWorkGraphAPIAdapter(services)
 
 	// 4b. Lease manager + supervisor (M3, spec §17/§18/§12).
 	// The workspace manager was created at step 2a (before reconciliation).
@@ -210,6 +216,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		SchedulerAPI:      schedAdapter,
 		RunAppAPI:         runAppAdapter,
 		SpecAPI:           specAdapter,
+		WorkGraphAPI:      workGraphAdapter,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)

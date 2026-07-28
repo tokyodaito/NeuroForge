@@ -11,6 +11,7 @@ import (
 	"neuroforge/internal/storage"
 	"neuroforge/internal/task"
 	"neuroforge/internal/transport"
+	"neuroforge/internal/workgraph"
 )
 
 // Services bundles the domain services that the daemon wires to the transport
@@ -20,6 +21,8 @@ type Services struct {
 	Projects *project.Registry
 	Tasks    *task.Backlog
 	Specs    *task.SpecificationStore
+	Graphs   *workgraph.WorkGraphStore
+	Leases   *workgraph.LeaseManager
 	Bus      *transport.Bus
 }
 
@@ -29,6 +32,8 @@ func NewServices(db *storage.DB, rec *audit.Recorder, artifactsDir string, bus *
 		Projects: project.NewRegistry(db, rec, logger),
 		Tasks:    task.NewBacklog(db, rec, artifactsDir, logger),
 		Specs:    task.NewSpecificationStore(db, rec, logger),
+		Graphs:   workgraph.NewWorkGraphStore(db, rec, logger),
+		Leases:   workgraph.NewLeaseManager(db),
 		Bus:      bus,
 	}
 }
