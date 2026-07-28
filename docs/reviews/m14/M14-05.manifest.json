@@ -3,8 +3,8 @@
   "baseline_version": "1",
   "task_id": "M14-05",
   "predecessor_task_id": "M14-04",
-  "previous_state": "STARTED",
-  "state": "IMPLEMENTED_TESTED",
+  "previous_state": "REVIEW_APPROVED",
+  "state": "ACCEPTED",
   "criteria": [
     {
       "id": "AC1",
@@ -211,10 +211,16 @@
     }
   ],
   "actors": {
-    "implementer": "M14-05-impl-session-1"
+    "implementer": "M14-05-impl-session-1",
+    "reviewer": "M14-05-review-session-1",
+    "remediator": "M14-05-major1-remediation-session",
+    "acceptor": "M14-05-accept-session-1"
   },
   "reports": {
-    "implementation": "docs/reviews/m14/M14-05_IMPLEMENTATION.md"
+    "implementation": "docs/reviews/m14/M14-05_IMPLEMENTATION.md",
+    "review": "docs/reviews/m14/M14-05_REVIEW.md",
+    "remediation": "docs/reviews/m14/M14-05_MAJOR1_REMEDIATION.md",
+    "acceptance": "docs/reviews/m14/M14-05_ACCEPTANCE.md"
   },
   "blackbox": {
     "compiled_binary": "forge",
@@ -223,10 +229,10 @@
     "exempt": false,
     "exempt_reason": ""
   },
-  "remediation_note": "N/A: this is the initial IMPLEMENTED_TESTED manifest for M14-05. No review or remediation has occurred yet.",
+  "remediation_note": "Candidate advanced from the original implementation candidate eb1843043f5b7a122c24b7a3b8c23da43956404b to the remediated candidate c4b925c6c45a578ed9ddd5ec77ff8271cc8c135d after MAJOR-1 (cross-task lease isolation defect: ClaimRequest.ProjectID() returned TaskID, weakening spec section 18.4 from per-project to per-task scoping) was fixed. The fix made ClaimRequest.ProjectID an explicit field, deleted the misleading ProjectID() shim, made Scheduler.Claim use req.ProjectID for all three lease operations (and reject an empty one), and made the daemon adapter resolve projectID from the task row once. The new regression test TestScheduler_CrossTaskLeaseConflict_ProjectScoped proves cross-task isolation and was verified to FAIL when the fix is reverted. An independent re-review of the MAJOR-1 fix returned REVIEW_APPROVED. The five MINOR findings from M14-05_REVIEW.md remain tracked as follow-ups (MINOR-5, the manifest-SHA sentence, is closed by this acceptance).",
   "git": {
     "implementation_starting_sha": "56f7107bb08698f448c7afe6388d2e0d51cf6c3c",
-    "implementation_candidate_sha": "this commit (M14-05: durable Work Graph, leases and readiness -- production code and manifest in one commit)"
+    "implementation_candidate_sha": "c4b925c6c45a578ed9ddd5ec77ff8271cc8c135d"
   },
   "predecessor_gate": {
     "predecessor_task_id": "M14-04",
