@@ -279,10 +279,24 @@ func (s *PipelineService) verifyWorktree(ctx context.Context, taskID string, ws 
 			ChangedFiles:  insp.ChangedFiles,
 		})
 		if rerr != nil {
+			if errors.Is(rerr, context.Canceled) {
+				// Caller cancellation (SIGINT on `forge run` / API cancel)
+				// interrupted verification: classify honestly as cancelled —
+				// matching the execute handler — never as an invariant
+				// violation (review finding M6).
+				return results, false, "", s.interruptedOrCancelledError(taskID, "verification cancelled")
+			}
 			return results, false, "", &pipeline.StageError{
 				Category: pipeline.FailureInvariantViolation,
 				Reason:   fmt.Sprintf("verification level %s: %v", lvl, rerr),
 			}
+		}
+		if ctx.Err() != nil {
+			// The caller cancelled while this level ran: the shell runner
+			// reports the killed command as a failed level, which would be
+			// misclassified as a test/compile failure (and drive a bogus
+			// repair). Cancellation is not a verification verdict (M6).
+			return results, false, "", s.interruptedOrCancelledError(taskID, "verification cancelled")
 		}
 		res.Level = lvl
 		results = append(results, res)
@@ -633,18 +647,7 @@ func (s *PipelineService) recordUsage(ctx context.Context, taskID string, params
 // estop from a user cancel without losing the run.
 func (s *PipelineService) agentOutcomeError(ctx context.Context, taskID string, res supervisor.RunResult) error {
 	if res.Cancelled {
-		if on, reason, err := s.store.EmergencyStop(context.Background()); err == nil && on {
-			if reason == "" {
-				reason = "emergency stop engaged"
-			}
-			return &pipeline.StageError{Category: pipeline.FailureInterrupted, Reason: reason}
-		}
-		if err := s.store.Cancel(context.Background(), taskID, "cancelled"); err != nil {
-			s.logger.Warn("pipeline: cancel after agent cancellation failed", "task", taskID, "err", err)
-		}
-		// The run is terminal now; the driver's failStage will observe
-		// ErrRunTerminal and Drive returns nil with the cancelled outcome durable.
-		return errors.New("pipeline: run cancelled")
+		return s.interruptedOrCancelledError(taskID, "cancelled")
 	}
 	if res.Failed {
 		cat := categoryForFailureClass(res.Outcome.Failure)
@@ -655,6 +658,26 @@ func (s *PipelineService) agentOutcomeError(ctx context.Context, taskID string, 
 		return &pipeline.StageError{Category: cat, Reason: reason}
 	}
 	return nil
+}
+
+// interruptedOrCancelledError implements the cancel-vs-estop decision shared
+// by agent-run cancellation and verification interruption (SIGINT): with the
+// emergency stop on, the stage fails as `interrupted` (the driver parks the
+// run; it resumes on estop-off/restart); otherwise the run is cancelled
+// durably (Store.Cancel) and a plain error ends the drive — the driver's
+// failStage observes ErrRunTerminal and Drive returns nil with the cancelled
+// outcome durable.
+func (s *PipelineService) interruptedOrCancelledError(taskID, reason string) error {
+	if on, estopReason, err := s.store.EmergencyStop(context.Background()); err == nil && on {
+		if estopReason == "" {
+			estopReason = "emergency stop engaged"
+		}
+		return &pipeline.StageError{Category: pipeline.FailureInterrupted, Reason: estopReason}
+	}
+	if err := s.store.Cancel(context.Background(), taskID, reason); err != nil {
+		s.logger.Warn("pipeline: cancel after interruption failed", "task", taskID, "err", err)
+	}
+	return errors.New("pipeline: run cancelled")
 }
 
 // categoryForFailureClass maps the adapter failure taxonomy (spec §32) onto

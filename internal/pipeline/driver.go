@@ -207,8 +207,10 @@ func (d *Driver) Drive(ctx context.Context, taskID string) error {
 				continue
 			case errors.Is(err, ErrRunTerminal):
 				// A concurrent Cancel/SetRunState won the race while the
-				// handler ran; the outcome is already durable.
-				run, rerr := d.store.CurrentRun(ctx, taskID)
+				// handler ran; the outcome is already durable. Read on a
+				// detached context: the caller's ctx may already be cancelled
+				// (SIGINT) and must not mask the terminal outcome.
+				run, rerr := d.store.CurrentRun(context.WithoutCancel(ctx), taskID)
 				if rerr == nil && IsTerminalRunState(run.State) {
 					return nil
 				}
@@ -416,9 +418,19 @@ func (d *Driver) runRepair(ctx context.Context, rc *RunContext) error {
 // re-drives it once the conflicting lease is released or expires); anything
 // else fails it.
 func (d *Driver) failStage(ctx context.Context, rc *RunContext, herr error) error {
+	// Terminal persistence must complete even when the caller went away
+	// (SIGINT cancels the run's ctx; BF-02 semantics — the daemon finishes the
+	// durable record on a detached context, exactly like settleRun).
+	pctx := context.WithoutCancel(ctx)
 	category, reason := categorizeError(herr)
-	if err := d.store.FailStage(ctx, rc.TaskID, rc.Stage, category, reason, ""); err != nil {
+	if err := d.store.FailStage(pctx, rc.TaskID, rc.Stage, category, reason, ""); err != nil {
 		return err
+	}
+	// The handler may have made the run terminal itself (durable cancel on
+	// SIGINT — the failed record above is then an idempotent no-op). Routing a
+	// terminal run is done: report ErrRunTerminal so Drive settles it.
+	if run, rerr := d.store.CurrentRun(pctx, rc.TaskID); rerr == nil && IsTerminalRunState(run.State) {
+		return fmt.Errorf("pipeline: fail stage %s for task %s: %w", rc.Stage, rc.TaskID, ErrRunTerminal)
 	}
 	if category == FailureInterrupted {
 		// Park, don't fail (NF-FAULT-1): an interrupted stage (emergency stop)
@@ -441,7 +453,7 @@ func (d *Driver) failStage(ctx context.Context, rc *RunContext, herr error) erro
 	if category == FailureLeaseLost && rc.Stage == StageReady {
 		to = RunBlocked
 	}
-	return d.store.SetRunState(ctx, rc.TaskID, RunStateChange{To: to, Reason: reason})
+	return d.store.SetRunState(pctx, rc.TaskID, RunStateChange{To: to, Reason: reason})
 }
 
 // enterRepair consumes one repair attempt and moves the run to the repair
