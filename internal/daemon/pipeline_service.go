@@ -61,7 +61,7 @@ type PipelineService struct {
 	sup      *supervisor.Supervisor
 	fin      *runapp.Service
 	usage    runapp.UsageSink
-	runner   *testengine.ShellRunner
+	runner   testengine.Runner
 	reviewer review.Reviewer // nil → AgentReviewer over the supervisor
 	rec      *audit.Recorder
 	logger   *slog.Logger
@@ -91,6 +91,8 @@ type PipelineDeps struct {
 	Usage    runapp.UsageSink
 	// Reviewer, when non-nil, overrides the default AgentReviewer (tests).
 	Reviewer review.Reviewer
+	// Runner, when non-nil, overrides the default ShellRunner (tests).
+	Runner testengine.Runner
 }
 
 // NewPipelineService builds the durable pipeline service: Store + Driver with
@@ -119,7 +121,7 @@ func NewPipelineService(deps PipelineDeps) (*PipelineService, error) {
 		wm:        deps.WM,
 		sup:       deps.Sup,
 		usage:     deps.Usage,
-		runner:    testengine.NewShellRunner(testengine.ShellRunnerOptions{Logger: logger}),
+		runner:    deps.Runner,
 		reviewer:  deps.Reviewer,
 		rec:       deps.Recorder,
 		logger:    logger,
@@ -128,6 +130,9 @@ func NewPipelineService(deps PipelineDeps) (*PipelineService, error) {
 		cancels:   map[string]context.CancelFunc{},
 		driving:   map[string]bool{},
 		lastFin:   map[string]runapp.FinalizeResult{},
+	}
+	if s.runner == nil {
+		s.runner = testengine.NewShellRunner(testengine.ShellRunnerOptions{Logger: logger})
 	}
 	s.fin = runapp.NewService(runapp.Options{
 		Workspaces: deps.WM,

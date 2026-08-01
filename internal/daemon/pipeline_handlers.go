@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -251,32 +252,66 @@ var verifyLevels = []testengine.VerificationLevel{
 // handleVerify runs the progressive verification cascade in the worktree and
 // maps the first failing level to a failure category. Verification never
 // mutates the worktree (ShellRunner guarantee).
+//
+// Flake guard (module level only): timing-sensitive tests occasionally fail
+// under load and pass on re-run — without a guard each flake burned a repair
+// cycle "fixing" infrastructure noise. When the module level fails and every
+// failure is attributable to a concrete test package, the handler re-runs
+// `go test -count=1` for exactly those packages ONCE; a passing re-run
+// verdicts the level passed and records a flake_retry entry in the evidence.
 func (s *PipelineService) handleVerify(ctx context.Context, rc *pipeline.RunContext) (bool, string, pipeline.FailureCategory, error) {
 	_, ws, err := s.runTarget(ctx, rc)
 	if err != nil {
 		return false, "", "", err
 	}
-	results, passed, category, err := s.verifyWorktree(ctx, rc.TaskID, ws)
+	out, err := s.verifyWorktree(ctx, rc.TaskID, ws)
 	if err != nil {
 		return false, "", "", err
 	}
-	evidence := s.evidenceJSON(ctx, rc.TaskID, "verify", results)
+	evidence := s.evidenceJSON(ctx, rc.TaskID, "verify", verifyEvidence{Results: out.results, FlakeRetry: out.retry})
 	status := "completed"
-	if !passed {
+	if !out.passed {
 		status = "failed"
 	}
-	s.auditStage(ctx, rc, status, evidence, string(category))
-	return passed, evidence, category, nil
+	s.auditStage(ctx, rc, status, evidence, string(out.category))
+	return out.passed, evidence, out.category, nil
+}
+
+// verifyOutcome is the result of the verification cascade: the per-level
+// results (including the flake re-run, when one happened), the aggregate
+// verdict, the mapped failure category of the first failure and the flake
+// re-run record for the evidence payload.
+type verifyOutcome struct {
+	results  []testengine.Result
+	passed   bool
+	category pipeline.FailureCategory
+	retry    *flakeRetryEvidence
+}
+
+// verifyEvidence is the persisted verify-stage evidence payload.
+type verifyEvidence struct {
+	Results []testengine.Result `json:"results"`
+	// FlakeRetry is set when a failed module level was re-run per-package
+	// exactly once (flake guard).
+	FlakeRetry *flakeRetryEvidence `json:"flake_retry,omitempty"`
+}
+
+// flakeRetryEvidence records the single module-level flake re-run: the
+// retried packages, the original failure messages and the retry verdict.
+type flakeRetryEvidence struct {
+	Packages         []string `json:"packages"`
+	OriginalFailures []string `json:"original_failures"`
+	Passed           bool     `json:"passed"`
 }
 
 // verifyWorktree runs the cascade and returns the per-level results, the
 // aggregate verdict and the mapped failure category of the first failure.
-func (s *PipelineService) verifyWorktree(ctx context.Context, taskID string, ws *workspace.Workspace) ([]testengine.Result, bool, pipeline.FailureCategory, error) {
+func (s *PipelineService) verifyWorktree(ctx context.Context, taskID string, ws *workspace.Workspace) (verifyOutcome, error) {
+	var out verifyOutcome
 	insp, err := s.wm.InspectWorktree(ctx, *ws)
 	if err != nil {
-		return nil, false, "", &pipeline.StageError{Category: pipeline.FailureWorktree, Reason: err.Error()}
+		return out, &pipeline.StageError{Category: pipeline.FailureWorktree, Reason: err.Error()}
 	}
-	var results []testengine.Result
 	for _, lvl := range verifyLevels {
 		res, rerr := s.runner.Run(ctx, testengine.RunRequest{
 			Level:         lvl,
@@ -289,9 +324,9 @@ func (s *PipelineService) verifyWorktree(ctx context.Context, taskID string, ws 
 				// interrupted verification: classify honestly as cancelled —
 				// matching the execute handler — never as an invariant
 				// violation (review finding M6).
-				return results, false, "", s.interruptedOrCancelledError(taskID, "verification cancelled")
+				return out, s.interruptedOrCancelledError(taskID, "verification cancelled")
 			}
-			return results, false, "", &pipeline.StageError{
+			return out, &pipeline.StageError{
 				Category: pipeline.FailureInvariantViolation,
 				Reason:   fmt.Sprintf("verification level %s: %v", lvl, rerr),
 			}
@@ -301,16 +336,110 @@ func (s *PipelineService) verifyWorktree(ctx context.Context, taskID string, ws 
 			// reports the killed command as a failed level, which would be
 			// misclassified as a test/compile failure (and drive a bogus
 			// repair). Cancellation is not a verification verdict (M6).
-			return results, false, "", s.interruptedOrCancelledError(taskID, "verification cancelled")
+			return out, s.interruptedOrCancelledError(taskID, "verification cancelled")
 		}
 		res.Level = lvl
-		results = append(results, res)
+		out.results = append(out.results, res)
 		if res.Status == testengine.StatusFailed {
-			return results, false, categoryForLevel(lvl, res), nil
+			if lvl == testengine.LevelModule {
+				if retried, rerr := s.flakeRetry(ctx, taskID, ws, res, &out); retried || rerr != nil {
+					return out, rerr
+				}
+			}
+			out.category = categoryForLevel(lvl, res)
+			return out, nil
 		}
 		// passed/skipped: continue the cascade.
 	}
-	return results, true, "", nil
+	out.passed = true
+	return out, nil
+}
+
+// flakeRetry performs the single allowed module-level flake re-run: when
+// every failure of the module run is attributable to a concrete test package,
+// it re-runs `go test -count=1` for exactly those packages once and records
+// the attempt in out.retry (both attempts stay in out.results). It reports
+// whether a retry happened; a retry error is returned like any level error.
+func (s *PipelineService) flakeRetry(ctx context.Context, taskID string, ws *workspace.Workspace, moduleRes testengine.Result, out *verifyOutcome) (bool, error) {
+	pkgs := flakeRetryPackages(moduleRes)
+	if len(pkgs) == 0 {
+		return false, nil // unattributed or vet failures are not flake candidates
+	}
+	out.retry = &flakeRetryEvidence{
+		Packages:         pkgs,
+		OriginalFailures: failureMessages(moduleRes.Failures),
+	}
+	retryRes, rerr := s.runner.Run(ctx, testengine.RunRequest{
+		Level:         testengine.LevelModule,
+		WorkspacePath: ws.Path,
+		RetryPackages: pkgs,
+	})
+	if rerr != nil {
+		if errors.Is(rerr, context.Canceled) {
+			return true, s.interruptedOrCancelledError(taskID, "verification cancelled")
+		}
+		return true, &pipeline.StageError{
+			Category: pipeline.FailureInvariantViolation,
+			Reason:   fmt.Sprintf("verification level module (package retry): %v", rerr),
+		}
+	}
+	if ctx.Err() != nil {
+		// Same M6 rule as the main cascade: a caller cancellation mid-retry is
+		// not a verification verdict.
+		return true, s.interruptedOrCancelledError(taskID, "verification cancelled")
+	}
+	retryRes.Level = testengine.LevelModule
+	out.results = append(out.results, retryRes)
+	out.retry.Passed = retryRes.Status == testengine.StatusPassed
+	if out.retry.Passed {
+		// Flake confirmed: the module level is treated as passed. The original
+		// failure stays in the evidence via out.retry.OriginalFailures.
+		out.passed = true
+		return true, nil
+	}
+	out.category = categoryForLevel(testengine.LevelModule, moduleRes)
+	return true, nil
+}
+
+// flakeRetryPackages extracts the distinct failing packages from a failed
+// module-level result, or nil when the failure is not a flake candidate: a
+// re-run is only allowed when every failure is attributable to a concrete
+// test package. A go vet entry or an unattributed failure is a
+// static-analysis/compile problem a test re-run cannot fix.
+func flakeRetryPackages(res testengine.Result) []string {
+	if len(res.Failures) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var pkgs []string
+	for _, f := range res.Failures {
+		if f.Package == "" || f.Package == "go vet" {
+			return nil
+		}
+		if _, ok := seen[f.Package]; !ok {
+			seen[f.Package] = struct{}{}
+			pkgs = append(pkgs, f.Package)
+		}
+	}
+	sort.Strings(pkgs)
+	return pkgs
+}
+
+// failureMessages renders the original module-level failure messages for the
+// flake_retry evidence (package-qualified where attribution exists).
+func failureMessages(fs []testengine.TestFailure) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		msg := f.Message
+		if msg == "" {
+			msg = f.TestName
+		}
+		if f.Package != "" {
+			msg = f.Package + ": " + msg
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 // categoryForLevel maps a failing verification level to the pipeline failure
@@ -503,11 +632,11 @@ func (s *PipelineService) buildRepairPrompt(ctx context.Context, rc *pipeline.Ru
 			findings = repair.FromReviewFindings(res.Findings)
 		}
 	} else {
-		results, _, _, verr := s.verifyWorktree(ctx, rc.TaskID, ws)
+		out, verr := s.verifyWorktree(ctx, rc.TaskID, ws)
 		if verr != nil {
 			return "", verr
 		}
-		findings = repair.FromTestFailures(results)
+		findings = repair.FromTestFailures(out.results)
 	}
 	if len(findings) == 0 {
 		// Nothing actionable re-derived (e.g. the state moved on): fall back to
