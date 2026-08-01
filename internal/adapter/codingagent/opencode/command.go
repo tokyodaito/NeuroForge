@@ -16,7 +16,8 @@ import (
 //
 // Values that become flag ARGUMENTS (model, session id) are validated: a value
 // starting with '-' would be parsed as a flag by the opencode CLI (option
-// injection, review finding M4) and is rejected with a clear error.
+// injection, review finding M4) and is rejected with a clear error. The prompt
+// positional is separated from the flags by `--` for the same reason.
 //
 // `--share` is NEVER emitted: NeuroForge-managed runs are never shared.
 func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) ([]string, error) {
@@ -48,11 +49,15 @@ func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) ([]stri
 	}
 	// Prompt: prefer an inline prompt, fall back to a prompt file path. When
 	// neither is set, no message argument is emitted (opencode reads none).
+	// The positional is preceded by the `--` end-of-options separator
+	// (supported by opencode's yargs parser, verified against 1.18.11) so a
+	// prompt beginning with '-' reaches the CLI verbatim instead of being
+	// parsed as a flag (option injection, review follow-up N4).
 	switch {
 	case strings.TrimSpace(req.Prompt) != "":
-		argv = append(argv, req.Prompt)
+		argv = append(argv, "--", req.Prompt)
 	case strings.TrimSpace(req.PromptFile) != "":
-		argv = append(argv, req.PromptFile)
+		argv = append(argv, "--", req.PromptFile)
 	}
 	return argv, nil
 }

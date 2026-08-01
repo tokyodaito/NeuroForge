@@ -13,7 +13,7 @@ func TestBuildArgvBasic(t *testing.T) {
 	argv := mustArgv(t, a, protocol.AgentRunRequest{
 		Workspace: "/ws", Model: "anthropic/claude-x", Prompt: "do the thing",
 	}, false)
-	want := []string{"/usr/bin/opencode", "run", "--format", "json", "--dir", "/ws", "--model", "anthropic/claude-x", "--agent", "build", "do the thing"}
+	want := []string{"/usr/bin/opencode", "run", "--format", "json", "--dir", "/ws", "--model", "anthropic/claude-x", "--agent", "build", "--", "do the thing"}
 	if !eqSlice(argv, want) {
 		t.Errorf("argv = %v\nwant    %v", argv, want)
 	}
@@ -206,6 +206,28 @@ func TestBuildArgvRejectsFlagInjection(t *testing.T) {
 		Workspace: "/w", Model: "p/m", Prompt: "hi", SessionID: "",
 	}, true); err != nil {
 		t.Errorf("empty session id on resume must not error: %v", err)
+	}
+}
+
+// TestBuildArgvDashLeadingPrompt (N4): a prompt beginning with '-' must reach
+// the opencode CLI verbatim as the message positional — never parsed as a
+// flag. The `--` end-of-options separator (supported by opencode's yargs
+// parser, verified against 1.18.11) guarantees that.
+func TestBuildArgvDashLeadingPrompt(t *testing.T) {
+	a := New(Options{Binary: "opencode"})
+	argv := mustArgv(t, a, protocol.AgentRunRequest{
+		Workspace: "/w", Model: "p/m", Prompt: "--help me fix this",
+	}, false)
+	// The prompt follows the `--` separator as the final token, verbatim.
+	if len(argv) < 2 || argv[len(argv)-2] != "--" || argv[len(argv)-1] != "--help me fix this" {
+		t.Errorf("dash-leading prompt not shielded by --: %v", argv)
+	}
+	// Same for the prompt-file fallback.
+	argv = mustArgv(t, a, protocol.AgentRunRequest{
+		Workspace: "/w", Model: "p/m", PromptFile: "-weird-name.txt",
+	}, false)
+	if len(argv) < 2 || argv[len(argv)-2] != "--" || argv[len(argv)-1] != "-weird-name.txt" {
+		t.Errorf("dash-leading prompt file not shielded by --: %v", argv)
 	}
 }
 

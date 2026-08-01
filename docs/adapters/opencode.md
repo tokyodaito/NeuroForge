@@ -35,7 +35,7 @@ spaces/Unicode are handled natively):
   --agent <profile> \             # Options.Agent, if set
   [--session <id>] \              # resume only, version-gated
   [Options.ExtraArgs...] \
-  <prompt | prompt-file>          # inline prompt preferred, else prompt file
+  -- <prompt | prompt-file>       # `--` shields dash-leading prompts; inline preferred, else prompt file
 ```
 
 Only documented OpenCode `run` flags are used. Flags that are **never** passed:
