@@ -33,3 +33,4 @@ an ADR with a new one rather than rewriting it.
 | [0017](0017-postmerge-sentinel-and-auto-revert.md) | Post-merge sentinel & auto-revert behind the merge authority | Accepted | §4.4, §37, §28 |
 | [0018](0018-bootstrap-confirmation-gate.md) | Bootstrap safety — explicit confirmation over the installer abstraction | Accepted | §7, §36.17–§36.19 |
 | [0019](0019-minimal-run-stabilization.md) | Minimal reliable run (`forge run`) stabilization | Proposed | §3.2, §11.4, §17, §29, §36.13–§36.14, AC-7, AC-8, AC-27, AC-28 |
+| [0020](0020-linux-only-platform.md) | Linux-only platform; WSL2 for Windows hosts | Accepted | header (target OS), §7, §29 |

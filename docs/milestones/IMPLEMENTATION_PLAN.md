@@ -414,7 +414,7 @@ DoD:           Definition of Done (rule §36.25: no fake stubs).
   each satisfying the 13-method `codingagent.Adapter` surface at protocol v1 and
   passing the §13.3 conformance suite offline against recorded byte-stream
   fixtures. See the "Milestone M4/M5" section of the compliance matrix for the
-  full coverage/security/Windows-correctness notes.
+  full coverage/security notes.
 
 ---
 

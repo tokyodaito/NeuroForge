@@ -17,27 +17,17 @@ into the protocol-v1 normalized event set.
 
 `Detect` resolves the `claude` executable and runs `claude --version`.
 
-- Resolution uses `exec.LookPath` first, then a manual `PATH` + `PATHEXT`
-  fallback ([`searchPathExt`]) that also covers **npm shims** (`.cmd` / `.bat` on
-  Windows, bare scripts on unix). `PATHEXT` is honoured case-insensitively.
+- Resolution uses `exec.LookPath` (which also finds bare npm shims).
 - Spaces and Unicode in `PATH` entries / the resolved path are tolerated.
 - An explicit `Options.BinaryPath` bypasses resolution.
 - `Version().ProtocolVersion == 1` always; `Version().EngineVersion` is the
   parsed `claude --version` semver (best-effort).
 
-### Windows specifics
-
-`.exe`, `.cmd`, `.bat` and npm shims are all found via `PATHEXT`. No Unix signals,
-no `/bin/sh`, no negative PIDs, no hardcoded `/tmp` (`os.TempDir()` is used). The
-shared `proctree` package is used verbatim for process handling — this adapter
-never reimplements Windows process creation or termination.
-
 ## Command shape (headless argv)
 
 Built by `buildArgv`, a pure function of `(Options, AgentRunRequest, isResume)`.
 The prompt text **never** appears in argv (it is piped via stdin by default), so
-argv is stable regardless of prompt size — important on Windows where
-`CreateProcess` caps the command line near 32 000 characters.
+argv is stable regardless of prompt size.
 
 ```
 <bin> -p --output-format stream-json --verbose
@@ -156,8 +146,8 @@ unbounded retry** (rule §32).
 ## Cancellation & timeout
 
 - `Cancel()` marks the run cancelled, cancels its context, and kills the **whole
-  process group** via `proctree.KillGroup` (Windows: `CREATE_NEW_PROCESS_GROUP` +
-  `taskkill /T /F`; unix: `setpgid` + negative-pgid signal). It then emits
+  process group** via `proctree.KillGroup` (`setpgid` + negative-pgid
+  signal). It then emits
   `run.cancelled`. Descendants are never orphaned.
 - `AgentRunRequest.Timeout` (when > 0) fires a natural wall-clock deadline: on
   expiry the group is killed and `run.failed` (`TIMEOUT`) is emitted. Explicit
@@ -169,8 +159,8 @@ unbounded retry** (rule §32).
 ## Security (spec §29.2, AC-28)
 
 - **Allowlisted environment only.** The child receives a fixed baseline
-  (`PATH`, `HOME`, `USERPROFILE`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SystemRoot`,
-  `TEMP`, `TMP`, `PATHEXT`) plus the caller's `AgentRunRequest.AllowlistEnv`. The
+  (`PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`) plus the caller's
+  `AgentRunRequest.AllowlistEnv`. The
   adapter never injects credentials itself; the supervisor allowlists any provider
   credential (e.g. an API key) it wants the agent to see.
 - **Forbidden tokens are dropped** from `AllowlistEnv` even if the caller

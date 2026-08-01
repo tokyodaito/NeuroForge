@@ -35,9 +35,8 @@ registry.MustRegister(a, 100)
 `Detect(ctx)` resolves the Codex binary with `exec.LookPath("codex")` and runs
 `codex --version`. The result is cached for the adapter's lifetime.
 
-- On Windows, `exec.LookPath` honours `PATHEXT`, so `.exe`, `.cmd`, `.bat` and
-  PowerShell shims are found transparently. npm global installs surface as
-  `codex.cmd` shims and are detected the same way.
+- npm global installs surface as bare shim scripts and are detected the same
+  way.
 - Paths containing spaces and Unicode characters are handled (argv-only process
   spawn — no shell, no quoting).
 - A binary that resolves but cannot be launched (e.g. not executable) is reported
@@ -153,12 +152,11 @@ produces an unbounded retry (rule §32). Timeout (via `req.Timeout`) emits
 
 ## Process execution & cancellation
 
-- Codex is spawned in its own process group via `proctree.NewGroupCommand`. On
-  Windows this uses `CREATE_NEW_PROCESS_GROUP`; `Cancel` tears the whole tree
-  down via `taskkill /T /F` (spec: cancellation ends the whole process group,
-  never orphaning descendants).
+- Codex is spawned in its own process group via `proctree.NewGroupCommand`;
+  `Cancel` tears the whole tree down via a negative-pgid signal (spec:
+  cancellation ends the whole process group, never orphaning descendants).
 - The agent process receives an **allowlisted** environment only (§29.2, AC-28):
-  `PATH/HOME/USER/USERPROFILE/LANG/LC_ALL/TERM/SystemRoot/TEMP/TMP/...` plus
+  `PATH/HOME/USER/LANG/LC_ALL/TERM/TEMP/TMP/...` plus
   `AgentRunRequest.AllowlistEnv`. Forbidden prefixes (`GITHUB_TOKEN`,
   `OPENAI_API_KEY`, `NEUROFORGE_DAEMON_TOKEN`, …) are rejected even if they appear
   in the allowlist by mistake (defence-in-depth; mirrors
@@ -174,15 +172,14 @@ strips `sk-…`, `ghp_…`, `bearer <token>`, and `…KEY=…` / `…TOKEN=…` 
 replacing them with `[REDACTED]`. This is defence-in-depth on top of the
 allowlisted environment.
 
-## Windows notes
+## Platform notes
 
-- Detection: `exec.LookPath` + `PATHEXT`; `.exe`/`.cmd`/`.bat` and npm shims.
-- Spawn: `CREATE_NEW_PROCESS_GROUP`; cancellation via `taskkill /T /F`.
+- Detection: `exec.LookPath`; bare npm shim scripts resolve transparently.
+- Spawn: dedicated process group; cancellation via a negative-pgid signal.
 - Stream parsing tolerates CRLF line endings and a leading UTF-8 BOM.
 - argv-only: no shell quoting, no `/bin/sh`; spaces and Unicode paths are safe.
 - Env keys are de-duplicated case-insensitively.
-- Temp paths use `os.TempDir()` (no hard-coded `/tmp`); artifact files are joined
-  with `filepath.Join`.
+- On a Windows host, run inside WSL2 (see `docs/platforms/WSL2.md`).
 - No Unix signals, no negative PIDs, no assumptions about Unix permission bits.
 - Process-tree management is delegated entirely to the shared `proctree` package.
 
@@ -209,12 +206,12 @@ These are **not** provided and are marked rather than disguised (rule §36.25):
 
 ## Testing
 
-- Unit tests cover every capability: detection (missing / `.cmd` / `.bat` / `.exe`
-  / shim / PATHEXT / Unicode / spaces / caching), version parse, command-builder
+- Unit tests cover every capability: detection (missing / shim / Unicode /
+  spaces / caching), version parse, command-builder
   determinism, parser (well-formed / malformed / partial-line / unknown-event /
   CRLF / BOM / no-64KiB-cap), usage mapping + confidence, failure classification
   per class, cancellation kills the group, timeout, session extraction, secret
-  redaction, Windows path handling, env allowlist + AC-28.
+  redaction, path handling, env allowlist + AC-28.
 - `conformance_test.go` runs the full §13.3 conformance suite through the
   deterministic `Runner` seam (all nine checks pass offline; no real Codex, no
   paid call).

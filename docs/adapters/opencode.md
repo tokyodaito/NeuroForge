@@ -14,9 +14,8 @@ and is constructed via `opencode.New(opts)` — it does **not** self-register.
 `Detect` resolves the engine runtime in this order:
 
 1. `Options.Binary`, if set (used verbatim — tolerates spaces and Unicode).
-2. `exec.LookPath("opencode")`, which on Windows honours `PATHEXT` and so finds
-   the `.exe`, `.cmd` and `.bat` shims produced by npm-style installers, as well
-   as bare scripts on Unix.
+2. `exec.LookPath("opencode")`, which finds the binary and bare scripts
+   produced by npm-style installers.
 
 When a binary is found, `Detect` runs `opencode --version` to capture the engine
 version (used to gate capabilities). A failed version probe is **non-fatal**: the
@@ -26,8 +25,8 @@ binary still reports `Installed`, just without a version.
 
 The adapter drives **one-shot headless runs** via `opencode run` — it never starts
 the persistent `opencode serve` server. The argv is built deterministically from
-`AgentRunRequest` (argv only — never a shell string, never `/bin/sh` or
-`cmd /c`, so Windows paths/spaces/Unicode are handled natively):
+`AgentRunRequest` (argv only — never a shell string, so paths with
+spaces/Unicode are handled natively):
 
 ```
 <binary> run --format json \
@@ -136,13 +135,13 @@ Mapping of common signals:
 - `Cancel()` cancels the supervision context and kills the group, then the
   adapter emits `run.cancelled`. The blocking stdout read runs in a goroutine so
   cancellation/timeout can always preempt it (never blocks forever).
-- `proctree` gives Windows-safe group termination (`CREATE_NEW_PROCESS_GROUP` +
-  `taskkill /T /F`); descendants are never orphaned.
+- `proctree` gives group termination (setpgid + negative-pgid signal);
+  descendants are never orphaned.
 
 ## Security invariants (unconditional)
 
 - **Allowlisted environment only** (spec §29.2, AC-28): the agent process receives
-  `PATH/HOME/USERPROFILE/USER/LANG/LC_ALL/TERM/SystemRoot/TEMP/TMP` plus the
+  `PATH/HOME/USER/LANG/LC_ALL/TERM/TEMP/TMP` plus the
   caller's `AgentRunRequest.AllowlistEnv`. The environment is built from scratch
   (never `os.Environ`), so VCS merge tokens, production credentials, unrelated API
   keys and the daemon auth token can never leak. Forbidden credential keys
@@ -156,20 +155,19 @@ Mapping of common signals:
   project/plugin config cannot override the allowlist, no-share or redaction
   rules — they are enforced by the adapter regardless of any plugin present.
 
-## Windows notes
+## Platform notes
 
-Detection, env, parsing and process handling are Windows-correct: `PATHEXT`,
-`.exe`/`.cmd`/`.bat` + npm shims, spaces and Unicode paths, CRLF JSONL, UTF-8
-BOM, argv-only (no shell quoting), case-insensitive env keys, cancellation and
-descendant cleanup via the shared `proctree`. No Unix signals, no `/bin/sh`, no
-negative PIDs, no hardcoded `/tmp` (`os.TempDir()` is used).
+Detection, env, parsing and process handling target Linux: `PATH` lookup,
+spaces and Unicode paths, CRLF JSONL, UTF-8 BOM, argv-only (no shell quoting),
+and cancellation + descendant cleanup via the shared `proctree`. On a Windows
+host, run everything inside WSL2 (see `docs/platforms/WSL2.md`).
 
 ## Testing
 
-- **Unit tests** cover detection (missing/`.cmd`/`.bat`/shim/PATHEXT/Unicode),
+- **Unit tests** cover detection (missing/shim/Unicode),
   version parsing, deterministic command building, the no-64KiB/BOM/CRLF parser,
   usage mapping + confidence, failure classification per class with provider
-  provenance, cancellation, timeout, resume, secret redaction and Windows path
+  provenance, cancellation, timeout, resume, secret redaction and path
   handling.
 - **Conformance** (`conformance_test.go`): runs the full §13.3 suite through the
   adapter's **real** run pipeline against **recorded byte-stream fixtures**

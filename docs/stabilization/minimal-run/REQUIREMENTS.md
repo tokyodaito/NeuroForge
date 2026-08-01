@@ -290,8 +290,7 @@ idempotent. The race detector must pass for repeated cancellations
 
 ### FR-16 — Process-tree termination
 Cancelling a run terminates the **whole** agent process group (no orphaned
-children). Verified cross-platform (unix `setpgid` / Windows
-`CREATE_NEW_PROCESS_GROUP`).
+children). Verified on unix (`setpgid` + negative-pgid signal).
 
 ### FR-17 — Daemon restart preserves terminal state
 A daemon restart (or the startup reconciler) must not move a terminal

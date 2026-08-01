@@ -71,12 +71,12 @@ image generation and device harnesses are **opt-in** and never invoked in CI —
 orchestration and conformance tests use the fake coding agent (§33.1), fake
 image provider (§33.2) and fake visual harness (§33.3) instead (rule §36.5).
 
-### Windows
+### Linux, macOS and Windows hosts
 
-On Windows the PowerShell scripts under `scripts/` are the first-class path
-(`scripts/check.ps1`, `scripts/dev.ps1`, `scripts/test.ps1`, `scripts/doctor.ps1`)
-— no `make` or C compiler required. See the full
-[Windows setup guide](docs/platforms/WINDOWS.md).
+NeuroForge is Linux-only. On a Windows host, run it inside **WSL2** (install
+and build Linux-side — never from a `/mnt/c` checkout). See the full
+[WSL2 setup guide](docs/platforms/WSL2.md). macOS may work via the generic Unix
+code paths but receives no dedicated support.
 
 ---
 
@@ -141,11 +141,11 @@ internal/
 docs/
   spec/                 NEUROFORGE_SPEC.md (source of truth) + COMPLIANCE_MATRIX.md
   architecture/         COMPONENTS, DATA_FLOW, STATE_MACHINES, ADAPTER_DEV_GUIDE
-  adr/                  architecture decision records (ADR-0001..0019)
+  adr/                  architecture decision records (ADR-0001..0020)
   milestones/           IMPLEMENTATION_PLAN + milestone closure reports
   adapters/             per-engine adapter docs
   stabilization/        minimal reliable run (`forge run`) spec + test plan
-  platforms/            WINDOWS setup guide
+  platforms/            WSL2 setup guide (Windows hosts)
 Makefile                build / test / lint / check
 ```
 

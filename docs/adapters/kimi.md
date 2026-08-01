@@ -18,9 +18,9 @@ reg.MustRegister(kimi.New(kimi.Options{}), 50)
 
 ## Detection
 
-`Detect` resolves the `kimi` executable with `exec.LookPath`, which honours
-`PATHEXT` on Windows — so `kimi.exe`, `kimi.cmd`, `kimi.bat` and npm-style shims
-are all found, and paths containing spaces or Unicode characters work. It then
+`Detect` resolves the `kimi` executable with `exec.LookPath`, so bare names,
+npm-style shims and paths containing spaces or Unicode characters all work. It
+then
 runs `kimi --version` (with a PATH-only environment, never ambient credentials)
 and parses the first `X.Y[.Z]` tuple.
 
@@ -150,8 +150,7 @@ no infinite retry).
 ## Timeout & cancellation
 
 - `Cancel()` terminates the **entire process group** (via the shared `proctree`
-  package: Windows `CREATE_NEW_PROCESS_GROUP` + `taskkill /T /F`; unix `setpgid` +
-  negative-pgid signal) and emits `run.cancelled`.
+  package: `setpgid` + negative-pgid signal) and emits `run.cancelled`.
 - `req.Timeout` (when > 0) is a hard wall-clock limit enforced with a timer; on
   expiry the group is killed and the run ends with `run.failed(TIMEOUT)`.
 - The blocking stdout read runs in a goroutine, so cancellation/timeout always
@@ -176,21 +175,19 @@ no infinite retry).
   …) before it appears in events or logs.
 - Session archives / diagnostic logs are never written outside the workspace.
 
-## Windows notes
+## Platform notes
 
-- Detection uses `exec.LookPath` with `PATHEXT`, so `.exe`/`.cmd`/`.bat` and npm
-  shims resolve correctly; paths with spaces and Unicode work.
+- Detection uses `exec.LookPath`; paths with spaces and Unicode work.
 - Output is argv-only (no shell quoting); CRLF JSONL and a leading UTF-8 BOM are
   handled.
 - Env keys are deduplicated case-insensitively (`PATH`/`Path`).
-- Cancellation uses the shared `proctree` Windows path (`taskkill /T /F`), so
-  descendants are never orphaned. No Unix signals, no `/bin/sh`, no negative PIDs,
-  no hardcoded `/tmp` (`os.TempDir()` is used).
+- Cancellation uses the shared `proctree` package, so descendants are never
+  orphaned. On a Windows host, run inside WSL2 (see `docs/platforms/WSL2.md`).
 
 ## Testing
 
-- **Unit tests** cover detection (PATH, `.cmd`/`.bat` shims, `PATHEXT` ordering,
-  spaces, Unicode), version parsing, command-builder determinism, the parser
+- **Unit tests** cover detection (PATH, shims, spaces, Unicode), version
+  parsing, command-builder determinism, the parser
   (well-formed/malformed/unknown/CRLF/BOM/no-64KiB-cap), usage mapping + confidence,
   failure classification per class, cancellation, timeout, resume and secret
   redaction.

@@ -286,7 +286,7 @@ The spec (`NEUROFORGE_SPEC.md`) is authoritative; this matrix is a tracking view
   an `Adapter`, routes `run.event` notifications to per-run sinks, reaps the
   process group on close. Reference server in the fake package.
 - **Process-group termination** — `internal/adapter/codingagent/proctree`:
-  setpgid (unix) / new process group (windows) + tree kill, so cancellation ends
+  setpgid + negative-pgid tree kill, so cancellation ends
   the whole group (spec requirement).
 - **Conformance suite (§13.3)** — `internal/adapter/codingagent/conformance` +
   `forge plugin test`: handshake, version compatibility, event ordering,
@@ -394,10 +394,9 @@ All six first-party coding engines (§12, AC-5) integrated on branch
   `--share`/YOLO/bypass modes never enabled; secret redaction in
   stderr/events/artifacts; credentials never cross the boundary.
 - **Cancellation/timeout** — terminate the whole process group via the shared
-  `proctree` package (Windows-safe: `CREATE_NEW_PROCESS_GROUP` + `taskkill /T /F`).
-- **Windows correctness** — PATHEXT-aware discovery (`.exe`/`.cmd`/`.bat`/npm
-  shims; `.ps1` skipped where not spawnable), paths with spaces/Unicode, CRLF +
-  UTF-8 BOM tolerance in stream parsers, no Unix-only assumptions.
+  `proctree` package (setpgid + negative-pgid signal).
+- **Path robustness** — `PATH` discovery, paths with spaces/Unicode, CRLF +
+  UTF-8 BOM tolerance in stream parsers, argv-only command builders.
 - **Offline conformance** — all nine §13.3 checks (handshake, version
   compatibility, event ordering, malformed output, cancellation, timeout, quota
   failure, resume, process crash) honoured through each adapter's real run

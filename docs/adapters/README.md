@@ -66,13 +66,15 @@ Behaviour that requires a real, authenticated engine binary (model enumeration,
 live quota, live health, an actual run) is covered by each adapter's opt-in
 build-tagged smoke test, which is skipped in normal/CI runs (rule §36.5).
 
-## Windows notes
+## Linux / WSL2 notes
 
-All adapters are Windows-correct: PATHEXT-aware discovery (`.exe`/`.cmd`/`.bat`/
-npm shims; `.ps1` skipped where not spawnable via `CreateProcess`), paths with
-spaces and Unicode, CRLF + UTF-8 BOM tolerance in stream parsers, argv-only
-command builders (never a shell string), and process-group cancellation via the
-shared `proctree` package. See the [Windows platform guide](../platforms/WINDOWS.md).
+All adapters target Linux (the canonical platform). Discovery is a plain
+`PATH` lookup (optionally an explicit binary path in the adapter options),
+paths with spaces and Unicode are supported, stream parsers tolerate CRLF +
+UTF-8 BOM, command builders emit argv only (never a shell string), and
+cancellation kills the whole process group via the shared `proctree` package.
+On a Windows host, run everything inside WSL2 — see the
+[WSL2 platform guide](../platforms/WSL2.md).
 
 ## Review artifacts
 

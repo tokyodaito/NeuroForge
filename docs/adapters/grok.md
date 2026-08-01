@@ -13,11 +13,10 @@ registry at wiring time.
 
 ## Detection
 
-`Detect` resolves the Grok binary via a PATHEXT-aware `lookPath` (a superset of
-`os/exec.LookPath`) and probes `grok --version`:
+`Detect` resolves the Grok binary via `os/exec.LookPath` and probes
+`grok --version`:
 
-- On Windows it tolerates `.exe` / `.cmd` / `.bat` / npm shims and a custom
-  `PATHEXT`; bare names, absolute paths, and paths with spaces or Unicode
+- Bare names, absolute paths, and paths with spaces or Unicode
   (`café ☕ dir`) all resolve.
 - The parsed version is cached on the adapter so `Capabilities`, `Version` and
   `Health` stay consistent for the process.
@@ -58,8 +57,7 @@ The child receives **only**:
   secrets).
 
 VCS merge tokens, the daemon auth token, production credentials and unrelated
-API keys are never in the allowlist and are therefore never inherited. Env keys
-are matched case-insensitively on Windows.
+API keys are never in the allowlist and are therefore never inherited.
 
 ## Streaming parser
 
@@ -162,19 +160,17 @@ reaching events/logs.
 - `req.Timeout` is enforced via the run context; on expiry the whole group is
   killed and `run.failed(TIMEOUT)` is emitted.
 - `Cancel()` cancels the context and terminates the entire process group via
-  `proctree.KillGroup` (`taskkill /T /F` on Windows, negative-pgid signal on
-  unix). `run.cancelled` is emitted. The blocking stdout read runs in its own
+  `proctree.KillGroup` (negative-pgid signal).
+  `run.cancelled` is emitted. The blocking stdout read runs in its own
   goroutine so cancellation/timeout never block forever on a pipe read.
 - Descendants are never orphaned (proctree).
 
-## Windows notes
+## Platform notes
 
-All Windows edge cases are handled in shared code or the adapter: PATHEXT +
-`.exe`/`.cmd`/`.bat` + npm shims; spaces and Unicode in binary/workspace paths;
-CRLF JSONL; UTF-8 BOM; argv-only (no shell quoting); case-insensitive env keys;
-`CREATE_NEW_PROCESS_GROUP` + `taskkill /T /F` for descendant cleanup. The adapter
-uses no Unix signals, no `/bin/sh`, no negative PIDs, no hardcoded `/tmp`
-(`os.TempDir()` is used), and makes no assumptions about Unix permission bits.
+The adapter targets Linux: plain `PATH` lookup, spaces and Unicode in
+binary/workspace paths, CRLF JSONL, UTF-8 BOM, argv-only (no shell quoting),
+and process-group cancellation via the shared `proctree` package. On a Windows
+host, run it inside WSL2 (see `docs/platforms/WSL2.md`).
 
 ## Secret redaction
 
@@ -186,11 +182,11 @@ memory only for classification and is never persisted verbatim.
 ## Testing
 
 - **Unit tests** (`*_test.go` in the package) cover every capability:
-  detection (missing/`.cmd`/`.bat`/shim/PATHEXT/Unicode+spaces), version parse,
+  detection (missing/shim/Unicode+spaces), version parse,
   command-builder determinism + gating, parser (well-formed/malformed/partial /
   unknown-event/CRLF/BOM/all item types/scope), usage mapping + confidence,
   failure classification per class (incl. capacity distinct), cancellation kills
-  the group, timeout, resume, secret redaction, Windows path handling, env
+  the group, timeout, resume, secret redaction, path handling, env
   allowlist, concurrency.
 - **Conformance wiring** (`conformance_test.go`) runs `conformance.Suite.Run`
   against the adapter wired to a test-only stub binary

@@ -19,15 +19,12 @@ shared protocol/adapter code.
 
 ## Detection
 
-`Detect` resolves the Gemini CLI on `PATH` via a PATHEXT-aware search
-(`gemini.lookPath`) that:
+`Detect` resolves the Gemini CLI on `PATH` via `gemini.lookPath`, a search
+that:
 
-- searches each `PATH` directory, appending each `PATHEXT` extension on Windows
-  (`.COM;.EXE;.BAT;.CMD;…`) in declared order;
+- searches each `PATH` directory for an executable file with the given name;
 - tolerates spaces and Unicode in `PATH` entries (Go paths are UTF-8);
-- **skips `.ps1`** (PowerShell-only) shims: npm installs both `gemini.cmd` and
-  `gemini.ps1`, but only the `.cmd` shim is spawnable via `CreateProcess`;
-- on Unix, checks the executable bit rather than extensions.
+- checks the executable bit.
 
 It then probes `<binary> --version` to record the engine version. A binary that
 exists but fails `--version` is still reported `Installed` with the error in
@@ -102,12 +99,12 @@ claim).
 
 `Start` spawns the CLI via [`proctree.NewGroupCommand`](../../internal/adapter/codingagent/proctree)
 so the whole process tree runs in its own group; `Cancel`/timeout terminate it
-via `proctree.KillGroup` (`taskkill /T /F` on Windows, `kill -PGID` on Unix).
+via `proctree.KillGroup` (`kill -PGID`).
 The child never orphans descendants.
 
 - `cmd.Dir = req.Workspace` (the isolated worktree, never the primary checkout).
 - The environment is a **positive allowlist** (`buildEnv`, spec §29.2, AC-28):
-  `PATH`, `HOME`, `USERPROFILE`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SystemRoot`,
+  `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`,
   `TEMP`, `TMP` + `req.AllowlistEnv`. Merge tokens, unrelated API keys and the
   daemon auth token are structurally excluded (no whole-env dump).
 - `req.Timeout` becomes the run's hard deadline; expiry is classified as
@@ -179,13 +176,12 @@ stored or forwarded, masking `AIza…` API keys, `ya29.…` OAuth tokens,
 The allowlisted environment is the primary defence (§29.2); redaction is
 defence-in-depth.
 
-## Windows correctness
+## Platform notes
 
-- PATHEXT-respecting `lookPath`; `.exe`/`.cmd`/`.bat` + npm shims; `.ps1`
-  skipped; spaces and Unicode paths; argv-only (no shell quoting); case-
-  insensitive env keys; cancellation via `taskkill /T /F` (no orphaned
-  descendants). No Unix signals, no negative PIDs, no hardcoded `/tmp` (uses
-  `os.TempDir`). Process handling is delegated to the shared `proctree`.
+The adapter targets Linux: `PATH` lookup with an executable-bit check, spaces
+and Unicode paths, argv-only (no shell quoting), and cancellation via the
+shared `proctree` (no orphaned descendants). On a Windows host, run it inside
+WSL2 (see `docs/platforms/WSL2.md`).
 
 ## Conformance
 
