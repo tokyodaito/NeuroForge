@@ -370,15 +370,6 @@ func (a *App) emitJSONError(parsed runCmdArgs, msg, class string) {
 	fmt.Fprintln(a.Out, string(b))
 }
 
-// emitJSONResult prints a single JSON document for a successful run
-// (OUTCOME_CONTRACT.md §3). Returns the exit code per §4.
-func (a *App) emitJSONResult(res transport.RunTaskResultDTO) int {
-	// The DTO marshals directly; nothing else may be on stdout (I.11).
-	b, _ := json.Marshal(res)
-	fmt.Fprintln(a.Out, string(b))
-	return exitCodeFor(res.Outcome)
-}
-
 // emitHumanResult prints the human-readable result block per
 // OUTCOME_CONTRACT.md §2 and returns the exit code per §4.
 func (a *App) emitHumanResult(res transport.RunTaskResultDTO, verbose bool) int {

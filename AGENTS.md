@@ -94,6 +94,7 @@ If you discover another project-wide verification command, record it here.
 | Terminal UI                   | `internal/tui`                       |
 | Projects / lifecycle          | `internal/project`                   |
 | Tasks / compiler              | `internal/task`                      |
+| Durable pipeline (run stages) | `internal/pipeline`                  |
 | Work DAG / semantic leases    | `internal/workgraph`                 |
 | Dispatch                      | `internal/scheduler`                 |
 | Routing                       | `internal/router`                    |

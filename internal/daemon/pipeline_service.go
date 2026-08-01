@@ -362,9 +362,11 @@ func (s *PipelineService) RunPipeline(ctx context.Context, req transport.Pipelin
 	}
 	switch {
 	case errors.Is(driveErr, pipeline.ErrEmergencyStopped):
-		dto.Outcome = "failed"
+		// The run is NOT failed — it stays active at its current stage and
+		// resumes once the stop is cleared (next daemon start re-drives it).
 		dto.Error = driveErr.Error()
 		dto.ErrorClass = "EMERGENCY_STOP"
+		dto.NextAction = "run parked by emergency stop; clear it with `forge estop off` (the run resumes on the next daemon start)"
 	case driveErr != nil && dto.Error == "" && !pipeline.IsTerminalRunState(pipeline.RunState(dto.RunState)):
 		dto.Error = driveErr.Error()
 		if dto.ErrorClass == "" {
