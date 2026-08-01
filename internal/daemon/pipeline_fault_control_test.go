@@ -523,3 +523,40 @@ func TestPipelineFault_EstopMidExecute(t *testing.T) {
 	env.svc.ResumeActiveRuns(ctx)
 	env.waitRunState(t, taskID, "completed", 90*time.Second)
 }
+
+// TestPipelineReconcile_EstopSkipsMarkInterrupted (L2): while the emergency
+// stop is engaged, startup reconciliation must NOT add interrupted records to
+// the parked run on every restart — the records accrue spuriously. Once the
+// stop clears, exactly one interrupted record is written.
+func TestPipelineReconcile_EstopSkipsMarkInterrupted(t *testing.T) {
+	env := newFaultEnv(t, faultDeps{})
+	ctx := context.Background()
+
+	taskID, _ := env.setupKilledRun(t, pipeline.StageExecute, "estop parked reconcile")
+	if _, err := env.svc.SetEmergencyStop(ctx, true, "parked"); err != nil {
+		t.Fatal(err)
+	}
+
+	before := len(env.status(t, taskID).StageRecords)
+	env.reconcilePipeline(t)
+	env.reconcilePipeline(t) // a second restart must not accrue records either
+	after := len(env.status(t, taskID).StageRecords)
+	if after != before {
+		t.Errorf("stage records grew while estop parked: %d → %d (L2)", before, after)
+	}
+
+	if _, err := env.svc.SetEmergencyStop(ctx, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	env.reconcilePipeline(t)
+	st := env.status(t, taskID)
+	interrupted := 0
+	for _, r := range stageRecords(st, "execute", "failed") {
+		if r.FailureCategory == string(pipeline.FailureInterrupted) {
+			interrupted++
+		}
+	}
+	if interrupted != 1 {
+		t.Errorf("interrupted execute records after estop off = %d, want exactly 1", interrupted)
+	}
+}

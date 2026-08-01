@@ -198,14 +198,24 @@ func (s *Server) handleEstopSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "pipeline API not configured")
 		return
 	}
-	var req EstopDTO
+	// The request uses a pointer for "on": an absent field (e.g. an empty or
+	// bodyless POST) must NOT decode to On=false and silently clear the stop
+	// (review finding L1).
+	var req struct {
+		On     *bool  `json:"on"`
+		Reason string `json:"reason"`
+	}
 	if r.ContentLength > 0 {
 		if err := decodeJSON(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	out, err := s.cfg.PipelineAPI.SetEmergencyStop(r.Context(), req.On, req.Reason)
+	if req.On == nil {
+		writeErr(w, http.StatusBadRequest, `estop: the "on" field is required`)
+		return
+	}
+	out, err := s.cfg.PipelineAPI.SetEmergencyStop(r.Context(), *req.On, req.Reason)
 	if err != nil {
 		writeAPIError(w, err)
 		return

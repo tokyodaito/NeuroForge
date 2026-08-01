@@ -31,7 +31,27 @@ func (r *pipelineReconciler) Reconcile(ctx context.Context, tx ReconcileTx) ([]R
 			Action: DecisionNoOp, Detail: "no active pipeline runs",
 		}}, nil
 	}
+	// While the emergency stop is engaged, active runs are PARKED, not crashed:
+	// marking their in-flight stage interrupted on every restart would accrue
+	// spurious interrupted records (review finding L2). They are re-driven (and
+	// marked interrupted exactly once) by ResumeActiveRuns after the stop
+	// clears.
+	estopOn, estopReason, err := r.store.EmergencyStop(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline reconcile: read estop: %w", err)
+	}
 	decisions := make([]ReconcileDecision, 0, len(runs))
+	if estopOn {
+		for _, run := range runs {
+			decisions = append(decisions, ReconcileDecision{
+				Reconciler: r.Name(), Entity: "pipeline-run/" + run.TaskID,
+				Action: DecisionKept,
+				Detail: fmt.Sprintf("emergency stop engaged (%s); run parked at stage %s without an interrupted record",
+					estopReason, run.CurrentStage),
+			})
+		}
+		return decisions, nil
+	}
 	for _, run := range runs {
 		if pipeline.IsWaitState(run.State) {
 			// Wait states have no in-flight stage to interrupt; resume (via
