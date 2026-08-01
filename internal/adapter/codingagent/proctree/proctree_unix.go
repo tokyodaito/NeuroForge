@@ -10,9 +10,12 @@ import (
 // NewGroupCommand returns a Cmd configured so the child and all its descendants
 // run in their own process group (setpgid). This lets [KillGroup] terminate the
 // whole group with one negative-pgid signal.
+//
+// On Linux the child additionally gets Pdeathsig=SIGKILL (see
+// proctree_attrs_linux.go) so it cannot outlive the daemon process.
 func NewGroupCommand(name string, arg ...string) *exec.Cmd {
 	cmd := exec.Command(name, arg...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = groupSysProcAttr()
 	return cmd
 }
 
