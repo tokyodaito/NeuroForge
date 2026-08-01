@@ -7,6 +7,7 @@ import (
 	"neuroforge/internal/adapter/codingagent"
 	"neuroforge/internal/adapter/codingagent/builtin"
 	"neuroforge/internal/adapter/codingagent/fake"
+	"neuroforge/internal/adapter/codingagent/opencode"
 	"neuroforge/internal/transport"
 )
 
@@ -90,9 +91,15 @@ func (a *workspaceAPIAdapter) ListCheckpoints(ctx context.Context, id string) ([
 // starts (integration tests, daemon restart) never see stale or
 // double-registered adapters — there is no package-level mutable registry
 // shared across runs.
-func buildAdapterRegistry() (*codingagent.Registry, error) {
+//
+// artifactsDir is wired into the OpenCode adapter so malformed agent output
+// is persisted under the daemon's artifact store, not the OS temp dir
+// (review finding L4).
+func buildAdapterRegistry(artifactsDir string) (*codingagent.Registry, error) {
 	reg := codingagent.NewRegistry()
-	if err := builtin.RegisterAll(reg); err != nil {
+	if err := builtin.RegisterAllWith(reg, builtin.Options{
+		OpenCode: opencode.Options{ArtifactsDir: artifactsDir},
+	}); err != nil {
 		return nil, fmt.Errorf("builtin engines: %w", err)
 	}
 	fa := fake.New(fake.AdapterOptions{Installed: true})

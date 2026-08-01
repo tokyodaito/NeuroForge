@@ -22,7 +22,7 @@ var canonicalEngines = map[string]bool{
 // TestBuildAdapterRegistry_HasAllSevenEngines proves the daemon registers the
 // fake agent plus all six first-party production adapters (blocker 1 fix).
 func TestBuildAdapterRegistry_HasAllSevenEngines(t *testing.T) {
-	reg, err := buildAdapterRegistry()
+	reg, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("buildAdapterRegistry: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestBuildAdapterRegistry_HasAllSevenEngines(t *testing.T) {
 // TestBuildAdapterRegistry_EngineIDsUnique verifies no id collides across the
 // daemon registry (spec §12.1, AC-6 stability — required uniqueness test).
 func TestBuildAdapterRegistry_EngineIDsUnique(t *testing.T) {
-	reg, err := buildAdapterRegistry()
+	reg, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("buildAdapterRegistry: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestBuildAdapterRegistry_EngineIDsUnique(t *testing.T) {
 // unregistered engine is a clean miss (the supervisor turns this into the
 // "unknown engine" error rather than a panic or silent fallback).
 func TestBuildAdapterRegistry_UnknownEngineRejected(t *testing.T) {
-	reg, err := buildAdapterRegistry()
+	reg, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("buildAdapterRegistry: %v", err)
 	}
@@ -75,11 +75,11 @@ func TestBuildAdapterRegistry_UnknownEngineRejected(t *testing.T) {
 // buildAdapterRegistry returns an independent registry with no shared mutable
 // package state.
 func TestBuildAdapterRegistry_FreshPerCall(t *testing.T) {
-	r1, err := buildAdapterRegistry()
+	r1, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("first buildAdapterRegistry: %v", err)
 	}
-	r2, err := buildAdapterRegistry()
+	r2, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("second buildAdapterRegistry: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestBuildAdapterRegistry_FreshPerCall(t *testing.T) {
 // targets (opencode) is present and addressable purely through the common
 // interface — the only surface the supervisor/scheduler may touch (spec §13.3).
 func TestBuildAdapterRegistry_OpenCodeReachable(t *testing.T) {
-	reg, err := buildAdapterRegistry()
+	reg, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("buildAdapterRegistry: %v", err)
 	}

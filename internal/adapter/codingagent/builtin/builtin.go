@@ -48,8 +48,9 @@ type constructor struct {
 
 // constructors returns the built-in engine constructors in priority order.
 // Each entry defers to the engine package's own New; no provider-specific
-// logic lives here (spec §13.3).
-func constructors() []constructor {
+// logic lives here (spec §13.3). Per-engine option overrides come from the
+// caller (e.g. the daemon wires its artifacts dir into OpenCode, L4).
+func constructors(opts Options) []constructor {
 	return []constructor{
 		{IDCodex, PriorityCodex, func() (codingagent.Adapter, error) {
 			return codex.New(codex.Options{}), nil
@@ -67,9 +68,18 @@ func constructors() []constructor {
 			return grok.New(grok.Options{}), nil
 		}},
 		{IDOpenCode, PriorityOpenCode, func() (codingagent.Adapter, error) {
-			return opencode.New(opencode.Options{}), nil
+			return opencode.New(opts.OpenCode), nil
 		}},
 	}
+}
+
+// Options carries per-engine construction overrides for daemon wiring. The
+// zero value means every engine is built with its default options.
+type Options struct {
+	// OpenCode overrides the OpenCode adapter options (e.g. ArtifactsDir so
+	// malformed agent output lands in the daemon's artifact store instead of
+	// the OS temp dir — review finding L4).
+	OpenCode opencode.Options
 }
 
 // RegisterAll constructs every built-in coding-agent adapter with its default
@@ -81,10 +91,15 @@ func constructors() []constructor {
 // The fake agent and any declarative/plugin adapters are registered separately
 // by the daemon; this function only owns the first-party engines.
 func RegisterAll(reg *codingagent.Registry) error {
+	return RegisterAllWith(reg, Options{})
+}
+
+// RegisterAllWith is [RegisterAll] with per-engine option overrides.
+func RegisterAllWith(reg *codingagent.Registry, opts Options) error {
 	if reg == nil {
 		return fmt.Errorf("builtin: nil registry")
 	}
-	for _, c := range constructors() {
+	for _, c := range constructors(opts) {
 		a, err := c.build()
 		if err != nil {
 			return fmt.Errorf("builtin: construct %s: %w", c.id, err)
@@ -110,7 +125,7 @@ func MustRegisterAll(reg *codingagent.Registry) {
 // IDs returns the built-in engine ids in registration (priority) order. It does
 // not require a registry and is useful for discovery tests and listings.
 func IDs() []string {
-	cs := constructors()
+	cs := constructors(Options{})
 	out := make([]string, len(cs))
 	for i, c := range cs {
 		out[i] = c.id

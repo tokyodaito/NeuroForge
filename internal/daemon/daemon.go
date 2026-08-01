@@ -161,7 +161,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// production engines are surfaced from one place so the core never
 	// references a provider by name — spec §13.3). A fresh registry is built
 	// per daemon so repeated in-process starts (tests) never double-register.
-	adapterRegistry, err := buildAdapterRegistry()
+	adapterRegistry, err := buildAdapterRegistry(cfg.Dirs.ArtifactsDir)
 	if err != nil {
 		return fmt.Errorf("register coding-agent adapters: %w", err)
 	}

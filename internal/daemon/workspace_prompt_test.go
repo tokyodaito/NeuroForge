@@ -39,7 +39,7 @@ func newWorkspaceService(t *testing.T) (*WorkspaceService, *storage.DB) {
 	wm := workspace.NewManager(db, rec, filepath.Join(t.TempDir(), "ws"), quietSlog())
 	leases := workgraph.NewLeaseManager(db)
 	bl := task.NewBacklog(db, rec, "", quietSlog())
-	reg, err := buildAdapterRegistry()
+	reg, err := buildAdapterRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
