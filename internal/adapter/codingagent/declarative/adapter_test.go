@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -151,9 +150,6 @@ func fakeBinary(t *testing.T) (string, func()) {
 			t.Fatalf("mktemp: %v", err)
 		}
 		bin := filepath.Join(dir, "fake-coding-agent")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/fake-coding-agent")
 		cmd.Dir = moduleRoot(t)
 		if out, err := cmd.CombinedOutput(); err != nil {

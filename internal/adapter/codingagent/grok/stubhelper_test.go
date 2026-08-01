@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 )
@@ -25,9 +24,6 @@ func stubBin(t *testing.T) string {
 			t.Fatalf("mktemp: %v", err)
 		}
 		bin := filepath.Join(dir, "grokstub")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
 		cmd := exec.Command("go", "build", "-o", bin, "./internal/stub")
 		cmd.Dir = packageDir(t)
 		if out, err := cmd.CombinedOutput(); err != nil {

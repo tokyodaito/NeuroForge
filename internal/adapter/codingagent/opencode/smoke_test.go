@@ -63,6 +63,6 @@ func TestSmokeRealBinaryMetadata(t *testing.T) {
 	}
 }
 
-// smokeTimeout is generous: `opencode --version` is local and fast, but Windows
+// smokeTimeout is generous: `opencode --version` is local and fast, but
 // process spawn + module init can take a moment on cold caches.
 const smokeTimeout = 30 * time.Second

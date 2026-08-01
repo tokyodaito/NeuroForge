@@ -101,8 +101,7 @@ func (a *Adapter) ensureProbe(ctx context.Context) probe {
 func (a *Adapter) ID() string { return "kimi" }
 
 // Detect implements codingagent.Adapter. It resolves the `kimi` binary (via
-// exec.LookPath, honouring PATHEXT so .exe/.cmd/.bat and npm shims are found)
-// and runs `kimi --version` to confirm it is usable.
+// exec.LookPath) and runs `kimi --version` to confirm it is usable.
 func (a *Adapter) Detect(ctx context.Context) protocol.DetectionResult {
 	pr := a.ensureProbe(ctx)
 	return protocol.DetectionResult{

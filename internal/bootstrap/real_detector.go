@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -49,9 +48,6 @@ func (d *CommandDetector) UserShell() string {
 	}
 	if u, err := user.Current(); err == nil {
 		_ = u
-	}
-	if runtime.GOOS == "windows" {
-		return "cmd.exe"
 	}
 	return "/bin/sh"
 }

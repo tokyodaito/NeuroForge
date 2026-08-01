@@ -68,8 +68,7 @@ func TestBuildAgentEnvIsDeterministic(t *testing.T) {
 }
 
 func TestBuildAgentEnvDedupsCaseInsensitive(t *testing.T) {
-	// Windows env keys are case-insensitive; dedup must not allow a forbidden
-	// var through under different casing.
+	// Dedup must not allow a forbidden var through under different casing.
 	t.Setenv("PATH", "/usr/bin")
 	t.Setenv("Foo", "first")
 	env := buildAgentEnv([]string{"FOO=second", "foo=third"})

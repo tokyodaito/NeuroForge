@@ -60,17 +60,15 @@ func TestBuildEnvMissingKeyByNameOmitted(t *testing.T) {
 	}
 }
 
-func TestBuildEnvWindowsEssentialsForwarded(t *testing.T) {
-	// When present, the Windows-essential keys must be forwarded so Node.js
-	// (the Gemini CLI runtime) can start on Windows.
-	t.Setenv("SystemRoot", "C:\\Windows")
-	t.Setenv("USERPROFILE", "C:\\Users\\test")
-	t.Setenv("TEMP", "C:\\Temp")
+func TestBuildEnvEssentialsForwarded(t *testing.T) {
+	// When present, the essential keys must be forwarded so the Gemini CLI
+	// runtime can start.
+	t.Setenv("TEMP", "/tmp/test-temp")
 	env := buildEnv(nil)
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"SystemRoot=", "USERPROFILE=", "TEMP="} {
+	for _, want := range []string{"PATH=", "TEMP="} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("Windows essential %q not forwarded: %s", want, joined)
+			t.Errorf("essential %q not forwarded: %s", want, joined)
 		}
 	}
 }

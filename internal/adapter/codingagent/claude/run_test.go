@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -294,14 +293,13 @@ func dumpEvent(e protocol.NormalizedEvent) string {
 // production kill path: it spawns a long-lived OS process via proctreeSpawner
 // and verifies Kill() (proctree.KillGroup) terminates it promptly. This covers
 // "cancellation kills the group" against the real proctree implementation
-// (Windows: CREATE_NEW_PROCESS_GROUP + taskkill /T /F; unix: setpgid).
+// (setpgid + negative-pgid signal).
 func TestProctreeSpawnerKillsRealProcess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real process kill test skipped in -short mode")
 	}
-	name, args := sleepCommand()
 	stderr := &bytes.Buffer{}
-	proc, err := proctreeSpawner(append([]string{name}, args...), "", nil, nil, stderr)
+	proc, err := proctreeSpawner([]string{"sleep", "30"}, "", nil, nil, stderr)
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -329,13 +327,6 @@ func TestProctreeSpawnerKillsRealProcess(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("proctree Kill did not terminate the process group within 5s")
 	}
-}
-
-func sleepCommand() (name string, args []string) {
-	if runtime.GOOS == "windows" {
-		return "ping", []string{"-n", "31", "-w", "1000", "127.0.0.1"}
-	}
-	return "sleep", []string{"30"}
 }
 
 // helpers

@@ -3,7 +3,6 @@ package grok
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -31,7 +30,7 @@ func TestLookPathAbsPath(t *testing.T) {
 }
 
 // TestLookPathBareNameOnPATH puts the stub on PATH under its bare name and
-// resolves it, including Windows extension trials.
+// resolves it.
 func TestLookPathBareNameOnPATH(t *testing.T) {
 	bin := stubBin(t)
 	dir := filepath.Dir(bin)
@@ -46,66 +45,24 @@ func TestLookPathBareNameOnPATH(t *testing.T) {
 	}
 }
 
-// TestLookPathWindowsExtensionTrial verifies PATHEXT-style extension trials by
-// creating a shim file with a .cmd extension on Windows (and a no-ext shim on
-// unix) and resolving the bare name.
-func TestLookPathWindowsExtensionTrial(t *testing.T) {
+// TestLookPathShimOnPATH verifies a bare name resolves to an executable shim
+// placed on PATH.
+func TestLookPathShimOnPATH(t *testing.T) {
 	dir := t.TempDir()
 	withPath(t, dir)
 
 	base := "grok-shim"
-	if runtime.GOOS == "windows" {
-		// Create a .cmd shim; bare "grok-shim" should resolve via PATHEXT.
-		shim := filepath.Join(dir, base+".cmd")
-		if err := os.WriteFile(shim, []byte("@echo off\necho grok version 0.9.0\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		shim := filepath.Join(dir, base)
-		if err := os.WriteFile(shim, []byte("#!/bin/sh\necho grok version 0.9.0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	shim := filepath.Join(dir, base)
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\necho grok version 0.9.0\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 
 	resolved, err := lookPath(base)
 	if err != nil {
-		t.Fatalf("extension trial failed: %v", err)
+		t.Fatalf("shim lookup failed: %v", err)
 	}
 	if !strings.HasPrefix(strings.ToLower(resolved), strings.ToLower(dir)) {
 		t.Errorf("resolved %q not in shim dir %q", resolved, dir)
-	}
-}
-
-// TestLookPathBatAndExeShims covers .bat and (on Windows) .exe resolution from
-// PATHEXT, plus the npm-shim pattern (a .cmd wrapper). PATHEXT extension
-// resolution is a Windows concern: on Unix a bare name is resolved by the exec
-// bit, and .bat/.cmd/.exe shims are not executable, so the whole scenario is
-// Windows-only.
-func TestLookPathBatAndExeShims(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT .bat/.cmd/.exe shim resolution is Windows-specific")
-	}
-	dir := t.TempDir()
-	withPath(t, dir)
-
-	exts := []string{".bat"}
-	if runtime.GOOS == "windows" {
-		exts = append(exts, ".cmd", ".exe")
-	}
-	for _, ext := range exts {
-		name := "groktool" + ext
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("stub\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// "groktool" should resolve to one of the created extensions.
-	resolved, err := lookPath("groktool")
-	if err != nil {
-		t.Fatalf("groktool not resolved: %v", err)
-	}
-	lower := strings.ToLower(resolved)
-	if !(strings.HasSuffix(lower, ".bat") || strings.HasSuffix(lower, ".cmd") || strings.HasSuffix(lower, ".exe")) {
-		t.Errorf("resolved %q did not use a PATHEXT extension", resolved)
 	}
 }
 
@@ -117,11 +74,7 @@ func TestLookPathUnicodeAndSpaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	binName := "grok unicode bin"
-	ext := ""
-	if runtime.GOOS == "windows" {
-		ext = ".exe"
-	}
-	full := filepath.Join(nested, binName+ext)
+	full := filepath.Join(nested, binName)
 	if err := os.WriteFile(full, []byte("stub\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +82,7 @@ func TestLookPathUnicodeAndSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unicode/spaces path not resolved: %v", err)
 	}
-	if !strings.EqualFold(resolved, full) {
+	if resolved != full {
 		t.Errorf("resolved %q != %q", resolved, full)
 	}
 }

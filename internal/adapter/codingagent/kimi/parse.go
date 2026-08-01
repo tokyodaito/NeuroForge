@@ -11,7 +11,7 @@ import (
 	"neuroforge/internal/adapter/codingagent/protocol"
 )
 
-// utf8BOM is the byte-order mark some Windows shells prefix on output.
+// utf8BOM is the byte-order mark some shells prefix on output.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // bomStripper removes a single leading UTF-8 BOM from the first read of r. It

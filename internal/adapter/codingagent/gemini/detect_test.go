@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -151,59 +150,11 @@ func TestHealthNotInstalledDown(t *testing.T) {
 	}
 }
 
-func TestLookPathFindsCmdShim(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT/shim test is Windows-specific")
-	}
-	dir := t.TempDir()
-	// Simulate an npm install: a .cmd shim and a .ps1 script. lookPath must pick
-	// the .cmd (PowerShell-only .ps1 cannot be spawned by os/exec).
-	if err := os.WriteFile(filepath.Join(dir, "gemini.cmd"), []byte("@echo off"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "gemini.ps1"), []byte("# ps1"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
-	got, err := lookPath("gemini")
-	if err != nil {
-		t.Fatalf("lookPath: %v", err)
-	}
-	// PATHEXT extensions are uppercased on Windows; compare case-insensitively.
-	if !strings.EqualFold(filepath.Ext(got), ".cmd") {
-		t.Errorf("lookPath picked %s, want the .cmd shim", got)
-	}
-}
-
 func TestLookPathMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	_, err := lookPath("definitely-not-present-binary")
 	if err == nil {
 		t.Fatal("expected not-found error")
-	}
-}
-
-func TestLookPathPATHEXTOrdering(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT ordering is Windows-specific")
-	}
-	dir := t.TempDir()
-	// Provide both .exe and .cmd; with default PATHEXT order (.COM;.EXE;.BAT;.CMD)
-	// the .exe should win.
-	if err := os.WriteFile(filepath.Join(dir, "mytool.exe"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "mytool.cmd"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
-	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-	got, err := lookPath("mytool")
-	if err != nil {
-		t.Fatalf("lookPath: %v", err)
-	}
-	if !strings.EqualFold(filepath.Ext(got), ".exe") {
-		t.Errorf("want .exe to win PATHEXT ordering, got %s", got)
 	}
 }
 
@@ -213,14 +164,8 @@ func TestLookPathUnicodeAndSpaces(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	binName := "mybin"
-	suffix := ""
-	if runtime.GOOS == "windows" {
-		suffix = ".cmd"
-	}
-	full := filepath.Join(nested, binName+suffix)
-	// The fixture must be executable on Unix (statExecutable requires the exec
-	// bit); mode bits are ignored on Windows, so 0o755 is correct everywhere.
+	full := filepath.Join(nested, "mybin")
+	// The fixture must be executable (statExecutable requires the exec bit).
 	if err := os.WriteFile(full, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +174,7 @@ func TestLookPathUnicodeAndSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookPath in unicode/spaces dir: %v", err)
 	}
-	if !strings.EqualFold(got, full) {
+	if got != full {
 		t.Errorf("got %s, want %s", got, full)
 	}
 }

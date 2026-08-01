@@ -13,8 +13,8 @@
 // # Hard guarantees
 //
 //   - Credential-free request boundary (spec §29.2, AC-28): the agent process
-//     receives only an allowlisted environment (PATH/HOME/USERPROFILE/USER/
-//     LANG/LC_ALL/TERM/SystemRoot/TEMP/TMP plus the caller's allowlist). Merge
+//     receives only an allowlisted environment (PATH/HOME/USER/LANG/LC_ALL/TERM
+//     plus the caller's allowlist). Merge
 //     tokens, the daemon auth token and unrelated API keys are never injected
 //     by the adapter; the caller is responsible for allowlisting any provider
 //     credential (e.g. an API key) it wants the agent to see.
@@ -29,9 +29,8 @@
 //     events never abort a run (spec: malformed event is saved + classified, not
 //     fatal).
 //   - Cancellation ends the whole process group via the shared
-//     [neuroforge/internal/adapter/codingagent/proctree] package (Windows:
-//     CREATE_NEW_PROCESS_GROUP + taskkill /T /F; unix: setpgid + negative-pgid
-//     signal).
+//     [neuroforge/internal/adapter/codingagent/proctree] package (setpgid +
+//     negative-pgid signal).
 //   - No real paid calls in tests (rule §36.5): unit and conformance tests use
 //     recorded byte-stream fixtures and stub probes; the real CLI is exercised
 //     only by the opt-in `claudesmoke` build-tagged test.

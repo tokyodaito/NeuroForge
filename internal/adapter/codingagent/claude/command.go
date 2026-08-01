@@ -11,14 +11,12 @@ import (
 
 // baselineEnvKeys is the static environment allowlist every agent process
 // receives (spec §29.2). It is the minimal set required for a CLI process to
-// function cross-platform (PATH for discovery, HOME/USERPROFILE for config,
-// SystemRoot/TEMP/TMP for Windows, PATHEXT so child helpers resolve). It never
-// includes the daemon auth token, VCS/merge tokens, or any provider credential
-// — those reach the agent only via req.AllowlistEnv, which the supervisor
-// constructs.
+// function (PATH for discovery, HOME for config, locale/terminal settings).
+// It never includes the daemon auth token, VCS/merge tokens, or any provider
+// credential — those reach the agent only via req.AllowlistEnv, which the
+// supervisor constructs.
 var baselineEnvKeys = []string{
-	"PATH", "HOME", "USERPROFILE", "USER", "LANG", "LC_ALL", "TERM",
-	"SystemRoot", "TEMP", "TMP", "PATHEXT",
+	"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM",
 }
 
 // forbiddenEnvTokens are secret-bearing substrings that are dropped from

@@ -296,7 +296,7 @@ func TestRunSecretRedactionInFailureReason(t *testing.T) {
 	}
 }
 
-func TestRunWindowsPathAndUnicodeWorkspace(t *testing.T) {
+func TestRunUnicodeWorkspace(t *testing.T) {
 	// The workspace path with spaces/unicode must be passed to the child CWD
 	// without error.
 	a := New(stubOptions(t, "success"))

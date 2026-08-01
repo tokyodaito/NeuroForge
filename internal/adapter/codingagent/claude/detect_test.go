@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -142,100 +139,12 @@ func TestVersionResultWhenMissing(t *testing.T) {
 	}
 }
 
-// ---- PATHEXT-aware LookPath ----
-
-func TestPathExts(t *testing.T) {
-	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-	exts := pathExts()
-	want := []string{".COM", ".EXE", ".BAT", ".CMD"}
-	if len(exts) != len(want) {
-		t.Fatalf("pathExts = %v, want %v", exts, want)
-	}
-	for i := range want {
-		if exts[i] != want[i] {
-			t.Errorf("pathExts[%d] = %q, want %q", i, exts[i], want[i])
-		}
-	}
-}
-
-func TestCandidatePathsAppendsExtensions(t *testing.T) {
-	t.Setenv("PATHEXT", ".EXE;.CMD")
-	got := candidatePaths("claude")
-	// base + .EXE + .CMD
-	if len(got) != 3 {
-		t.Fatalf("candidatePaths = %v", got)
-	}
-	if got[0] != "claude" {
-		t.Errorf("first candidate = %q, want claude", got[0])
-	}
-}
-
-func TestCandidatePathsSkipsExistingExtension(t *testing.T) {
-	t.Setenv("PATHEXT", ".EXE;.CMD")
-	got := candidatePaths("claude.exe")
-	for _, p := range got {
-		if strings.HasSuffix(p, ".exe.exe") {
-			t.Errorf("duplicated extension: %q", p)
-		}
-	}
-}
-
-// TestSearchPathExtFindsCmdShim writes a fake claude.cmd on PATH and verifies
-// the manual fallback resolves it (Windows .cmd / npm-shim case).
-func TestSearchPathExtFindsShim(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT shim test is Windows-specific")
-	}
-	dir := t.TempDir()
-	shim := filepath.Join(dir, "claude.cmd")
-	if err := os.WriteFile(shim, []byte("@echo off\r\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
-	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-	got, err := searchPathExt("claude")
-	if err != nil {
-		t.Fatalf("searchPathExt: %v", err)
-	}
-	if !strings.EqualFold(got, shim) {
-		t.Errorf("searchPathExt = %q, want %q", got, shim)
-	}
-}
-
-// TestSearchPathExtFindsBareShim verifies the unix/npm bare-shim case.
-func TestSearchPathExtFindsBareShim(t *testing.T) {
-	dir := t.TempDir()
-	shim := filepath.Join(dir, "claude")
-	if err := os.WriteFile(shim, []byte("#!/bin/sh\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
-	t.Setenv("PATHEXT", "")
-	got, err := searchPathExt("claude")
-	if err != nil {
-		t.Fatalf("searchPathExt: %v", err)
-	}
-	if got != shim {
-		t.Errorf("searchPathExt = %q, want %q", got, shim)
-	}
-}
-
-func TestSearchPathExtMissing(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("PATHEXT", ".EXE")
-	if _, err := searchPathExt("definitely-not-here-xyz"); err == nil {
-		t.Fatal("expected ErrNotExist")
-	}
-}
+// ---- LookPath ----
 
 func TestDefaultLookPathFindsExec(t *testing.T) {
 	// Use a command guaranteed to exist to validate defaultLookPath delegates.
-	name := "go"
-	if runtime.GOOS == "windows" {
-		name = "where"
-	}
-	if _, err := defaultLookPath(name); err != nil {
-		t.Fatalf("defaultLookPath(%s): %v", name, err)
+	if _, err := defaultLookPath("go"); err != nil {
+		t.Fatalf("defaultLookPath(go): %v", err)
 	}
 }
 
@@ -263,16 +172,7 @@ func TestBinaryPrefersExplicitPath(t *testing.T) {
 // TestDefaultProbeExecutesRealCmd sanity-checks the production probe against a
 // known command.
 func TestDefaultProbeExecutesRealCmd(t *testing.T) {
-	var name string
-	var args []string
-	if runtime.GOOS == "windows" {
-		name = "cmd"
-		args = []string{"/c", "echo hello"}
-	} else {
-		name = "echo"
-		args = []string{"hello"}
-	}
-	out, _, code, err := defaultProbe(context.Background(), name, args, nil)
+	out, _, code, err := defaultProbe(context.Background(), "echo", []string{"hello"}, nil)
 	if err != nil {
 		t.Fatalf("defaultProbe: %v", err)
 	}
@@ -281,9 +181,5 @@ func TestDefaultProbeExecutesRealCmd(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(string(out)), "hello") {
 		t.Errorf("output = %q", out)
-	}
-	// exec.LookPath sanity for the chosen command.
-	if _, err := exec.LookPath(name); err != nil {
-		t.Logf("note: %s resolved via shell", name)
 	}
 }

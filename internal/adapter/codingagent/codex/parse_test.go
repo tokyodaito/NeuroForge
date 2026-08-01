@@ -203,7 +203,7 @@ func TestParseCodexLineCRLF(t *testing.T) {
 }
 
 func TestParseCodexLineUTF8BOM(t *testing.T) {
-	// A leading UTF-8 BOM (common on Windows) must be stripped before parsing.
+	// A leading UTF-8 BOM must be stripped before parsing.
 	line := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"type":"task_complete"}`)...)
 	ev, err := parseCodexLine(line, parseNow)
 	if err != nil {

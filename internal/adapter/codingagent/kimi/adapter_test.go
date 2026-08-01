@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -56,9 +55,6 @@ func buildStub(t *testing.T) string {
 			t.Fatalf("mktemp: %v", err)
 		}
 		bin := filepath.Join(dir, "kimistub")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
 		cmd := exec.Command("go", "build", "-o", bin, "./internal/adapter/codingagent/kimi/internal/kimistub")
 		cmd.Dir = moduleRoot(t)
 		if out, err := cmd.CombinedOutput(); err != nil {

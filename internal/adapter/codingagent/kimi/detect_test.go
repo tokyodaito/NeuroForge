@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,18 +39,11 @@ func isolatePath(t *testing.T, dir string) {
 	t.Setenv("PATH", dir)
 }
 
-func kimiExeName() string {
-	if runtime.GOOS == "windows" {
-		return "kimi.exe"
-	}
-	return "kimi"
-}
-
 // T1 — Found via isolated PATH: controlled fake only, exact canonical path,
 // stub default version; no real user PATH dependency.
 func TestDetectViaPATH(t *testing.T) {
 	dir := t.TempDir()
-	dst := copyStubTo(t, dir, kimiExeName())
+	dst := copyStubTo(t, dir, "kimi")
 	isolatePath(t, dir)
 
 	a := New(Options{BinaryName: "kimi"})
@@ -84,11 +76,8 @@ func TestDetectUnknownBinaryName(t *testing.T) {
 	}
 }
 
-// T3 — Unix non-executable file is not accepted by LookPath.
+// T3 — A non-executable file is not accepted by LookPath.
 func TestDetectNonExecutableRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("executable-bit semantics are Unix-specific")
-	}
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "kimi")
 	if err := os.WriteFile(dst, []byte("#!/bin/sh\necho no\n"), 0o644); err != nil {
@@ -104,9 +93,6 @@ func TestDetectNonExecutableRejected(t *testing.T) {
 
 // T4 — Symlink to the stub is accepted; Detect reports the path LookPath returns.
 func TestDetectSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink fixture is Unix-oriented")
-	}
 	dir := t.TempDir()
 	target := copyStubTo(t, dir, "kimi-target")
 	link := filepath.Join(dir, "kimi")
@@ -133,7 +119,7 @@ func TestDetectSpacesInPath(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dst := copyStubTo(t, dir, kimiExeName())
+	dst := copyStubTo(t, dir, "kimi")
 	isolatePath(t, dir)
 
 	a := New(Options{BinaryName: "kimi", ExtraEnv: []string{"KIMI_STUB_VERSION=2.0.0"}})
@@ -154,7 +140,7 @@ func TestDetectUnicodePath(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dst := copyStubTo(t, dir, kimiExeName())
+	dst := copyStubTo(t, dir, "kimi")
 	isolatePath(t, dir)
 
 	a := New(Options{BinaryName: "kimi"})
@@ -174,14 +160,14 @@ func TestDetectUnicodePath(t *testing.T) {
 // PATH (safe under parallel package load and sibling adapter tests).
 func TestDetectLookPathInjection(t *testing.T) {
 	dir := t.TempDir()
-	dst := copyStubTo(t, dir, kimiExeName())
+	dst := copyStubTo(t, dir, "kimi")
 	// Deliberately leave PATH pointing somewhere that has no kimi.
 	isolatePath(t, t.TempDir())
 
 	a := New(Options{
 		BinaryName: "kimi",
 		LookPath: func(file string) (string, error) {
-			if file == "kimi" || file == kimiExeName() {
+			if file == "kimi" {
 				return dst, nil
 			}
 			return "", errors.New("not found: " + file)
@@ -205,7 +191,7 @@ func TestDetectLookPathInjection(t *testing.T) {
 func TestDetectIgnoresRealKimiOnHostPATH(t *testing.T) {
 	hostKimi, hostErr := exec.LookPath("kimi")
 	dir := t.TempDir()
-	dst := copyStubTo(t, dir, kimiExeName())
+	dst := copyStubTo(t, dir, "kimi")
 	// Isolated PATH: only the stub dir. Host kimi must not be visible.
 	isolatePath(t, dir)
 
@@ -230,9 +216,6 @@ func TestDetectIgnoresRealKimiOnHostPATH(t *testing.T) {
 // non-executable name earlier on PATH must not be "fixed" by falling through
 // to a later real kimi when PATH is isolated.
 func TestDetectNonExecutableDoesNotFallThrough(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("executable-bit fallthrough is Unix-specific")
-	}
 	// Prepend-style PATH used to allow fallthrough to ~/.kimi-code/bin/kimi.
 	// With isolation, non-exec → not installed.
 	dir := t.TempDir()
@@ -245,76 +228,3 @@ func TestDetectNonExecutableDoesNotFallThrough(t *testing.T) {
 		t.Errorf("isolated non-exec must not fall through: %+v", d)
 	}
 }
-
-// TestDetectCMDShim verifies exec.LookPath + PATHEXT resolution of an npm-style
-// .cmd shim on Windows. On non-Windows there is no PATHEXT, so the same code
-// path is exercised via the plain-PATH test above.
-func TestDetectCMDShim(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT .cmd shims are a Windows concern")
-	}
-	stub := buildStub(t)
-	dir := t.TempDir()
-	shim := filepath.Join(dir, "kimi.cmd")
-	// A minimal npm-style shim forwarding all args to the real binary.
-	body := "@echo off\r\n\"" + stub + "\" %*\r\n"
-	if err := os.WriteFile(shim, []byte(body), 0o644); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	isolatePath(t, dir)
-
-	a := New(Options{BinaryName: "kimi"})
-	d := a.Detect(testContext())
-	if !d.Installed {
-		t.Fatalf(".cmd shim not detected: %+v", d)
-	}
-	if !strings.Contains(d.Version, "1.4.0") {
-		t.Errorf(".cmd shim version = %q, want the stub default 1.4.0", d.Version)
-	}
-}
-
-// TestDetectBATShim verifies .bat shim resolution via PATHEXT on Windows.
-func TestDetectBATShim(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT .bat shims are a Windows concern")
-	}
-	stub := buildStub(t)
-	dir := t.TempDir()
-	shim := filepath.Join(dir, "kimi.bat")
-	body := "@echo off\r\n\"" + stub + "\" %*\r\n"
-	if err := os.WriteFile(shim, []byte(body), 0o644); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	isolatePath(t, dir)
-
-	a := New(Options{BinaryName: "kimi"})
-	if d := a.Detect(testContext()); !d.Installed {
-		t.Errorf(".bat shim not detected: %+v", d)
-	}
-}
-
-func TestDetectPATHEXTOrdering(t *testing.T) {
-	// PATHEXT governs which extension wins. With PATHEXT=.EXE only, a .cmd shim
-	// must NOT be picked up (it is not an executable extension). PATH is
-	// isolated to the temp dir so a real `kimi` elsewhere cannot satisfy the
-	// lookup.
-	if runtime.GOOS != "windows" {
-		t.Skip("PATHEXT is Windows-only")
-	}
-	stub := buildStub(t)
-	dir := t.TempDir()
-	cmdShim := filepath.Join(dir, "kimi.cmd")
-	if err := os.WriteFile(cmdShim, []byte("@echo off\r\n\""+stub+"\" %*\r\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir) // only this dir is searched
-	t.Setenv("PATHEXT", ".EXE")
-
-	a := New(Options{BinaryName: "kimi"})
-	if d := a.Detect(testContext()); d.Installed {
-		t.Errorf("with PATHEXT=.EXE a .cmd-only dir must not resolve: %+v", d)
-	}
-}
-
-// Ensure exec is referenced even when the windows-only tests are skipped.
-var _ = exec.LookPath

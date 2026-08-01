@@ -11,7 +11,7 @@ import (
 )
 
 // utf8BOM is the UTF-8 byte-order mark a Codex build may prepend to its first
-// line on Windows.
+// line.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // lineScanner reads newline-delimited bytes without bufio.Scanner's default

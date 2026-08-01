@@ -12,9 +12,8 @@
 //
 //   - The agent process receives only an allowlisted environment. Merge tokens,
 //     the daemon auth token, unrelated API keys and the entire host environment
-//     are NEVER forwarded. Only PATH/HOME/USERPROFILE/USER/LANG/LC_ALL/TERM and
-//     OS essentials (SystemRoot/TEMP/TMP) plus the caller's explicit
-//     [protocol.AgentRunRequest.AllowlistEnv] are passed.
+//     are NEVER forwarded. Only PATH/HOME/USER/LANG/LC_ALL/TERM plus the
+//     caller's explicit [protocol.AgentRunRequest.AllowlistEnv] are passed.
 //   - Kimi never reads or writes the user's global profile: its home/config is
 //     relocated to a per-run directory rooted in the run workspace.
 //   - Captured stderr is scrubbed of credential-shaped substrings before it is
@@ -25,10 +24,9 @@
 //   - Unknown/malformed/partial stream-json output never aborts a run; it is
 //     surfaced as a recoverable warning and the offending line is saved to the
 //     artifacts directory.
-//   - Cancellation terminates the entire process group (Windows:
-//     CREATE_NEW_PROCESS_GROUP + taskkill /T /F; unix: setpgid + negative-pgid
-//     signal) via the shared [proctree] package — this adapter never
-//     reimplements process handling.
+//   - Cancellation terminates the entire process group (setpgid +
+//     negative-pgid signal) via the shared [proctree] package — this adapter
+//     never reimplements process handling.
 //   - Failure classification never yields an unbounded retry.
 //
 // The package does not self-register. Callers construct it via [New] and

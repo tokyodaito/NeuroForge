@@ -14,7 +14,7 @@ const defaultBinaryName = "grok"
 type Options struct {
 	// Binary overrides the Grok executable name or path resolved by detection
 	// and used as the headless command (argv[0]). Empty → "grok" (resolved via
-	// PATH/PATHEXT). Use an absolute path to tolerate spaces/Unicode.
+	// PATH). Use an absolute path to tolerate spaces/Unicode.
 	Binary string
 
 	// ArtifactsDir is where malformed agent output lines are persisted for

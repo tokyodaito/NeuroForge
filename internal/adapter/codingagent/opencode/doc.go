@@ -21,7 +21,7 @@
 // # Security invariants (enforced unconditionally)
 //
 //   - The agent process receives an ALLOWLISTED environment only (spec §29.2,
-//     AC-28): PATH/HOME/USERPROFILE/USER/LANG/LC_ALL/TERM/SystemRoot/TEMP/TMP
+//     AC-28): PATH/HOME/USER/LANG/LC_ALL/TERM/TEMP/TMP
 //     plus the caller's [protocol.AgentRunRequest.AllowlistEnv]. VCS merge
 //     tokens, production credentials, unrelated API keys and the daemon auth
 //     token are never forwarded.

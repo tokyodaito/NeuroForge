@@ -5,8 +5,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -22,11 +20,8 @@ func (a *Adapter) resolveBinary() string {
 	return defaultBinaryName
 }
 
-// lookPath finds the Grok executable. It is a PATHEXT-aware superset of
-// [os/exec.LookPath]: on Windows it tolerates .exe/.cmd/.bat and npm/cjs shims
-// and respects a possibly custom PATHEXT; on every platform it tolerates spaces
-// and Unicode in both the name and PATH entries. A name that is already a path
-// (absolute or relative) is resolved directly with extension trials on Windows.
+// lookPath finds the Grok executable via [os/exec.LookPath]. A name that is
+// already a path (absolute or relative) is validated directly.
 func lookPath(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("grok: empty binary name")
@@ -34,90 +29,14 @@ func lookPath(name string) (string, error) {
 
 	// Absolute or relative path: resolve directly.
 	if strings.ContainsRune(name, os.PathSeparator) || strings.ContainsRune(name, '/') {
-		return resolvePathWithExtensions(name)
+		if fileExists(name) {
+			return name, nil
+		}
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
 	}
 
-	// Bare name: search PATH. exec.LookPath already honours PATHEXT on Windows
-	// (Go ≥ 1.19), but we fall back to a manual search so a custom PATHEXT,
-	// missing extensions and shim scripts are all handled uniformly.
-	if runtime.GOOS == "windows" {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
-		}
-	}
-	return searchPath(name)
-}
-
-// resolvePathWithExtensions handles a name that is already a path, applying
-// Windows extension trials when it has no extension.
-func resolvePathWithExtensions(name string) (string, error) {
-	if fileExists(name) {
-		return name, nil
-	}
-	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
-		for _, ext := range pathExts() {
-			candidate := name + ext
-			if fileExists(candidate) {
-				return candidate, nil
-			}
-		}
-	}
-	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-}
-
-// searchPath walks each PATH entry and tries the bare name plus PATHEXT
-// extensions (Windows) or the exact name (other platforms).
-func searchPath(name string) (string, error) {
-	pathEnv := os.Getenv("PATH")
-	exts := []string{""}
-	if runtime.GOOS == "windows" {
-		exts = pathExts()
-		if len(exts) == 0 {
-			exts = []string{".exe", ".cmd", ".bat"}
-		}
-		// Allow case-insensitive match of the bare name too.
-	}
-	for _, dir := range filepath.SplitList(pathEnv) {
-		if dir == "" {
-			continue
-		}
-		for _, ext := range exts {
-			candidate := filepath.Join(dir, name+ext)
-			if fileExists(candidate) {
-				return candidate, nil
-			}
-		}
-	}
-	// Final fallback: let exec.LookPath decide (covers Windows case where the
-	// manual search missed a PATHEXT-less match found by the stdlib).
-	if runtime.GOOS != "windows" {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
-		}
-	}
-	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-}
-
-// pathExts returns the ordered PATHEXT extensions (Windows), each lower-cased
-// for matching but returned verbatim for appending. Empty off-Windows.
-func pathExts() []string {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-	pe := os.Getenv("PATHEXT")
-	if pe == "" {
-		pe = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
-	}
-	parts := strings.Split(pe, ";")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
+	// Bare name: search PATH.
+	return exec.LookPath(name)
 }
 
 func fileExists(name string) bool {

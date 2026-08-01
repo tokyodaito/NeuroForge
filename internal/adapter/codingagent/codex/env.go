@@ -8,17 +8,13 @@ import (
 // baseEnvNames is the positive allowlist of OS-essential environment variables
 // passed to every Codex process (spec §29.2). It is deliberately minimal and
 // never includes merge tokens, production credentials, unrelated API keys or the
-// daemon auth token (AC-28). Windows essentials (SystemRoot, COMSPEC, PATHEXT,
-// USERPROFILE, TEMP/TMP) are included so the Codex binary and any npm shim it
-// invokes can start.
+// daemon auth token (AC-28).
 var baseEnvNames = []string{
 	"PATH",
-	"HOME", "USER", "USERPROFILE", "LOGNAME",
+	"HOME", "USER", "LOGNAME",
 	"LANG", "LC_ALL", "LC_CTYPE",
 	"TERM", "SHELL", "TZ",
 	"TEMP", "TMP", "TMPDIR",
-	// Windows essentials (no secrets; required for process spawning).
-	"SystemRoot", "SystemDrive", "COMSPEC", "PATHEXT", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
 }
 
 // forbiddenEnvPrefixes lists environment-variable name prefixes that must NEVER
@@ -46,9 +42,7 @@ var forbiddenEnvPrefixes = []string{
 // Only variables on baseEnvNames or the caller's allowlist survive, and any
 // variable matching forbiddenEnvPrefixes is rejected as defence-in-depth. The
 // result is deterministic (base names in declared order, then allowlist in
-// order). Env keys are compared case-insensitively for de-duplication so Windows
-// (where keys are case-insensitive) cannot leak a forbidden var under a
-// different casing.
+// order). Env keys are compared case-insensitively for de-duplication.
 func buildAgentEnv(allowlist []string) []string {
 	seen := make(map[string]bool, len(baseEnvNames)+len(allowlist))
 	out := make([]string, 0, len(baseEnvNames)+len(allowlist))

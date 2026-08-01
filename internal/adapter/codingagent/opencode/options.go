@@ -16,8 +16,7 @@ const adapterVersion = "opencode-adapter-v1"
 // Options configures an OpenCode [Adapter]. All fields are optional.
 type Options struct {
 	// Binary is the OpenCode executable to invoke. If empty, [Adapter.Detect]
-	// resolves "opencode" on PATH (honouring PATHEXT on Windows and tolerating
-	// the .cmd/.bat shims produced by npm-style installers).
+	// resolves "opencode" on PATH.
 	Binary string
 
 	// Agent is the OpenCode agent profile passed via --agent. If empty, no

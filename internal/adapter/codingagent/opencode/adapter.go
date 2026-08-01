@@ -61,9 +61,8 @@ func (a *Adapter) SendMessage(context.Context, protocol.RunHandle, protocol.Agen
 
 // Cancel terminates a run AND every descendant it spawned (spec: cancellation
 // ends the whole process group). It cancels the supervision context and kills
-// the group via [proctree.KillGroup] (Windows: CREATE_NEW_PROCESS_GROUP +
-// taskkill /T /F). Idempotent: cancelling an unknown or already-finished run is
-// reported as an error but never panics.
+// the group via [proctree.KillGroup]. Idempotent: cancelling an unknown or
+// already-finished run is reported as an error but never panics.
 func (a *Adapter) Cancel(_ context.Context, handle protocol.RunHandle) error {
 	a.mu.Lock()
 	st, ok := a.runs[handle.RunID]

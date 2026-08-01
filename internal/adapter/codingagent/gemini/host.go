@@ -17,9 +17,9 @@ import (
 // (paid) Gemini CLI. The production implementation is [realHost]; tests inject
 // a stub.
 type host interface {
-	// lookPath resolves the Gemini CLI executable, honouring PATHEXT on Windows
-	// and tolerating spaces/Unicode in PATH entries. Returns an absolute or
-	// PATH-relative path, or an error if not found.
+	// lookPath resolves the Gemini CLI executable, tolerating spaces/Unicode in
+	// PATH entries. Returns an absolute or PATH-relative path, or an error if
+	// not found.
 	lookPath(name string) (string, error)
 
 	// probe runs a short-lived command to completion (e.g. `gemini --version`)

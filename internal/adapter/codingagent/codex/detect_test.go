@@ -42,19 +42,16 @@ func TestDetectInstalled(t *testing.T) {
 	}
 }
 
-func TestDetectWindowsExtensionsAndShims(t *testing.T) {
-	// Detection must tolerate .exe/.cmd/.bat and npm shims; exec.LookPath on
-	// Windows honours PATHEXT. We verify the adapter accepts whatever path the
-	// resolver returns and probes it.
+func TestDetectResolvedPathsAndShims(t *testing.T) {
+	// Detection must accept whatever path the resolver returns (including npm
+	// shims) and probe it.
 	for _, tc := range []struct {
 		name string
 		path string
 	}{
-		{"exe", `C:\Program Files\Codex\codex.exe`},
-		{"cmd", `C:\Users\me\AppData\Roaming\npm\codex.cmd`},
-		{"bat", `D:\tools\codex.bat`},
+		{"abs", `/opt/codex/bin/codex`},
 		{"npm-shim-no-ext", `/home/me/.nvm/versions/node/v20/bin/codex`},
-		{"powershell", `C:\tools\codex.ps1`},
+		{"spaces", `/home/me/my tools/codex`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fr := &fakeRunner{version: "codex 0.13.0"}

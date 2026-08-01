@@ -12,8 +12,7 @@ import (
 // [now] clock). External callers leave them zero.
 type Options struct {
 	// BinaryPath overrides Codex binary resolution. When empty, [Adapter.Detect]
-	// resolves "codex" via exec.LookPath (honouring PATHEXT on Windows, and
-	// tolerating .exe/.cmd/.bat and npm shims).
+	// resolves "codex" via exec.LookPath.
 	BinaryPath string
 
 	// ArtifactsDir is where malformed/unknown Codex output lines are persisted
@@ -32,7 +31,7 @@ type Options struct {
 	runner Runner
 
 	// lookup overrides binary resolution (default exec.LookPath) for detection
-	// tests that exercise PATHEXT/Unicode handling without mutating PATH.
+	// tests that exercise PATH/Unicode handling without mutating PATH.
 	lookup func(file string) (string, error)
 
 	// now returns the current time (default time.Now).

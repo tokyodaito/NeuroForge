@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -206,10 +205,6 @@ func TestForgeRun_DaemonProcCount_DifferentHomesIsolation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns real daemon processes")
 	}
-	if runtime.GOOS == "windows" {
-		t.Skip("process-table sampling is unix-only here")
-	}
-
 	fA := newRunFixture(t)
 	fB := newRunFixture(t)
 	// Both fixtures share the package forge binary path.
@@ -270,10 +265,6 @@ func TestForgeRun_DaemonProcCount_ForeignHomeNotCounted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns real daemon processes")
 	}
-	if runtime.GOOS == "windows" {
-		t.Skip("process-table sampling is unix-only here")
-	}
-
 	foreign := newRunFixture(t)
 	procF := startRawDaemon(t, foreign)
 	t.Cleanup(func() {
@@ -359,9 +350,6 @@ func TestForgeRun_DaemonProcCount_ForeignHomeNotCounted(t *testing.T) {
 // daemonProcCountGlobal counts every live `<bin> daemon run` regardless of home.
 // Used only by isolation tests to prove two homes are both visible globally.
 func daemonProcCountGlobal(bin string) int {
-	if runtime.GOOS == "windows" {
-		return 0
-	}
 	out, err := exec.Command("pgrep", "-f", bin+" daemon run").Output()
 	if err != nil {
 		return 0
@@ -407,9 +395,6 @@ func TestForgeRun_StaleAutostartLockNotStuck(t *testing.T) {
 func TestForgeRun_DirectDaemonDoubleStart_OnlyOneBinds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns real daemon processes")
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("process-table signalling is unix-only here")
 	}
 	f := newRunFixture(t)
 	dirs := daemon.WithRoot(f.home)
@@ -554,7 +539,7 @@ func daemonProcCount(bin, home string) int {
 
 // daemonPIDsForHome lists live daemon PIDs for bin that belong to home.
 func daemonPIDsForHome(bin, home string) []int {
-	if runtime.GOOS == "windows" || home == "" {
+	if home == "" {
 		return nil
 	}
 	home = filepath.Clean(home)

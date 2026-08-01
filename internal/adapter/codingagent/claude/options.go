@@ -30,8 +30,7 @@ type PromptStrategy string
 
 const (
 	// PromptStdin (default) pipes the prompt text through the child's stdin.
-	// This keeps argv short and stable regardless of prompt size, which matters
-	// on Windows where CreateProcess caps the command line near 32 000 chars.
+	// This keeps argv short and stable regardless of prompt size.
 	// It mirrors the documented `cat file | claude -p` pattern.
 	PromptStdin PromptStrategy = "stdin"
 	// PromptPositional passes the prompt text as the positional argument to
@@ -45,7 +44,7 @@ const (
 // (paid) Claude Code install (rule §36.5).
 type Options struct {
 	// BinaryPath overrides executable resolution. When empty, [Detect] resolves
-	// "claude" via PATH/PATHEXT (see [lookPathClaude]).
+	// "claude" via PATH (see [lookPathClaude]).
 	BinaryPath string
 
 	// ArtifactsDir is where malformed agent output lines are persisted for
@@ -97,8 +96,8 @@ type Options struct {
 
 	// ---- test/determinism seams (defaults perform real OS operations) ----
 
-	// LookPath resolves the executable for detection. Defaults to a PATHEXT-aware
-	// resolver built on [os/exec.LookPath] (see detect.go).
+	// LookPath resolves the executable for detection. Defaults to
+	// [os/exec.LookPath] (see detect.go).
 	LookPath lookPathFunc
 
 	// Probe runs a short-lived probe command (version/auth) and returns its

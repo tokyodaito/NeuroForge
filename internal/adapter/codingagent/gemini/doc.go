@@ -13,8 +13,8 @@
 //
 //   - The agent process runs in its own process group (proctree); cancellation
 //     terminates the whole group, never orphaning descendants.
-//   - The agent environment is a positive allowlist (PATH/HOME/USERPROFILE/
-//     USER/LANG/LC_ALL/TERM/SystemRoot/TEMP/TMP + the request allowlist). Merge
+//   - The agent environment is a positive allowlist (PATH/HOME/USER/LANG/
+//     LC_ALL/TERM + the request allowlist). Merge
 //     tokens, API keys and the daemon auth token are never passed (§29.2, AC-28).
 //   - Malformed, partial or unknown-future output never aborts a run; it is
 //     surfaced as a recoverable warning and persisted to the artifacts dir.

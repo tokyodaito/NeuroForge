@@ -50,8 +50,8 @@ func New(opts Options) *Adapter {
 func (a *Adapter) ID() string { return "codex" }
 
 // Detect implements [codingagent.Adapter]. It resolves the Codex binary (via
-// exec.LookPath, honouring PATHEXT/.exe/.cmd/.bat and npm shims on Windows) and
-// runs "codex --version". The result is cached for the life of the adapter.
+// exec.LookPath) and runs "codex --version". The result is cached for the life
+// of the adapter.
 func (a *Adapter) Detect(ctx context.Context) protocol.DetectionResult {
 	return a.detect(ctx)
 }

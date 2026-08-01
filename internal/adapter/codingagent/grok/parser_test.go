@@ -114,7 +114,7 @@ func TestParseGrokLineUnknownTypeWarning(t *testing.T) {
 }
 
 func TestParseGrokLineCRLF(t *testing.T) {
-	// A trailing \r\n (Windows line ending) must not corrupt parsing.
+	// A trailing \r\n (CRLF line ending) must not corrupt parsing.
 	evs, _, status := parseGrokLine([]byte(`{"type":"message","delta":"hi"}`+"\r\n"), nil)
 	if status != parseOK {
 		t.Fatalf("CRLF line status = %d", status)

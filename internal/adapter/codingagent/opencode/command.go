@@ -9,9 +9,9 @@ import (
 
 // buildArgv constructs the exact, deterministic headless argv for an OpenCode
 // run from a [protocol.AgentRunRequest] (spec §12.2 Start). It emits argv ONLY
-// — never a shell string and never /bin/sh or cmd.exe — so spaces and Unicode in
-// paths are handled natively by the OS process spawn (Windows-safe). Only
-// documented OpenCode `run` flags are used (see docs/adapters/opencode.md).
+// — never a shell string — so spaces and Unicode in paths are handled natively
+// by the OS process spawn. Only documented OpenCode `run` flags are used (see
+// docs/adapters/opencode.md).
 //
 // `--share` is NEVER emitted: NeuroForge-managed runs are never shared.
 func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) []string {
@@ -50,11 +50,10 @@ func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) []strin
 
 // baseEnvKeys are the allowlisted environment variables always forwarded to the
 // agent process when present (spec §29.2). They contain no secrets and are
-// required for the engine, the OS and locale to function. Matching is
-// case-insensitive on Windows (where SystemRoot/USERPROFILE/TEMP/TMP matter).
+// required for the engine, the OS and locale to function.
 var baseEnvKeys = []string{
-	"PATH", "HOME", "USERPROFILE", "USER", "LANG", "LC_ALL", "TERM",
-	"SystemRoot", "TEMP", "TMP",
+	"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM",
+	"TEMP", "TMP",
 }
 
 // buildEnv constructs the allowlisted environment for the agent process (spec
@@ -62,14 +61,14 @@ var baseEnvKeys = []string{
 // [protocol.AgentRunRequest.AllowlistEnv] are forwarded. The environment is
 // built from scratch — never derived from os.Environ — so VCS merge tokens,
 // production credentials, unrelated API keys and the daemon auth token can never
-// leak into the agent process. Allowlist keys are matched case-insensitively.
+// leak into the agent process.
 //
 // Each AllowlistEnv entry is either "KEY" (copied from the current environment
 // if set) or "KEY=VAL" (forwarded verbatim).
 func buildEnv(allowlist []string) []string {
 	env := make([]string, 0, len(baseEnvKeys)+len(allowlist))
 	appendEnv := func(key string) {
-		if v, ok := lookupEnvCI(key); ok {
+		if v, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+v)
 		}
 	}
@@ -94,20 +93,6 @@ func buildEnv(allowlist []string) []string {
 		appendEnv(kv)
 	}
 	return env
-}
-
-// lookupEnvCI looks up key in the current environment case-insensitively (Windows
-// env keys are case-insensitive; on unix this is a harmless extra check).
-func lookupEnvCI(key string) (string, bool) {
-	lower := strings.ToLower(key)
-	for _, kv := range os.Environ() {
-		if i := strings.IndexByte(kv, '='); i >= 0 {
-			if strings.ToLower(kv[:i]) == lower {
-				return kv[i+1:], true
-			}
-		}
-	}
-	return "", false
 }
 
 // forbiddenCredentialKeys are substrings (lowercased) that mark an environment

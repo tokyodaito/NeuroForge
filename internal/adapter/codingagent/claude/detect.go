@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,7 +59,7 @@ func (v parsedVersion) atLeast(maj, min, pat int) bool {
 }
 
 // binary resolves the executable to invoke: Options.BinaryPath when set,
-// otherwise "claude" via the injected PATHEXT-aware LookPath.
+// otherwise "claude" via the injected LookPath.
 func (a *Adapter) binary() (string, error) {
 	if p := strings.TrimSpace(a.opts.BinaryPath); p != "" {
 		// An explicit path is trusted as-is (callers pass an absolute path).
@@ -171,103 +169,11 @@ func defaultProbe(ctx context.Context, name string, args []string, env []string)
 	return out.Bytes(), eout.Bytes(), exitCode, nil
 }
 
-// ---- PATHEXT-aware LookPath ----
+// ---- LookPath ----
 
-// defaultLookPath resolves an executable using exec.LookPath first, then a
-// manual PATH+PATHEXT fallback that also covers npm shims (.cmd/.bat on
-// Windows, bare scripts on unix). It tolerates spaces and Unicode in PATH
-// entries.
+// defaultLookPath resolves an executable using [os/exec.LookPath].
 func defaultLookPath(file string) (string, error) {
-	if p, err := exec.LookPath(file); err == nil {
-		return p, nil
-	}
-	return searchPathExt(file)
-}
-
-// searchPathExt manually walks PATH, trying the bare name plus every PATHEXT
-// extension (Windows) or the bare name only (unix). Returns the first existing
-// candidate as an absolute path, or os.ErrNotExist if none match.
-func searchPathExt(file string) (string, error) {
-	// An absolute or relative path: resolve extensions against it directly.
-	if filepath.IsAbs(file) || strings.ContainsRune(file, os.PathSeparator) || strings.ContainsRune(file, '/') {
-		for _, p := range candidatePaths(file) {
-			if isRegularFile(p) {
-				return abs(p), nil
-			}
-		}
-		return "", os.ErrNotExist
-	}
-	pathEnv := os.Getenv("PATH")
-	for _, dir := range filepath.SplitList(pathEnv) {
-		if dir == "" {
-			dir = "."
-		}
-		base := filepath.Join(dir, file)
-		for _, p := range candidatePaths(base) {
-			if isRegularFile(p) {
-				return abs(p), nil
-			}
-		}
-	}
-	return "", os.ErrNotExist
-}
-
-// candidatePaths returns the names to probe for a base path: the base itself
-// (covers unix shims and already-suffixed names) plus base+each PATHEXT ext
-// (Windows). Comparisons against an existing extension are case-insensitive.
-func candidatePaths(base string) []string {
-	out := []string{base}
-	for _, e := range pathExts() {
-		if e == "" {
-			continue
-		}
-		ext := e
-		if !strings.HasPrefix(ext, ".") {
-			ext = "." + ext
-		}
-		if strings.EqualFold(filepath.Ext(base), ext) {
-			continue
-		}
-		out = append(out, base+ext)
-	}
-	return out
-}
-
-// pathExts returns the PATHEXT extensions (Windows) or nil on non-Windows.
-func pathExts() []string {
-	ext := os.Getenv("PATHEXT")
-	if ext == "" {
-		return nil
-	}
-	// PATHEXT is a Windows environment variable whose value is always
-	// semicolon-delimited, independent of the host OS path-list separator
-	// (os.PathListSeparator is ':' on Unix). Split on ';' so a PATHEXT set on a
-	// non-Windows host (e.g. in tests or cross-platform tooling) is parsed
-	// correctly rather than treated as one giant entry.
-	parts := strings.Split(ext, ";")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func isRegularFile(p string) bool {
-	fi, err := os.Stat(p)
-	if err != nil || fi.IsDir() {
-		return false
-	}
-	return true
-}
-
-func abs(p string) string {
-	if a, err := filepath.Abs(p); err == nil {
-		return a
-	}
-	return p
+	return exec.LookPath(file)
 }
 
 // errNotInstalled is returned by binary() callers that want a sentinel.

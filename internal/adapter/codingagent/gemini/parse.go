@@ -10,7 +10,7 @@ import (
 	"neuroforge/internal/adapter/codingagent/protocol"
 )
 
-// utf8BOM is the byte-order mark some Windows tools prepend to UTF-8 output.
+// utf8BOM is the byte-order mark some tools prepend to UTF-8 output.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // bufReader is a type alias for bufio.Reader so the scanner reads line fragments

@@ -9,11 +9,9 @@ import (
 
 // baseEnvKeys returns the OS-essential environment keys the adapter is allowed
 // to copy from the host environment. This is the fixed, minimal set (spec
-// §29.2): nothing credential-shaped is ever in it. Windows-specific keys
-// (SystemRoot/USERPROFILE/TEMP/TMP) are included because the OS needs them to
-// function; on other platforms they are simply absent and skipped.
+// §29.2): nothing credential-shaped is ever in it.
 func baseEnvKeys() []string {
-	keys := []string{"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "USERPROFILE", "SystemRoot", "TEMP", "TMP"}
+	keys := []string{"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TEMP", "TMP"}
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if v, ok := os.LookupEnv(k); ok {

@@ -7,7 +7,7 @@ import (
 )
 
 // utf8BOM is the UTF-8 byte-order-mark, optionally emitted by some CLI
-// runtimes (notably on Windows). It is stripped once from the head of the
+// runtimes. It is stripped once from the head of the
 // stream so it does not corrupt the first JSON line.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 

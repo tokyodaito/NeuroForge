@@ -7,8 +7,8 @@ import (
 )
 
 // TestDefaultDirs_HomeFallback verifies the runtime layout resolves to a home
-// directory and produces absolute paths on every platform (Windows uses
-// os.UserHomeDir -> filepath.Join, not a hard-coded Unix path).
+// directory and produces absolute paths (os.UserHomeDir + filepath.Join, not a
+// hard-coded path).
 func TestDefaultDirs_HomeFallback(t *testing.T) {
 	t.Setenv(EnvHome, "")
 	d, err := DefaultDirs()
@@ -49,8 +49,8 @@ func TestDefaultDirs_EnvHomeOverride(t *testing.T) {
 }
 
 // TestDirs_Ensure_PathWithSpaces verifies the runtime directory tree is created
-// under a root whose path contains spaces. This is common on Windows (e.g.
-// "C:\Users\Some User\.neuroforge") and must not break path handling.
+// under a root whose path contains spaces (e.g. "/home/some user/.neuroforge")
+// without breaking path handling.
 func TestDirs_Ensure_PathWithSpaces(t *testing.T) {
 	base := t.TempDir()
 	homeWithSpaces := filepath.Join(base, "has space dir")

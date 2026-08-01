@@ -76,8 +76,8 @@ func trimCR(b []byte) []byte {
 }
 
 // stripBOM returns a reader that skips a single leading UTF-8 BOM (EF BB BF)
-// if present. Claude Code does not emit a BOM, but Windows shells and some
-// proxies do; tolerating it keeps the run from mis-parsing the first line.
+// if present. Claude Code does not emit a BOM, but some shells and proxies do;
+// tolerating it keeps the run from mis-parsing the first line.
 func stripBOM(r io.Reader) io.Reader {
 	br := bufio.NewReader(r)
 	b, err := br.Peek(3)

@@ -1,8 +1,7 @@
 package proctree
 
 // Signal is a platform-independent process signal for [KillGroup]. It avoids a
-// direct syscall.Signal dependency in the public API so the same code compiles
-// on unix and windows.
+// direct syscall.Signal dependency in the public API.
 type Signal int
 
 const (

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -37,9 +36,6 @@ func fakePluginBin(t *testing.T) string {
 			t.Fatal(err)
 		}
 		bin := filepath.Join(dir, "fake-coding-agent")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
 		root := moduleRoot(t)
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/fake-coding-agent")
 		cmd.Dir = root

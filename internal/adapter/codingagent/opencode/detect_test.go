@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -58,8 +57,8 @@ func TestDetectExplicitBinaryAndProbe(t *testing.T) {
 }
 
 // TestDetectFindsShimOnPATH creates an opencode shim in a temp PATH dir and
-// verifies Detect resolves it. Exercises .exe/.cmd/.bat/shim + PATHEXT +
-// spaces/Unicode in the real exec.LookPath path (rule §36.5: no paid calls).
+// verifies Detect resolves it via the real exec.LookPath, tolerating
+// spaces/Unicode (rule §36.5: no paid calls).
 func TestDetectFindsShimOnPATH(t *testing.T) {
 	dir := t.TempDir()
 	// Unicode + spaces in the dir name to verify path tolerance.
@@ -67,17 +66,8 @@ func TestDetectFindsShimOnPATH(t *testing.T) {
 	if err := os.MkdirAll(unicodeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	name := "opencode"
-	if runtime.GOOS == "windows" {
-		name = "opencode.cmd"
-	} else {
-		name = "opencode"
-	}
-	shim := filepath.Join(unicodeDir, name)
+	shim := filepath.Join(unicodeDir, "opencode")
 	content := "#!/bin/sh\necho 'opencode 0.1.48'\n"
-	if runtime.GOOS == "windows" {
-		content = "@echo off\r\necho opencode 0.1.48\r\n"
-	}
 	if err := os.WriteFile(shim, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -93,25 +83,6 @@ func TestDetectFindsShimOnPATH(t *testing.T) {
 	}
 	if res.Path == "" {
 		t.Errorf("path empty")
-	}
-}
-
-// TestDetectCmdShimVariant explicitly checks a .cmd shim resolves (Windows) or
-// is skipped gracefully elsewhere.
-func TestDetectCmdShimVariant(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("cmd shim variant is Windows-specific")
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "opencode.cmd"), []byte("@echo off\r\necho opencode 0.1.48\r\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prev := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+prev)
-	a := New(Options{})
-	res := a.Detect(context.Background())
-	if !res.Installed {
-		t.Fatalf("expected .cmd shim detected")
 	}
 }
 

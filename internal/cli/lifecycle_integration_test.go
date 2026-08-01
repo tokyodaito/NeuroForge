@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,9 +38,6 @@ func forgeBinary(t *testing.T) string {
 			return
 		}
 		bin := filepath.Join(tmp, "forge")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/forge")
@@ -247,9 +243,6 @@ func TestIntegration_StartReclaimsStalePID(t *testing.T) {
 }
 
 func TestIntegration_SigTermStopsDaemon(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("SIGTERM cancellation test is unix-only")
-	}
 	bin := forgeBinary(t)
 	home := t.TempDir()
 	withDaemonCleanup(t, bin, home)

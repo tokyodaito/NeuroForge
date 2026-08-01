@@ -97,8 +97,7 @@ func (a *Adapter) ID() string { return EngineID }
 // stdout reader, a start/wait lifecycle and a whole-group kill. The production
 // implementation ([execProcess]) is built by [proctreeSpawner] and uses
 // [proctree.NewGroupCommand] + [proctree.KillGroup], so cancellation always
-// terminates the entire process tree (Windows: CREATE_NEW_PROCESS_GROUP +
-// taskkill /T /F; unix: setpgid + negative-pgid signal).
+// terminates the entire process tree (setpgid + negative-pgid signal).
 type process interface {
 	// Stdout returns the stream of newline-delimited Claude SDK messages.
 	Stdout() io.Reader

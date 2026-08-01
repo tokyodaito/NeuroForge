@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -50,9 +49,6 @@ func confStubBinary(t *testing.T) string {
 			t.Fatalf("mktemp: %v", err)
 		}
 		bin := filepath.Join(dir, "kimistub")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
 		root := moduleRoot(t)
 		cmd := exec.Command("go", "build", "-o", bin, "./internal/adapter/codingagent/kimi/internal/kimistub")
 		cmd.Dir = root

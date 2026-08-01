@@ -1,7 +1,6 @@
 package grok
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,41 +39,20 @@ func TestBuildEnvRequestAllowlist(t *testing.T) {
 	}
 }
 
-func TestBuildEnvWindowsKeys(t *testing.T) {
-	// The Windows-required keys must be in the allowlist so the CLI can resolve
-	// SystemRoot/TEMP regardless of platform the test runs on.
-	want := []string{"USERPROFILE", "SystemRoot", "TEMP", "TMP", "HOME", "USER", "LANG", "LC_ALL", "TERM", "PATH"}
+func TestBuildEnvEssentialKeys(t *testing.T) {
+	// The essential keys must be in the allowlist so the CLI can run.
+	want := []string{"TEMP", "TMP", "HOME", "USER", "LANG", "LC_ALL", "TERM", "PATH"}
 	for _, k := range want {
-		if !containsKey(allowlistKeys, k) && !strings.EqualFold(k, k) {
+		if !containsKey(allowlistKeys, k) {
 			t.Errorf("allowlist missing required key %q", k)
 		}
 	}
-	// Directly: set USERPROFILE/SystemRoot and ensure propagation.
-	t.Setenv("USERPROFILE", "C:\\Users\\builder")
-	t.Setenv("SystemRoot", "C:\\Windows")
+	// Directly: set an allowlisted key and ensure propagation.
+	t.Setenv("TEMP", "/tmp/grok-builder")
 	env := buildEnv(nil, nil)
 	joined := strings.Join(env, "\n")
-	if !strings.Contains(joined, "USERPROFILE=C:\\Users\\builder") {
-		t.Errorf("USERPROFILE not propagated: %s", joined)
-	}
-	if !strings.Contains(joined, "SystemRoot=C:\\Windows") {
-		t.Errorf("SystemRoot not propagated: %s", joined)
-	}
-}
-
-func TestBuildEnvCaseInsensitiveDedup(t *testing.T) {
-	// On Windows the same key under different casing must not duplicate. We test
-	// the keySet logic directly (platform-independent).
-	ks := newKeySet()
-	ks.add("Path")
-	if runtime.GOOS == "windows" {
-		if !ks.has("PATH") {
-			t.Error("keySet should be case-insensitive on Windows")
-		}
-	} else {
-		if ks.has("PATH") {
-			t.Error("keySet should be case-sensitive off Windows")
-		}
+	if !strings.Contains(joined, "TEMP=/tmp/grok-builder") {
+		t.Errorf("TEMP not propagated: %s", joined)
 	}
 }
 

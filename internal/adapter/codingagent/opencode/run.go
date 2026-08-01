@@ -35,8 +35,7 @@ type runProcess interface {
 
 // spawnFunc builds and starts an agent process group from a fully-resolved argv,
 // working directory and allowlisted environment, returning a [runProcess]. The
-// production implementation uses [proctree.NewGroupCommand] (Windows-safe:
-// CREATE_NEW_PROCESS_GROUP + taskkill /T /F).
+// production implementation uses [proctree.NewGroupCommand].
 type spawnFunc func(argv []string, dir string, env []string) (runProcess, error)
 
 // proctreeRun is the production runProcess, wrapping a proctree *exec.Cmd.

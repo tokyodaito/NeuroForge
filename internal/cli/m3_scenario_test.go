@@ -353,8 +353,8 @@ func workingTreeFiles(t *testing.T, dir string) map[string]bool {
 			return nil
 		}
 		rel, _ := filepath.Rel(dir, path)
-		// Exclude .git internals using the OS separator so this works on both
-		// POSIX (/) and Windows (\). git worktree inherently adds ref/worktree
+		// Exclude .git internals using the OS separator. git worktree
+		// inherently adds ref/worktree
 		// metadata to the object database; the §17.1 invariant is that the
 		// user-visible working tree is untouched.
 		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {

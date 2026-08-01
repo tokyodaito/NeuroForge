@@ -70,8 +70,8 @@ func TestBuildRunEnvHomeWinsOverAllowlist(t *testing.T) {
 }
 
 func TestBuildRunEnvCaseInsensitiveDedup(t *testing.T) {
-	// Env keys are case-insensitive on Windows; the dedup must treat Path and
-	// PATH as the same key so the base PATH is not duplicated.
+	// The dedup is case-insensitive: Path and PATH are the same key, so the
+	// base PATH is not duplicated.
 	t.Setenv("PATH", "/base")
 	env := buildRunEnv("KIMI_HOME", "/h", []string{"PATH=/overridden"}, nil)
 	count := 0

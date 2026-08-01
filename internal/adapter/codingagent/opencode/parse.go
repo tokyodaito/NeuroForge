@@ -8,7 +8,7 @@ import (
 )
 
 // utf8BOM is the UTF-8 byte-order mark, tolerated at the very start of a stream
-// (some Windows shells and toolchains emit it).
+// (some shells and toolchains emit it).
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // jsonlScanner reads newline-delimited bytes WITHOUT bufio.Scanner's default

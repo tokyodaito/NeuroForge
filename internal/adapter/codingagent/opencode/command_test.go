@@ -80,12 +80,12 @@ func TestBuildArgvNoShell(t *testing.T) {
 	}
 }
 
-func TestBuildArgvWindowsSpacesAndUnicode(t *testing.T) {
-	a := New(Options{Binary: `C:\Program Files\ünïcode\opencode.exe`})
+func TestBuildArgvSpacesAndUnicode(t *testing.T) {
+	a := New(Options{Binary: `/opt/ünïcode dir/opencode`})
 	argv := a.buildArgv(protocol.AgentRunRequest{
-		Workspace: `C:\My Workspace\proj`, Model: "p/m", Prompt: "héllo",
+		Workspace: `/home/me/My Workspace/proj`, Model: "p/m", Prompt: "héllo",
 	}, false)
-	if argv[0] != `C:\Program Files\ünïcode\opencode.exe` {
+	if argv[0] != `/opt/ünïcode dir/opencode` {
 		t.Errorf("binary path mangled: %v", argv)
 	}
 	// Locate --dir and verify the following token is the workspace verbatim.
@@ -93,7 +93,7 @@ func TestBuildArgvWindowsSpacesAndUnicode(t *testing.T) {
 	for i, v := range argv {
 		if v == "--dir" && i+1 < len(argv) {
 			found = true
-			if argv[i+1] != `C:\My Workspace\proj` {
+			if argv[i+1] != `/home/me/My Workspace/proj` {
 				t.Errorf("workspace path mangled: got %q in %v", argv[i+1], argv)
 			}
 		}

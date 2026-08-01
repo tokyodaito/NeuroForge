@@ -16,8 +16,7 @@ const binaryName = "opencode"
 // (spec §12.2). Resolution order:
 //
 //  1. Options.Binary, if set (used verbatim, allowing absolute/Unicode paths).
-//  2. exec.LookPath("opencode"), honouring PATHEXT on Windows so that the
-//     .exe, .cmd and .bat shims produced by npm-style installers are found.
+//  2. exec.LookPath("opencode").
 //
 // When a binary is found, Detect runs `opencode --version` to capture the engine
 // version string (used to gate capabilities). A failed version probe downgrades
@@ -54,9 +53,8 @@ func (a *Adapter) detectLocked(ctx context.Context) detection {
 	return detection{installed: true, path: resolved, version: ver, detail: detail + " " + ver}
 }
 
-// defaultLookPath resolves name on PATH exactly like exec.LookPath, which on
-// Windows already honours PATHEXT (including .exe/.cmd/.bat) and tolerates
-// spaces and Unicode in directory names. It is the production hook.
+// defaultLookPath resolves name on PATH exactly like exec.LookPath and
+// tolerates spaces and Unicode in directory names. It is the production hook.
 func defaultLookPath(file string) (string, error) {
 	return exec.LookPath(file)
 }

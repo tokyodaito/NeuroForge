@@ -181,8 +181,6 @@ func packageManagersFor(goos string) []string {
 		return []string{"brew"}
 	case "linux":
 		return []string{"apt", "dnf", "yum", "pacman", "apk", "zypper"}
-	case "windows":
-		return []string{"winget", "choco", "scoop"}
 	}
 	return nil
 }

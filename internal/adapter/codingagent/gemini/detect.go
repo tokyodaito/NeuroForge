@@ -5,15 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"neuroforge/internal/adapter/codingagent/protocol"
 )
 
 // Detect implements [codingagent.Adapter]. It resolves the Gemini CLI on PATH
-// (honouring PATHEXT and npm shims on Windows) and, when found, records its
-// version via a `gemini --version` probe. Detection never makes a paid call.
+// and, when found, records its version via a `gemini --version` probe.
+// Detection never makes a paid call.
 //
 // The probe is best-effort: a binary present but failing --version is still
 // reported as Installed (with the error in Detail), so `forge agent doctor` can
@@ -91,22 +90,14 @@ func joinDetail(parts ...any) string {
 	return b.String()
 }
 
-// lookPath resolves name using an explicit PATHEXT-aware search so detection is
-// deterministic across platforms and tolerant of spaces/Unicode in PATH. It is
-// a superset of [os/exec.LookPath] that also rejects PowerShell-only shims
-// (.ps1) which cannot be spawned by os/exec on Windows.
+// lookPath resolves name by searching each PATH directory for an executable
+// file. It tolerates spaces/Unicode in PATH entries (Go paths are UTF-8) and
+// requires the executable bit to be set (Unix semantics).
 //
 // Behaviour:
 //
-//   - If name already carries a path separator or a recognised executable
-//     suffix, it is checked directly (after appending a Windows extension when
-//     the OS is windows and none is present).
-//   - Otherwise each PATH directory is searched; on Windows every PATHEXT
-//     extension is tried in declared order. Directories with spaces and Unicode
-//     are handled naturally (Go paths are UTF-8).
-//   - Files ending in ".ps1" are skipped on Windows: npm installs both a .cmd
-//     shim and a .ps1 script; only the .cmd shim is directly executable via
-//     CreateProcess, so the .cmd is preferred.
+//   - If name already carries a path separator, it is checked directly.
+//   - Otherwise each PATH directory is searched for the bare name.
 func lookPath(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("empty executable name")
@@ -114,58 +105,23 @@ func lookPath(name string) (string, error) {
 
 	// Direct path / already-qualified name.
 	if strings.ContainsRune(name, os.PathSeparator) || strings.ContainsRune(name, '/') {
-		return findDirect(name)
+		return statExecutable(name)
 	}
 
-	pathEnv := os.Getenv("PATH")
-	paths := filepath.SplitList(pathEnv)
-	exts := pathExts()
-
-	for _, dir := range paths {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" {
 			dir = "."
 		}
-		base := name
-		// On Windows, if the candidate already has an extension, try it as-is
-		// first before cycling through PATHEXT (covers "gemini.cmd").
-		if hasExt(name) {
-			if p, err := statExecutable(filepath.Join(dir, base)); err == nil {
-				return p, nil
-			}
-		}
-		for _, ext := range exts {
-			candidate := filepath.Join(dir, base+ext)
-			if p, err := statExecutable(candidate); err == nil {
-				return p, nil
-			}
-		}
-	}
-	return "", execNotFound(name)
-}
-
-// findDirect handles a name that already contains a path separator.
-func findDirect(name string) (string, error) {
-	if p, err := statExecutable(name); err == nil {
-		return p, nil
-	}
-	for _, ext := range pathExts() {
-		if hasExt(name) {
-			break
-		}
-		if p, err := statExecutable(name + ext); err == nil {
+		if p, err := statExecutable(filepath.Join(dir, name)); err == nil {
 			return p, nil
 		}
 	}
 	return "", execNotFound(name)
 }
 
-// statExecutable reports whether path is a usable executable. On Windows any
-// regular file with an executable suffix matches (PATHEXT governs); on Unix the
-// file must be executable by the current user.
+// statExecutable reports whether path is a usable executable: a regular file
+// executable by the current user.
 func statExecutable(path string) (string, error) {
-	if isPowerShellOnlyShim(path) {
-		return "", errSkipShim
-	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
@@ -173,57 +129,11 @@ func statExecutable(path string) (string, error) {
 	if info.IsDir() {
 		return "", errors.New("is a directory")
 	}
-	if runtime.GOOS != "windows" {
-		if info.Mode()&0o111 == 0 {
-			return "", errors.New("not executable")
-		}
+	if info.Mode()&0o111 == 0 {
+		return "", errors.New("not executable")
 	}
 	return path, nil
 }
-
-// isPowerShellOnlyShim reports whether path is a .ps1 script. Such scripts
-// cannot be launched by os/exec on Windows (CreateProcess does not run
-// PowerShell), so they are skipped in favour of the .cmd shim npm installs
-// alongside them.
-func isPowerShellOnlyShim(path string) bool {
-	if runtime.GOOS != "windows" {
-		return false
-	}
-	return strings.EqualFold(filepath.Ext(path), ".ps1")
-}
-
-// hasExt reports whether name has any extension (a dot in its last element).
-func hasExt(name string) bool {
-	base := filepath.Base(name)
-	return strings.ContainsRune(base, '.')
-}
-
-// pathExts returns the ordered executable extensions to try. On Windows this is
-// PATHEXT (defaulting to a sane ordering when unset); elsewhere it is a single
-// empty extension so the bare name is probed (Unix resolves executable bits,
-// not extensions).
-func pathExts() []string {
-	if runtime.GOOS != "windows" {
-		return []string{""}
-	}
-	pathext := os.Getenv("PATHEXT")
-	if pathext == "" {
-		pathext = ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
-	}
-	parts := strings.Split(pathext, ";")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-// errSkipShim marks a skipped PowerShell-only shim.
-var errSkipShim = errors.New("skip powershell-only shim")
 
 // execNotFound builds a not-found error mirroring os/exec's ErrNotFound style.
 func execNotFound(name string) error {
