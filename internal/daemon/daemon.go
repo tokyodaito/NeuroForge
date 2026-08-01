@@ -101,9 +101,13 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	if reconcilers == nil {
 		reconcilers = WithExtraReconcilers(
 			&workspaceReconciler{wm: wsManager},
-			&attemptReconciler{wm: wsManager}, // M7: recover in-flight attempts (AC-27)
-			// BF-07: resume partial finalizations (intent without terminal commit).
+			// BF-07: resume partial finalizations (intent without terminal
+			// commit) BEFORE the attempt reconciler runs: a legacy runapp run
+			// that crashed mid-finalize must be completed by the intent, not
+			// marked failed (and its intent deleted uncompleted) by the
+			// attempt reconciler (review finding M3).
 			newFinalizeIntentReconciler(db, recorder, wsManager, logger),
+			&attemptReconciler{wm: wsManager}, // M7: recover in-flight attempts (AC-27)
 			// M14-06: mark in-flight pipeline stages interrupted; the re-drive
 			// happens via PipelineService.ResumeActiveRuns once services exist.
 			&pipelineReconciler{store: pipeline.NewStore(db, logger)},
