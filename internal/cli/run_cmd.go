@@ -41,6 +41,12 @@ var knownEngines = map[string]bool{
 	"grok":     true,
 }
 
+// defaultWaitTimeout is the default bound on how long the CLI waits for a
+// run to finish. Durable pipeline runs legitimately exceed 30 minutes (the
+// previous hardcoded cap cancelled healthy runs mid-repair), so the default
+// is 2h and the bound is configurable via --wait-timeout.
+const defaultWaitTimeout = 2 * time.Hour
+
 // runCmdArgs holds the parsed flags for `forge run`.
 type runCmdArgs struct {
 	Description string
@@ -49,6 +55,7 @@ type runCmdArgs struct {
 	Model       string
 	Base        string
 	Timeout     time.Duration
+	WaitTimeout time.Duration
 	MaxRepair   int
 	JSON        bool
 	Verbose     bool
@@ -65,6 +72,8 @@ func parseRunArgs(args []string) (runCmdArgs, error) {
 	file := fs.String("file", "", "read the description from a file (mutually exclusive with positional)")
 	base := fs.String("base", "", "base branch/commit (default: current branch)")
 	timeout := fs.Duration("timeout", 10*time.Minute, "hard wall-clock timeout for the agent run")
+	waitTimeout := fs.Duration("wait-timeout", defaultWaitTimeout,
+		"maximum time the CLI waits for the run to finish; it bounds CLI waiting only — on expiry the CLI disconnects and the daemon cancels the run (same as SIGINT)")
 	maxRepair := fs.Int("max-repair", 3, "maximum repair attempts after a failed verify/review before the run gives up")
 	jsonOut := fs.Bool("json", false, "emit a single machine-readable JSON document")
 	verbose := fs.Bool("verbose", false, "show internal ids (task/workspace/run) in human output")
@@ -75,13 +84,15 @@ func parseRunArgs(args []string) (runCmdArgs, error) {
 	}
 	parsed := runCmdArgs{
 		Engine: *engine, Model: *model, File: *file, Base: *base,
-		Timeout: *timeout, MaxRepair: *maxRepair, JSON: *jsonOut, Verbose: *verbose,
+		Timeout: *timeout, WaitTimeout: *waitTimeout, MaxRepair: *maxRepair, JSON: *jsonOut, Verbose: *verbose,
 	}
 
 	// Validation per REQUIREMENTS.md §1.2.
 	switch {
 	case *maxRepair < 0:
 		return parsed, fmt.Errorf("forge: --max-repair must be >= 0, got %d", *maxRepair)
+	case *waitTimeout <= 0:
+		return parsed, fmt.Errorf("forge: --wait-timeout must be > 0, got %s", *waitTimeout)
 	case len(positional) > 0 && *file != "":
 		return parsed, errors.New("forge: --file and a positional description are mutually exclusive")
 	case len(positional) > 0:
@@ -188,9 +199,16 @@ func (a *App) runRunCmd(args []string) int {
 	// context cancellation, cancels the supervisor run, terminates the agent
 	// process group, and finalizes the run as cancelled. The CLI then exits 130
 	// (OUTCOME_CONTRACT.md §4).
+	//
+	// The wait is additionally bounded by --wait-timeout (default 2h): durable
+	// pipeline runs with repair loops legitimately run for tens of minutes, so
+	// a short hardcoded cap cancelled healthy runs. The bound limits how long
+	// the CLI waits; on expiry the request context cancels exactly like SIGINT
+	// (the daemon interprets it as cancellation — a full detach model is
+	// documented future work).
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	ctx, cancel := context.WithTimeout(sigCtx, 30*time.Minute)
+	ctx, cancel := context.WithTimeout(sigCtx, parsed.WaitTimeout)
 	defer cancel()
 
 	projectID, err := a.resolveOrCreateProjectID(ctx, cli, repoPath)
@@ -227,6 +245,18 @@ func (a *App) runRunCmd(args []string) int {
 				fmt.Fprintln(a.Err, "Cancelled.")
 			}
 			return ExitCancelled
+		}
+		// --wait-timeout expired: the request context cancellation cancels the
+		// run daemon-side exactly like SIGINT; report it honestly instead of as
+		// an infrastructure failure.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			msg := fmt.Sprintf("wait timeout (%s) exceeded; the run was cancelled (raise --wait-timeout for long runs)", parsed.WaitTimeout)
+			if parsed.JSON {
+				a.emitJSONError(parsed, msg, "TIMEOUT")
+			} else {
+				fmt.Fprintf(a.Err, "forge: %s\n", msg)
+			}
+			return ExitTimedOut
 		}
 		// Network/transport error → infrastructure failure.
 		if parsed.JSON {

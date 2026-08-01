@@ -115,6 +115,7 @@ forge run --verbose "Description"
 | `--verbose`  | false                    | Show internal ids (task id, workspace id, run id) in human output.      |
 | `--base`     | current branch           | Base branch/commit for the worktree. Default: current checked-out branch.|
 | `--timeout`  | 10m                      | Hard wall-clock timeout for the agent run.                              |
+| `--wait-timeout` | 2h                   | Maximum time the CLI waits for the run to finish. Bounds CLI waiting only; on expiry the CLI disconnects and the daemon cancels the run (same as SIGINT). |
 
 Defaults are fixed and documented (no hidden config required for the happy
 path):
