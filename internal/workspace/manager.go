@@ -313,6 +313,25 @@ func (m *Manager) ListAll(ctx context.Context) ([]Workspace, error) {
 	return out, nil
 }
 
+// WorktreeFingerprint captures the durable state of a worktree for mutation
+// detection: the HEAD commit SHA plus the full `git status --porcelain`
+// output. Any change — a new commit, an edited tracked file, a staged change,
+// a new or deleted untracked file — alters the fingerprint. The pipeline
+// review stage uses it to prove the review agent did not modify the worktree
+// it was only meant to read (security review H2).
+func (m *Manager) WorktreeFingerprint(ctx context.Context, worktreePath string) (string, error) {
+	r := gitRunner{dir: worktreePath}
+	head, err := r.run(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("workspace: fingerprint: rev-parse HEAD: %w", err)
+	}
+	status, err := r.run(ctx, "status", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("workspace: fingerprint: status: %w", err)
+	}
+	return strings.TrimSpace(head) + "\n" + status, nil
+}
+
 // SetRunInfo records the engine/model/run-id/session-id for a workspace after
 // an agent run starts.
 func (m *Manager) SetRunInfo(ctx context.Context, id, engine, model, runID, sessionID string) error {

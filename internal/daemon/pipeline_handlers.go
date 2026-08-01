@@ -282,10 +282,21 @@ func categoryForLevel(lvl testengine.VerificationLevel, res testengine.Result) p
 // handleReview runs the review engine over the worktree diff. Approval (or a
 // fully-skipped review, e.g. all roles disabled by policy) routes to
 // finalize; major/blocker findings route to repair via review_rejection.
+//
+// The review agent runs with full write tools in the worktree AFTER
+// verification, so the handler proves it did not exercise them: the worktree
+// fingerprint (HEAD + git status --porcelain) must be identical before and
+// after the review pass. A mutated worktree is an honest policy_rejection —
+// the run fails, it is NEVER finalized with unverified reviewer edits
+// (security review H2).
 func (s *PipelineService) handleReview(ctx context.Context, rc *pipeline.RunContext) (bool, string, error) {
 	params, ws, err := s.runTarget(ctx, rc)
 	if err != nil {
 		return false, "", err
+	}
+	before, err := s.wm.WorktreeFingerprint(ctx, ws.Path)
+	if err != nil {
+		return false, "", &pipeline.StageError{Category: pipeline.FailureWorktree, Reason: err.Error()}
 	}
 	res, err := s.reviewWorktree(ctx, rc, params, ws)
 	if err != nil {
@@ -295,7 +306,20 @@ func (s *PipelineService) handleReview(ctx context.Context, rc *pipeline.RunCont
 		}
 		return false, "", &pipeline.StageError{Category: pipeline.FailureAgentUnavailable, Reason: err.Error()}
 	}
-	evidence := s.evidenceJSON(ctx, rc.TaskID, "review", res.Findings)
+	after, err := s.wm.WorktreeFingerprint(ctx, ws.Path)
+	if err != nil {
+		return false, "", &pipeline.StageError{Category: pipeline.FailureWorktree, Reason: err.Error()}
+	}
+	if after != before {
+		return false, "", &pipeline.StageError{Category: pipeline.FailurePolicyRejection,
+			Reason: "reviewer modified the worktree"}
+	}
+	evidence := s.evidenceJSON(ctx, rc.TaskID, "review", reviewEvidence{
+		Label:        res.Label(),
+		RolesRun:     res.RolesRun,
+		RolesSkipped: res.RolesSkipped,
+		Findings:     res.Findings,
+	})
 	approved := res.OverallStatus() == review.StatusApproved || res.OverallStatus() == review.StatusSkipped
 	status := "completed"
 	if !approved {
@@ -303,6 +327,16 @@ func (s *PipelineService) handleReview(ctx context.Context, rc *pipeline.RunCont
 	}
 	s.auditStage(ctx, rc, status, evidence, string(pipeline.FailureReviewRejection))
 	return approved, evidence, nil
+}
+
+// reviewEvidence is the persisted review-stage evidence payload. The label
+// ("REVIEWED" / "NOT AI-REVIEWED") and the role lists make a policy-skipped
+// review distinguishable from a clean reviewed pass (review finding M5).
+type reviewEvidence struct {
+	Label        string           `json:"label"`
+	RolesRun     []review.Role    `json:"roles_run"`
+	RolesSkipped []review.Role    `json:"roles_skipped"`
+	Findings     []review.Finding `json:"findings"`
 }
 
 // reviewWorktree executes one review pass: diff the worktree, resolve the
