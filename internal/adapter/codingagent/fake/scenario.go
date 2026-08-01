@@ -16,7 +16,10 @@
 //	scope-violation, usage-events.
 package fake
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Scenario names a deterministic fake-agent behaviour (spec §33.1). The set is a
 // strict superset of the spec list; extras are required by the conformance
@@ -161,6 +164,20 @@ func resolveScenario(s Scenario, req runParams) script {
 	base := outcome{sessionID: req.sessionID}
 	if base.sessionID == "" {
 		base.sessionID = "fake-session-1"
+	}
+	// Review prompts get a valid, deterministic review verdict regardless of
+	// the configured scenario: an empty findings array (approve). Without
+	// this the fake's ordinary chatter is rejected as unparseable review
+	// output and no offline pipeline run could pass the review stage.
+	if strings.Contains(req.prompt, reviewPromptMarker) {
+		return script{
+			steps: []step{
+				{event: &scriptEvent{kind: "run.started"}},
+				{event: &scriptEvent{kind: "message.delta", text: "[]"}},
+				{event: usageEvent(10, 5, 0, 0, 0, "PROVIDER_REPORTED")},
+			},
+			outcome: outcome{terminal: "run.completed", exitCode: 0, sessionID: base.sessionID},
+		}
 	}
 	switch s {
 	case ScenarioSuccess:
@@ -342,7 +359,18 @@ type runParams struct {
 	sessionDir string
 	// startIsResume selects run.resumed vs run.started for the first event.
 	startIsResume bool
+	// prompt is the inline run prompt (empty for the executable's command
+	// mode, which only sees a prompt-file token it ignores). It lets the fake
+	// recognise review prompts and answer them with valid findings JSON so
+	// the full pipeline (execute → verify → review) can be driven offline.
+	prompt string
 }
+
+// reviewPromptMarker is the instruction sentence the review engine
+// (internal/review) puts in every reviewer prompt. When the fake sees it, it
+// must answer with a JSON findings array — anything else is (correctly)
+// rejected as unparseable review output by review.AgentReviewer.
+const reviewPromptMarker = "Respond with ONLY a JSON array of findings"
 
 // hangGrace is how long the timeout/cancellation scenarios wait in the
 // in-process adapter before yielding (kept tiny for tests; the executable hangs

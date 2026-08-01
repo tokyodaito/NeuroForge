@@ -223,6 +223,7 @@ func (s *rpcServer) handleRun(params json.RawMessage, isResume bool) (json.RawMe
 		sessionID:     sessionID,
 		scenario:      s.scenario,
 		startIsResume: isResume,
+		prompt:        rp.Prompt,
 	}
 	sc := resolveScenario(s.scenario, p)
 	if isResume && len(sc.steps) > 0 && sc.steps[0].event != nil {

@@ -109,15 +109,15 @@ func (a *Adapter) InspectQuota(context.Context, protocol.Account) protocol.Quota
 
 // Start implements codingagent.Adapter.
 func (a *Adapter) Start(ctx context.Context, req protocol.AgentRunRequest, sink codingagent.EventSink) (protocol.RunHandle, error) {
-	return a.startRun(ctx, req.RunID, req.Engine, req.Model, req.Workspace, false, req.SessionID, sink)
+	return a.startRun(ctx, req.RunID, req.Engine, req.Model, req.Workspace, false, req.SessionID, req.Prompt, sink)
 }
 
 // Resume implements codingagent.Adapter.
 func (a *Adapter) Resume(ctx context.Context, req protocol.ResumeRequest, sink codingagent.EventSink) (protocol.RunHandle, error) {
-	return a.startRun(ctx, req.RunID, req.Engine, req.Model, req.Workspace, true, req.SessionID, sink)
+	return a.startRun(ctx, req.RunID, req.Engine, req.Model, req.Workspace, true, req.SessionID, "", sink)
 }
 
-func (a *Adapter) startRun(ctx context.Context, runID, engine, model, workspace string, isResume bool, sessionID string, sink codingagent.EventSink) (protocol.RunHandle, error) {
+func (a *Adapter) startRun(ctx context.Context, runID, engine, model, workspace string, isResume bool, sessionID, prompt string, sink codingagent.EventSink) (protocol.RunHandle, error) {
 	if runID == "" {
 		runID = "fake-run"
 	}
@@ -143,6 +143,7 @@ func (a *Adapter) startRun(ctx context.Context, runID, engine, model, workspace 
 		runID:         runID,
 		sessionID:     handle.SessionID,
 		startIsResume: isResume,
+		prompt:        prompt,
 	}
 	// Pick the scenario: the model id can override the adapter's default. This
 	// is what the minimal-run black-box tests use to drive each outcome via
