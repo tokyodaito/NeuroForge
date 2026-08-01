@@ -532,6 +532,14 @@ func (s *PipelineService) buildRepairPrompt(ctx context.Context, rc *pipeline.Ru
 // commit) — as the pipeline's terminal stage. The outcome is persisted
 // alongside the run params so the status endpoint can render it after a
 // restart.
+//
+// Deterministic result commit (pipeline path only — runapp.Finalize semantics
+// are unchanged): the factory owns the managed worktree, so when the agent
+// left uncommitted changes behind, the handler stages and commits them on the
+// attempt branch BEFORE Finalize. EnsureResultRef then points at that commit
+// and the outcome is completed-with-commit instead of
+// completed-with-uncommitted-changes. A clean worktree commits nothing (no
+// empty commits), which also makes a re-driven finalize idempotent.
 func (s *PipelineService) handleFinalize(ctx context.Context, rc *pipeline.RunContext) (string, error) {
 	params, ws, err := s.runTarget(ctx, rc)
 	if err != nil {
@@ -540,6 +548,26 @@ func (s *PipelineService) handleFinalize(ctx context.Context, rc *pipeline.RunCo
 	insp, err := s.wm.InspectWorktree(ctx, *ws)
 	if err != nil {
 		return "", &pipeline.StageError{Category: pipeline.FailureWorktree, Reason: err.Error()}
+	}
+	if strings.TrimSpace(insp.StatusPorcelain) != "" {
+		msg := fmt.Sprintf("forge: result for task %s\n\nstage: %s, attempt: %d", rc.TaskID, rc.Stage, rc.Attempt)
+		sha, created, cerr := s.wm.CommitWorktreeChanges(ctx, ws.ID, msg)
+		if cerr != nil {
+			return "", &pipeline.StageError{Category: pipeline.FailureGit,
+				Reason: fmt.Sprintf("result commit: %v", cerr)}
+		}
+		if created {
+			s.audit(ctx, "pipeline.finalize_autocommit", rc.TaskID, map[string]any{
+				"workspace": ws.ID, "commit_sha": sha,
+				"stage": string(rc.Stage), "attempt": rc.Attempt,
+			})
+			// Re-inspect so Finalize classifies against the NEW head (now
+			// ahead of base, clean tree → completed-with-commit).
+			insp, err = s.wm.InspectWorktree(ctx, *ws)
+			if err != nil {
+				return "", &pipeline.StageError{Category: pipeline.FailureWorktree, Reason: err.Error()}
+			}
+		}
 	}
 	fin, err := s.fin.Finalize(ctx, runapp.FinalizeRequest{
 		WorkspaceID:   ws.ID,

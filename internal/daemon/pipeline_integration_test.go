@@ -12,6 +12,7 @@ import (
 	"neuroforge/internal/adapter/codingagent"
 	"neuroforge/internal/adapter/codingagent/fake"
 	"neuroforge/internal/audit"
+	"neuroforge/internal/pipeline"
 	"neuroforge/internal/project"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/supervisor"
@@ -169,6 +170,16 @@ func TestPipelineService_EndToEnd_FakeEngine(t *testing.T) {
 		t.Errorf("result_ref = %q, want %q", dto.ResultRef, ref)
 	}
 
+	// Clean worktree at finalize (the fake committed its own work): the
+	// finalize stage must NOT add an extra auto-commit — the result ref is
+	// the agent's commit, exactly one commit beyond the base.
+	if subj := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "log", "-1", "--format=%s", ref)); subj != "agent work" {
+		t.Errorf("result ref subject = %q, want the agent's commit %q (no finalize auto-commit on a clean tree)", subj, "agent work")
+	}
+	if n := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "rev-list", "--count", env.head+".."+ref)); n != "1" {
+		t.Errorf("commits beyond base = %s, want exactly 1", n)
+	}
+
 	// The task reached its terminal COMPLETED state.
 	tk, err := env.tasks.Get(ctx, dto.TaskID)
 	if err != nil {
@@ -283,6 +294,101 @@ func TestPipelineService_CancelIsDurableAndNotResumed(t *testing.T) {
 	if _, err := env.svc.CancelPipeline(ctx, taskID); err != nil {
 		t.Errorf("second cancel: %v", err)
 	}
+}
+
+// TestPipelineService_FinalizeAutoCommit_UncommittedAgentChanges drives the
+// full pipeline with the write-no-commit fake (the agent writes a file but
+// never commits). The finalize stage must deterministically produce the
+// result commit itself: the factory owns the managed worktree, so the outcome
+// is completed-with-commit and the result ref points at a NEW commit that
+// contains the agent's files — never completed-with-uncommitted-changes with
+// the ref stuck at the base SHA.
+func TestPipelineService_FinalizeAutoCommit_UncommittedAgentChanges(t *testing.T) {
+	env := newPipelineTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	dto, err := env.svc.RunPipeline(ctx, transport.PipelineRunRequest{
+		ProjectID:   env.projID,
+		Description: "add a file without committing",
+		Engine:      "fake",
+		Model:       "fake/write-no-commit",
+	})
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if dto.RunState != "completed" {
+		t.Fatalf("run_state = %s (failure %s: %s), want completed", dto.RunState, dto.FailureCategory, dto.FailureReason)
+	}
+	if dto.Outcome != "completed-with-commit" {
+		t.Errorf("outcome = %s, want completed-with-commit (finalize auto-commit)", dto.Outcome)
+	}
+
+	ref := "refs/heads/forge/result/" + dto.TaskID
+	sha := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "rev-parse", "--verify", ref))
+	if sha == "" {
+		t.Fatalf("result ref %s missing", ref)
+	}
+	if sha == env.head {
+		t.Errorf("result ref still points at the base SHA %s; want a new result commit", sha)
+	}
+	if dto.CommitSHA != sha {
+		t.Errorf("commit_sha = %q, want result ref SHA %q", dto.CommitSHA, sha)
+	}
+
+	// The result commit is the factory's auto-commit and contains the file
+	// the agent left uncommitted.
+	wantSubj := "forge: result for task " + dto.TaskID
+	if subj := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "log", "-1", "--format=%s", ref)); subj != wantSubj {
+		t.Errorf("result commit subject = %q, want %q", subj, wantSubj)
+	}
+	if names := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "show", "--name-only", "--format=", ref)); !strings.Contains(names, "uncommitted.txt") {
+		t.Errorf("result commit does not contain the agent's file uncommitted.txt: %q", names)
+	}
+
+	// The auto-commit was audited.
+	if !env.hasAuditEvent(t, dto.TaskID, "pipeline.finalize_autocommit") {
+		t.Error("no pipeline.finalize_autocommit audit event recorded")
+	}
+
+	// The primary checkout is untouched: same HEAD, clean tree.
+	if got := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "rev-parse", "HEAD")); got != env.head {
+		t.Errorf("primary HEAD changed: %s → %s", env.head, got)
+	}
+	if status := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "status", "--porcelain")); status != "" {
+		t.Errorf("primary checkout dirty: %s", status)
+	}
+
+	// Re-drive the finalize handler (restart recovery path): the worktree is
+	// now clean, so no duplicate commit may be created and the ref must not
+	// move.
+	if _, err := env.svc.handleFinalize(ctx, &pipeline.RunContext{
+		TaskID: dto.TaskID, ProjectID: env.projID, Stage: pipeline.StageFinalize, Attempt: 2,
+	}); err != nil {
+		t.Fatalf("re-driven finalize: %v", err)
+	}
+	if got := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "rev-parse", "--verify", ref)); got != sha {
+		t.Errorf("result ref moved on re-drive: %s → %s (duplicate commit?)", sha, got)
+	}
+	if n := strings.TrimSpace(gitOutInDaemonTest(t, env.repo, "rev-list", "--count", env.head+".."+ref)); n != "1" {
+		t.Errorf("commits beyond base = %s after re-drive, want exactly 1", n)
+	}
+}
+
+// hasAuditEvent reports whether an audit event of the given type exists for
+// the task.
+func (env *pipelineTestEnv) hasAuditEvent(t *testing.T, taskID, eventType string) bool {
+	t.Helper()
+	events, err := env.svc.rec.Filter(context.Background(), storage.AuditFilter{ScopeID: taskID})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForRunState(t *testing.T, env *pipelineTestEnv, taskID, want string, timeout time.Duration) {
