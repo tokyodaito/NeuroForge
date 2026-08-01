@@ -60,6 +60,7 @@ type PipelineService struct {
 	wm       *workspace.Manager
 	sup      *supervisor.Supervisor
 	fin      *runapp.Service
+	usage    runapp.UsageSink
 	runner   *testengine.ShellRunner
 	reviewer review.Reviewer // nil → AgentReviewer over the supervisor
 	rec      *audit.Recorder
@@ -117,6 +118,7 @@ func NewPipelineService(deps PipelineDeps) (*PipelineService, error) {
 		sched:     workgraph.NewScheduler(deps.Graphs, deps.Leases),
 		wm:        deps.WM,
 		sup:       deps.Sup,
+		usage:     deps.Usage,
 		runner:    testengine.NewShellRunner(testengine.ShellRunnerOptions{Logger: logger}),
 		reviewer:  deps.Reviewer,
 		rec:       deps.Recorder,

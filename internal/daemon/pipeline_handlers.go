@@ -588,7 +588,41 @@ func (s *PipelineService) runAgent(ctx context.Context, taskID string, ws *works
 		return supervisor.RunResult{}, &pipeline.StageError{
 			Category: pipeline.FailureAgentUnavailable, Reason: err.Error()}
 	}
+	// Usage events (tokens/cost) must not be dropped on the pipeline path
+	// (review finding M2): persist them exactly like the runapp path does.
+	s.recordUsage(ctx, taskID, params, res.Events)
 	return res, nil
+}
+
+// recordUsage extracts usage events from an agent run's event stream and
+// persists them via the UsageSink, mirroring runapp.Service.recordUsage
+// (KF-10). Best-effort and never fatal — usage recording is observability,
+// not a correctness gate.
+func (s *PipelineService) recordUsage(ctx context.Context, taskID string, params pipelineParams, events []protocol.NormalizedEvent) {
+	if s.usage == nil {
+		return
+	}
+	now := time.Now().UTC()
+	for _, ev := range events {
+		if ev.Type != protocol.EventUsageUpdated || ev.Usage == nil {
+			continue
+		}
+		ue := runapp.UsageEvent{
+			TaskID:            taskID,
+			ProjectID:         params.ProjectID,
+			Provider:          params.Engine,
+			Model:             params.Model,
+			Kind:              "coding",
+			InputTokens:       ev.Usage.InputTokens,
+			CachedInputTokens: ev.Usage.CacheReadTokens,
+			OutputTokens:      ev.Usage.OutputTokens,
+			CostUSD:           ev.Usage.Cost,
+			OccurredAt:        now,
+		}
+		if err := s.usage.RecordUsage(ctx, ue); err != nil {
+			s.logger.Warn("pipeline: usage record failed", "task", taskID, "err", err)
+		}
+	}
 }
 
 // agentOutcomeError maps a terminal agent run to a StageError, or nil on

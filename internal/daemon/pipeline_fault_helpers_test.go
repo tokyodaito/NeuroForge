@@ -18,6 +18,7 @@ import (
 	"neuroforge/internal/pipeline"
 	"neuroforge/internal/project"
 	"neuroforge/internal/review"
+	"neuroforge/internal/runapp"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/supervisor"
 	"neuroforge/internal/task"
@@ -66,6 +67,7 @@ type faultEnv struct {
 type faultDeps struct {
 	adapter  codingagent.Adapter
 	reviewer review.Reviewer
+	usage    runapp.UsageSink
 }
 
 func newFaultEnv(t *testing.T, deps faultDeps) *faultEnv {
@@ -154,6 +156,7 @@ func (env *faultEnv) restart(t *testing.T, deps faultDeps) {
 		Leases:   env.leases,
 		WM:       env.wm,
 		Sup:      sup,
+		Usage:    deps.usage,
 		Reviewer: deps.reviewer,
 	})
 	if err != nil {
