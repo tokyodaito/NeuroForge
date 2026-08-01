@@ -14,8 +14,10 @@ const (
 	StageVerify   Stage = "verify"
 	StageReview   Stage = "review"
 	StageFinalize Stage = "finalize"
-	// StageRepair is the loop stage entered from verify/review failure; it
-	// exits back to execute (re-run agent with repair context).
+	// StageRepair is the loop stage entered from verify/review failure. A
+	// repair stage performs ONE bounded repair attempt (agent re-run with
+	// repair context); it exits to verify (re-verification, the default) or
+	// back to execute (full re-execution, if a repair policy chooses it).
 	StageRepair Stage = "repair"
 )
 
@@ -97,10 +99,10 @@ var stageTransitions = map[Stage][]Stage{
 	StageCompile:  {StagePlan},
 	StagePlan:     {StageReady},
 	StageReady:    {StageExecute},
-	StageExecute:  {StageVerify},
+	StageExecute:  {StageVerify, StageRepair},
 	StageVerify:   {StageReview, StageRepair},
 	StageReview:   {StageFinalize, StageRepair},
-	StageRepair:   {StageExecute},
+	StageRepair:   {StageVerify, StageExecute},
 	StageFinalize: {},
 }
 

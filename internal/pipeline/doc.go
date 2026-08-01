@@ -6,10 +6,13 @@
 //
 //	compile → plan → ready → execute → verify → review → finalize
 //
-// plus repair as a loop stage: verify or review failure enters repair, which
-// re-dispatches execute with repair context (a new stage attempt) and then
-// verify again. Design / visual / delivery / post-merge stages are explicitly
-// OUT OF SCOPE here: they are optional and must not block the local path.
+// plus repair as a loop stage: verify or review failure — or an execute
+// stage that produced no code changes — enters repair, which performs ONE
+// bounded repair attempt (agent re-run with repair context) and then
+// re-enters verify. A repair policy may instead choose a full
+// re-execution (repair → execute). Design / visual / delivery / post-merge
+// stages are explicitly OUT OF SCOPE here: they are optional and must not
+// block the local path.
 //
 // # Stage transition map
 //
@@ -18,12 +21,14 @@
 //	compile → plan
 //	plan    → ready
 //	ready   → execute
-//	execute → verify
+//	execute → verify   (changes produced)
+//	execute → repair   (no code changes; repair re-runs the agent)
 //	verify  → review   (verification passed)
 //	verify  → repair   (verification failed)
 //	review  → finalize (review accepted)
 //	review  → repair   (changes required)
-//	repair  → execute  (re-run agent with repair context; new stage attempt)
+//	repair  → verify   (repair attempt applied; re-run verification)
+//	repair  → execute  (repair policy chooses a full re-execution)
 //
 // Re-entering the current stage (same stage + same attempt) is always a
 // no-op that returns the existing "entered" record — this is the crash-

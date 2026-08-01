@@ -12,10 +12,12 @@ func TestCanTransitionStage_Legal(t *testing.T) {
 		{pipeline.StagePlan, pipeline.StageReady},
 		{pipeline.StageReady, pipeline.StageExecute},
 		{pipeline.StageExecute, pipeline.StageVerify},
+		{pipeline.StageExecute, pipeline.StageRepair},
 		{pipeline.StageVerify, pipeline.StageReview},
 		{pipeline.StageVerify, pipeline.StageRepair},
 		{pipeline.StageReview, pipeline.StageFinalize},
 		{pipeline.StageReview, pipeline.StageRepair},
+		{pipeline.StageRepair, pipeline.StageVerify},
 		{pipeline.StageRepair, pipeline.StageExecute},
 	}
 	for _, tr := range legal {
@@ -34,7 +36,7 @@ func TestCanTransitionStage_Illegal(t *testing.T) {
 		{pipeline.RunActive, pipeline.StagePlan, pipeline.StageFinalize},           // skips stages
 		{pipeline.RunActive, pipeline.StageVerify, pipeline.StageFinalize},         // must pass review
 		{pipeline.RunActive, pipeline.StageVerify, pipeline.StageExecute},          // no direct retry
-		{pipeline.RunActive, pipeline.StageRepair, pipeline.StageVerify},           // must re-execute first
+		{pipeline.RunActive, pipeline.StageRepair, pipeline.StageReview},           // must re-verify first
 		{pipeline.RunActive, pipeline.StageExecute, pipeline.StageReady},           // no backwards move
 		{pipeline.RunActive, pipeline.StageFinalize, pipeline.StageReady},          // finalize is the last stage
 		{pipeline.RunActive, pipeline.StageCompile, pipeline.StageCompile},         // self is a store-level re-entry, not a transition
