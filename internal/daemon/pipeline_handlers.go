@@ -177,7 +177,12 @@ func (s *PipelineService) handleReady(ctx context.Context, rc *pipeline.RunConte
 				}
 				break // chained packages wait for their dependency; out of scope here
 			}
-			return "", &pipeline.StageError{Category: pipeline.FailureLeaseLost, Reason: cerr.Error()}
+			// Anything else is NOT a lease conflict (a storage failure in
+			// GetPackage/LoadValidated/ListActiveByProject, a failed state
+			// transition, …). Classifying it lease_lost would park the run in
+			// blocked for up to the lease TTL instead of failing it honestly
+			// (review follow-up N2).
+			return "", &pipeline.StageError{Category: pipeline.FailureDatabase, Reason: cerr.Error()}
 		}
 		claimed++
 	}
