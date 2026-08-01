@@ -127,9 +127,23 @@ func (r *ShellRunner) runSyntax(ctx context.Context, req RunRequest, res *Result
 	res.Status = StatusPassed
 }
 
-// runCompile runs `go build ./...`.
+// runCompile runs `go build ./...`. When ./... matches at least one main
+// package the build output is redirected to a temp dir: `go build` would
+// otherwise drop the executable(s) into the workspace, mutating the tree the
+// runner promises to keep pristine (a stray binary later surfaces as an
+// uncommitted change in the worktree inspection). `-o` cannot be used
+// unconditionally — it fails on modules without main packages.
 func (r *ShellRunner) runCompile(ctx context.Context, req RunRequest, res *Result) {
-	out, err := r.runCmd(ctx, req.WorkspacePath, r.goBin, "build", "./...")
+	args := []string{"build", "./..."}
+	var outDir string
+	if r.hasMainPackages(ctx, req.WorkspacePath) {
+		if dir, err := os.MkdirTemp("", "testengine-build-*"); err == nil {
+			outDir = dir
+			defer func() { _ = os.RemoveAll(outDir) }()
+			args = []string{"build", "-o", outDir + string(filepath.Separator), "./..."}
+		}
+	}
+	out, err := r.runCmd(ctx, req.WorkspacePath, r.goBin, args...)
 	res.SlicedOutput = sliceTail(out)
 	if err != nil {
 		res.Status = StatusFailed
@@ -266,6 +280,22 @@ func (r *ShellRunner) runCmd(ctx context.Context, dir, name string, args ...stri
 		<-done
 		return buf.Bytes(), ctx.Err()
 	}
+}
+
+// hasMainPackages reports whether ./... matches any main package in the
+// workspace (best effort: a failed probe answers false and `go build` runs
+// without -o, surfacing its own diagnostics).
+func (r *ShellRunner) hasMainPackages(ctx context.Context, workspace string) bool {
+	out, err := r.runCmd(ctx, workspace, r.goBin, "list", "-e", "-f", "{{if eq .Name \"main\"}}x{{end}}", "./...")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == "x" {
+			return true
+		}
+	}
+	return false
 }
 
 // packagePatterns maps changed files to `./<dir>/...` go test patterns,
