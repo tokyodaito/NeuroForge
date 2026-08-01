@@ -154,6 +154,11 @@ type RunRequest struct {
 	ChangedFiles []string
 	// Module is the module/package under test (for module-level tests).
 	Module string
+	// RetryPackages, when non-empty, narrows the run to `go test -count=1` for
+	// exactly these packages (import paths): the single flake re-run after a
+	// module-level failure. The whole suite is never re-run. Only meaningful
+	// with LevelModule.
+	RetryPackages []string
 }
 
 // Engine drives progressive verification according to the resolved policy. It is

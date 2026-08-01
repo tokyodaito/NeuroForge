@@ -12,6 +12,10 @@ type FakeScript struct {
 	Result Result
 	// PerLevel overrides the result for a specific level.
 	PerLevel map[VerificationLevel]Result
+	// RetryResult, when non-nil, is returned for package-retry requests
+	// (RunRequest.RetryPackages non-empty — the module-level flake re-run).
+	// Nil means the retry passes (default Result semantics).
+	RetryResult *Result
 	// CallCount tracks how many times Run was called per level (for repair-loop
 	// tests that want to observe re-runs).
 }
@@ -24,6 +28,7 @@ type FakeRunner struct {
 
 	mu      sync.Mutex
 	calls   []VerificationLevel          // ordered record of Run invocations
+	retries [][]string                   // ordered record of RetryPackages requests
 	updates map[VerificationLevel]Result // runtime overrides for repair-loop re-runs
 }
 
@@ -39,6 +44,22 @@ func NewFakeRunner(script FakeScript) *FakeRunner {
 func (r *FakeRunner) Run(_ context.Context, req RunRequest) (Result, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, req.Level)
+	if len(req.RetryPackages) > 0 {
+		pkgs := make([]string, len(req.RetryPackages))
+		copy(pkgs, req.RetryPackages)
+		r.retries = append(r.retries, pkgs)
+		retry := r.script.RetryResult
+		r.mu.Unlock()
+		res := r.script.Result
+		if retry != nil {
+			res = *retry
+		}
+		res.Level = req.Level
+		if res.Status == "" {
+			res.Status = StatusPassed
+		}
+		return res, nil
+	}
 	r.mu.Unlock()
 
 	// Check for a runtime update first (repair loop may change the outcome).
@@ -73,6 +94,16 @@ func (r *FakeRunner) Calls() []VerificationLevel {
 	return out
 }
 
+// RetryCalls returns the ordered list of package-retry requests (the
+// RetryPackages of each flake re-run invocation).
+func (r *FakeRunner) RetryCalls() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]string, len(r.retries))
+	copy(out, r.retries)
+	return out
+}
+
 // CallCount returns how many times a given level was run.
 func (r *FakeRunner) CallCount(level VerificationLevel) int {
 	r.mu.Lock()
@@ -99,5 +130,6 @@ func (r *FakeRunner) Reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = nil
+	r.retries = nil
 	r.updates = map[VerificationLevel]Result{}
 }

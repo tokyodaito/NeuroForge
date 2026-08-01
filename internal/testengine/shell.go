@@ -82,6 +82,14 @@ func (r *ShellRunner) Run(ctx context.Context, req RunRequest) (Result, error) {
 	start := time.Now()
 	res := Result{Level: req.Level}
 
+	if len(req.RetryPackages) > 0 {
+		// Flake re-run: exactly the packages that failed at module level, never
+		// the whole suite again.
+		r.runPackageRetry(ctx, req, &res)
+		res.Duration = time.Since(start)
+		return res, nil
+	}
+
 	switch req.Level {
 	case LevelSyntax:
 		r.runSyntax(ctx, req, &res)
@@ -204,6 +212,35 @@ func (r *ShellRunner) runTargeted(ctx context.Context, req RunRequest, res *Resu
 	}
 	if err != nil && len(res.Failures) == 0 {
 		res.Failures = []TestFailure{{Message: "go test failed: " + err.Error()}}
+	}
+}
+
+// runPackageRetry re-runs `go test -count=1` for exactly the given packages
+// (one `<pkg>/...` pattern each) — the single flake re-run the pipeline
+// verify handler allows after a module-level test failure. The packages are
+// import paths taken from the module run's failure attribution; `<pkg>/...`
+// import-path patterns are equivalent to `./<dir>/...` inside the module and
+// need no module-path resolution. The same worktree, timeout and environment
+// rules as every other verification command apply.
+func (r *ShellRunner) runPackageRetry(ctx context.Context, req RunRequest, res *Result) {
+	args := []string{"test", "-count=1"}
+	for _, p := range req.RetryPackages {
+		args = append(args, p+"/...")
+	}
+	out, err := r.runCmd(ctx, req.WorkspacePath, r.goBin, args...)
+	res.SlicedOutput = sliceTail(out)
+	if err != nil {
+		res.Status = StatusFailed
+	} else {
+		res.Status = StatusPassed
+	}
+	counts, failures := parseTestOutput(string(out))
+	res.Passed = counts.passed
+	res.Failed = counts.failed
+	res.Skipped = counts.skipped
+	res.Failures = failures
+	if err != nil && len(res.Failures) == 0 {
+		res.Failures = []TestFailure{{Message: "go test (package retry) failed: " + err.Error()}}
 	}
 }
 

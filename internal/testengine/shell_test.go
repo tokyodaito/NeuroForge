@@ -271,6 +271,64 @@ func TestAdd(t *testing.T) {
 	}
 }
 
+// TestShellRunnerPackageRetry exercises the flake re-run: `go test -count=1`
+// restricted to exactly the requested packages (import-path patterns).
+func TestShellRunnerPackageRetry(t *testing.T) {
+	failing := `package flaky
+
+import "testing"
+
+func TestFlaky(t *testing.T) {
+	t.Fatal("always fails")
+}
+`
+	dir := writeModule(t, map[string]string{
+		"calc/calc.go":        passingModuleFile,
+		"calc/calc_test.go":   passingTestFile,
+		"flaky/flaky.go":      "package flaky\n",
+		"flaky/flaky_test.go": failing,
+	})
+
+	// Retrying only the passing package passes — the failing package is never
+	// re-run.
+	res, err := newRunner(t).Run(context.Background(), RunRequest{
+		Level:         LevelModule,
+		WorkspacePath: dir,
+		RetryPackages: []string{"example.com/fixture/calc"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Status != StatusPassed {
+		t.Fatalf("status = %s, want passed (output: %s)", res.Status, res.SlicedOutput)
+	}
+	if res.Passed < 1 {
+		t.Fatalf("passed = %d, want >= 1", res.Passed)
+	}
+
+	// Retrying the failing package fails with test attribution.
+	res, err = newRunner(t).Run(context.Background(), RunRequest{
+		Level:         LevelModule,
+		WorkspacePath: dir,
+		RetryPackages: []string{"example.com/fixture/flaky"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Status != StatusFailed {
+		t.Fatalf("status = %s, want failed", res.Status)
+	}
+	found := false
+	for _, f := range res.Failures {
+		if f.TestName == "TestFlaky" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no TestFlaky failure extracted: %+v", res.Failures)
+	}
+}
+
 func TestShellRunnerFullPassing(t *testing.T) {
 	dir := writeModule(t, map[string]string{
 		"calc/calc.go":      passingModuleFile,
