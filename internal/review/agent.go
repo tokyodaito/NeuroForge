@@ -57,9 +57,10 @@ func NewAgentReviewer(run RunFunc, opts AgentReviewerOptions) *AgentReviewer {
 var _ Reviewer = (*AgentReviewer)(nil)
 
 // Review implements Reviewer. It renders the role-specific prompt, invokes
-// the agent, and parses the findings. Empty agent output means "clean" (zero
-// findings); output with no valid JSON array yields an error wrapping
-// [ErrUnparseableReview].
+// the agent, and parses the findings. Empty or whitespace-only agent output
+// is an error wrapping [ErrUnparseableReview] — silence must never be
+// silently converted into an approval (review finding M8); output with no
+// valid JSON array yields the same error.
 func (a *AgentReviewer) Review(ctx context.Context, role Role, req ReviewRequest) ([]Finding, error) {
 	prompt, err := renderPrompt(role, req, a.maxDiffBytes)
 	if err != nil {
@@ -70,7 +71,7 @@ func (a *AgentReviewer) Review(ctx context.Context, role Role, req ReviewRequest
 		return nil, fmt.Errorf("review: agent run: %w", err)
 	}
 	if strings.TrimSpace(out) == "" {
-		return nil, nil
+		return nil, fmt.Errorf("%w: empty agent output", ErrUnparseableReview)
 	}
 	findings, err := parseFindings(role, out)
 	if err != nil {

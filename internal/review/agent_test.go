@@ -69,16 +69,18 @@ func TestAgentReviewer_UsesLastJSONArray(t *testing.T) {
 	}
 }
 
-func TestAgentReviewer_EmptyOutputIsClean(t *testing.T) {
-	r := NewAgentReviewer(func(_ context.Context, _ string) (string, error) {
-		return "  \n\t ", nil
-	}, AgentReviewerOptions{})
-	findings, err := r.Review(context.Background(), RoleCorrectness, testRequest())
-	if err != nil {
-		t.Fatalf("Review: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Fatalf("findings = %v, want none", findings)
+// TestAgentReviewer_EmptyOutputIsUnparseable (M8): empty or whitespace-only
+// agent output must NOT be read as a clean review — silence is an error
+// wrapping ErrUnparseableReview, never an approval.
+func TestAgentReviewer_EmptyOutputIsUnparseable(t *testing.T) {
+	for _, out := range []string{"", "  \n\t "} {
+		r := NewAgentReviewer(func(_ context.Context, _ string) (string, error) {
+			return out, nil
+		}, AgentReviewerOptions{})
+		_, err := r.Review(context.Background(), RoleCorrectness, testRequest())
+		if !errors.Is(err, ErrUnparseableReview) {
+			t.Fatalf("output %q: err = %v, want wrapping ErrUnparseableReview", out, err)
+		}
 	}
 }
 
