@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"neuroforge/internal/audit"
+	"neuroforge/internal/pipeline"
 	"neuroforge/internal/quality"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/supervisor"
@@ -103,6 +104,9 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 			&attemptReconciler{wm: wsManager}, // M7: recover in-flight attempts (AC-27)
 			// BF-07: resume partial finalizations (intent without terminal commit).
 			newFinalizeIntentReconciler(db, recorder, wsManager, logger),
+			// M14-06: mark in-flight pipeline stages interrupted; the re-drive
+			// happens via PipelineService.ResumeActiveRuns once services exist.
+			&pipelineReconciler{store: pipeline.NewStore(db, logger)},
 		)
 	}
 	if _, err := Reconcile(runCtx, ReconcileTx{
@@ -194,6 +198,29 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	runAppSvc := NewRunAppService(wsManager, sup, services.Tasks, services.Projects, db, recorder, accounting, logger)
 	runAppAdapter := runAppSvc
 
+	// 4c-3. Durable pipeline service (M14-06 production path): the pipeline
+	// Store + Driver with concrete handlers composing the task compiler, work
+	// graph, workspace manager, supervisor, test engine, review engine and the
+	// runapp Finalize chokepoint. This backs the pipeline transport endpoints
+	// and is the production path behind `forge run`.
+	pipelineSvc, err := NewPipelineService(PipelineDeps{
+		DB:       db,
+		Recorder: recorder,
+		Logger:   logger,
+		Dirs:     cfg.Dirs,
+		Tasks:    services.Tasks,
+		Projects: services.Projects,
+		Specs:    services.Specs,
+		Graphs:   services.Graphs,
+		Leases:   services.Leases,
+		WM:       wsManager,
+		Sup:      sup,
+		Usage:    &usageSinkAdapter{tasks: services.Tasks, projects: services.Projects, db: db, accounting: accounting},
+	})
+	if err != nil {
+		return fmt.Errorf("pipeline service: %w", err)
+	}
+
 	token := cfg.Token
 	if token == "" {
 		token, err = transport.GenerateToken()
@@ -217,6 +244,7 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 		RunAppAPI:         runAppAdapter,
 		SpecAPI:           specAdapter,
 		WorkGraphAPI:      workGraphAdapter,
+		PipelineAPI:       pipelineSvc,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("transport server: %w", err)
@@ -275,6 +303,12 @@ func Run(ctx context.Context, cfg RunConfig) (retErr error) {
 	// blocking context below.
 	sigCtx, stop := signal.NotifyContext(runCtx, terminationSignals()...)
 	defer stop()
+
+	// 7a. Pipeline restart recovery (M14-06): re-drive every non-terminal
+	// durable run in the background. Cancelled runs are terminal and never
+	// resume; when the emergency stop is on, runs stay parked. The reconciler
+	// (step 3) already marked in-flight stages interrupted.
+	pipelineSvc.ResumeActiveRuns(runCtx)
 
 	// 8. Serve until cancelled, then shut down.
 	serveErr := srv.Serve(sigCtx)

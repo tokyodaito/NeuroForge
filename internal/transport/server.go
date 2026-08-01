@@ -48,6 +48,10 @@ type Config struct {
 	// WorkGraphAPI, if set, backs the work-graph inspection endpoint
 	// (GET /tasks/{id}/workgraph). Nil makes that endpoint return 503.
 	WorkGraphAPI WorkGraphAPI
+	// PipelineAPI, if set, backs the durable-pipeline endpoints
+	// (/projects/{id}/pipeline/run, /tasks/{id}/pipeline[/cancel], /estop).
+	// Nil makes those endpoints return 503.
+	PipelineAPI PipelineAPI
 }
 
 // HealthResponse is the JSON body of GET /healthz.
@@ -130,6 +134,7 @@ func (s *Server) Listen() (net.Addr, error) {
 	s.registerRunAppRoutes(mux)
 	s.registerSpecRoutes(mux)
 	s.registerWorkGraphRoutes(mux)
+	s.registerPipelineRoutes(mux)
 	mux.HandleFunc("/", s.handleRoot)
 
 	s.srv = &http.Server{
