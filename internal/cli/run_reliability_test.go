@@ -36,8 +36,21 @@ func TestForgeRun_Reliability_10x(t *testing.T) {
 		runGitIn(t, repoPath, "init", "-b", "main")
 		runGitIn(t, repoPath, "config", "user.email", "rel@rel.rel")
 		runGitIn(t, repoPath, "config", "user.name", "Reliability")
-		if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# R\n"), 0o644); err != nil {
-			t.Fatalf("iter %d: write README: %v", i, err)
+		// Defeat any ambient core.autocrlf: the pipeline's verify stage runs
+		// gofmt, which rejects CRLF line endings.
+		runGitIn(t, repoPath, "config", "core.autocrlf", "false")
+		// The fixture is a buildable Go module: the durable pipeline's verify
+		// stage runs gofmt/go build/go vet/go test inside the worktree. The
+		// go directive must be satisfiable by the ambient toolchain without a
+		// (possibly network-blocked) toolchain download.
+		for name, content := range map[string]string{
+			"README.md": "# R\n",
+			"go.mod":    "module fixture\n\ngo 1.22\n",
+			"main.go":   "package main\n\nfunc main() {}\n",
+		} {
+			if err := os.WriteFile(filepath.Join(repoPath, name), []byte(content), 0o644); err != nil {
+				t.Fatalf("iter %d: write %s: %v", i, name, err)
+			}
 		}
 		runGitIn(t, repoPath, "add", "-A")
 		runGitIn(t, repoPath, "commit", "-m", "init")

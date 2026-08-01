@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"neuroforge/internal/audit"
+	"neuroforge/internal/pipeline"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/supervisor"
 	"neuroforge/internal/task"
@@ -66,7 +67,19 @@ func (r *attemptReconciler) Reconcile(ctx context.Context, tx ReconcileTx) ([]Re
 // The reconciler does NOT auto-start a new run: that would risk double-spend
 // if the prior process is still alive elsewhere. It records a durable decision
 // and leaves resumption to an explicit action.
+//
+// Ownership (M14-06): a workspace whose task has a NON-TERMINAL durable
+// pipeline run is owned by the pipeline recovery (MarkInterrupted + re-drive)
+// and is skipped here — finalizing it as interrupted would race the re-drive
+// and could terminally fail a run the pipeline is about to resume.
 func (r *attemptReconciler) reconcileActive(ctx context.Context, tx ReconcileTx, ws workspace.Workspace) ReconcileDecision {
+	if r.pipelineOwns(ctx, tx, ws.TaskID) {
+		return ReconcileDecision{
+			Reconciler: r.Name(), Entity: "workspace:" + ws.ID,
+			Action: DecisionNoOp,
+			Detail: "task has an active pipeline run; pipeline recovery owns the outcome",
+		}
+	}
 	packs, err := tx.DB.ListContinuationPacks(ctx, ws.ID)
 	if err != nil {
 		return ReconcileDecision{
@@ -120,6 +133,13 @@ func (r *attemptReconciler) reconcileActive(ctx context.Context, tx ReconcileTx,
 // an external signal (a route becomes available); the reconciler only confirms
 // the worktree is still intact.
 func (r *attemptReconciler) reconcileWaitingQuota(ctx context.Context, tx ReconcileTx, ws workspace.Workspace) ReconcileDecision {
+	if r.pipelineOwns(ctx, tx, ws.TaskID) {
+		return ReconcileDecision{
+			Reconciler: r.Name(), Entity: "workspace:" + ws.ID,
+			Action: DecisionNoOp,
+			Detail: "task has an active pipeline run; pipeline recovery owns the outcome",
+		}
+	}
 	exists, err := workspace.WorktreeExists(ws.Path)
 	if err != nil || !exists {
 		if mErr := r.markFailed(ctx, tx, ws, "worktree missing while waiting for quota"); mErr != nil {
@@ -182,6 +202,20 @@ func (r *attemptReconciler) markFailed(ctx context.Context, tx ReconcileTx, ws w
 		}
 	}
 	return nil
+}
+
+// pipelineOwns reports whether the task has a non-terminal durable pipeline
+// run; such workspaces are recovered by the pipeline recovery path, not by
+// this reconciler.
+func (r *attemptReconciler) pipelineOwns(ctx context.Context, tx ReconcileTx, taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	run, err := pipeline.NewStore(tx.DB, nil).CurrentRun(ctx, taskID)
+	if err != nil {
+		return false
+	}
+	return !pipeline.IsTerminalRunState(run.State)
 }
 
 // isTerminalTask reports whether a task state is terminal (COMPLETED / FAILED /

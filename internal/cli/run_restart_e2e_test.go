@@ -18,14 +18,18 @@ import (
 	"neuroforge/internal/runapp"
 	"neuroforge/internal/storage"
 	"neuroforge/internal/task"
+	"neuroforge/internal/transport"
 	"neuroforge/internal/workspace"
 )
 
-// TestForgeRun_DaemonCrashDuringActiveRun_Interrupted (BF-03 / FR-17 / B-14):
-// forge run → active → kill -9 daemon → new daemon startup reconciliation →
-// workspace/task terminal failed + interrupted audit. CLI sees transport
-// interruption or a terminal result; durable state is authoritative.
-func TestForgeRun_DaemonCrashDuringActiveRun_Interrupted(t *testing.T) {
+// TestForgeRun_DaemonCrashDuringActiveRun_Recovered verifies the durable
+// pipeline's restart recovery (M14-06): forge run → execute in flight →
+// kill -9 daemon → new daemon startup marks the in-flight stage interrupted
+// and RE-DRIVES the run in the background (recovery, not terminal
+// interruption). The re-driven run (fake/cancellation with a short timeout)
+// fails as timed-out; the durable stage history keeps the interrupted record.
+// Cancelled runs would never be re-driven; crashed-but-active runs are.
+func TestForgeRun_DaemonCrashDuringActiveRun_Recovered(t *testing.T) {
 	if testing.Short() {
 		t.Skip("daemon crash E2E spawns real processes")
 	}
@@ -33,8 +37,10 @@ func TestForgeRun_DaemonCrashDuringActiveRun_Interrupted(t *testing.T) {
 	dirs := daemon.WithRoot(f.home)
 	primaryBefore := f.primaryHEAD()
 
-	// Start a hanging run (fake/cancellation stays active until cancelled).
-	cmd := exec.Command(f.bin, "run", "--json", "--engine", "fake", "--model", "fake/cancellation", "hang until crash")
+	// Start a hanging run (fake/cancellation stays active until cancelled;
+	// the short --timeout bounds the re-driven run after the crash).
+	cmd := exec.Command(f.bin, "run", "--json", "--engine", "fake", "--model", "fake/cancellation",
+		"--timeout", "3s", "hang until crash")
 	cmd.Env = append(os.Environ(), "NEUROFORGE_HOME="+f.home)
 	cmd.Dir = f.repoPath
 	var stdout, stderr strings.Builder
@@ -90,42 +96,67 @@ func TestForgeRun_DaemonCrashDuringActiveRun_Interrupted(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatalf("CLI did not exit after daemon kill; stderr=%s", stderr.String())
 	}
-	cliExit := 0
-	if cmd.ProcessState != nil {
-		cliExit = cmd.ProcessState.ExitCode()
-	}
-	// Transport interruption (3) or interrupted/cancelled (130) are both valid
-	// CLI semantics when the daemon dies mid-request.
-	if cliExit != ExitInfra && cliExit != ExitCancelled && cliExit != ExitErr {
-		t.Logf("CLI exit=%d stdout=%s stderr=%s (transport interruption expected)",
-			cliExit, stdout.String(), stderr.String())
-	}
 
-	// Start a fresh daemon → startup reconciler marks interrupted.
+	// Start a fresh daemon → startup reconciler marks the in-flight stage
+	// interrupted; pipeline recovery re-drives the run in the background. The
+	// re-driven fake/cancellation run hits its 3s timeout and the run settles
+	// as timed-out/failed.
 	out, _, code := runForge(f.t, f.bin, f.home, "daemon", "start")
 	if code != 0 {
 		t.Fatalf("daemon start after crash: exit %d out=%s", code, out)
 	}
 
-	// Poll durable state.
-	var wsState, tkState string
-	var foundInterrupted bool
-	pollDeadline := time.Now().Add(15 * time.Second)
+	// Poll the durable pipeline status until the run reaches a terminal state.
+	var status transport.PipelineRunResultDTO
+	terminal := false
+	pollDeadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(pollDeadline) {
-		wsState, tkState, foundInterrupted = inspectInterrupted(t, f.home, wsID, taskID)
-		if wsState == "failed" && tkState == "FAILED" && foundInterrupted {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cli, err := daemon.Connect(ctx, dirs)
+		if err == nil {
+			if st, serr := cli.PipelineStatus(ctx, taskID); serr == nil {
+				status = st
+				switch st.RunState {
+				case "failed", "cancelled", "completed", "repair_exhausted":
+					terminal = true
+				}
+			}
+		}
+		cancel()
+		if terminal {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
-	if wsState != "failed" {
-		t.Errorf("workspace state = %q, want failed (interrupted)", wsState)
+	if !terminal {
+		t.Fatalf("pipeline run never reached a terminal state after recovery (last: %s at %s)",
+			status.RunState, status.CurrentStage)
 	}
-	if tkState != "FAILED" {
+	if status.RunState != "failed" {
+		t.Errorf("run_state = %q, want failed (re-driven run timed out)", status.RunState)
+	}
+	if status.FailureCategory != "provider_timeout" {
+		t.Errorf("failure_category = %q, want provider_timeout", status.FailureCategory)
+	}
+
+	// The stage history records the interruption (MarkInterrupted at crash
+	// recovery) — proof the crash was seen and recovered, not hidden.
+	var sawInterrupted bool
+	for _, r := range status.StageRecords {
+		if r.FailureCategory == "interrupted" {
+			sawInterrupted = true
+		}
+	}
+	if !sawInterrupted {
+		t.Errorf("no interrupted stage record in %+v", status.StageRecords)
+	}
+
+	// Workspace + task settle terminal (timed-out failure path).
+	if wsState := workspaceStateByID(t, f.home, wsID); wsState != "timed_out" && wsState != "failed" {
+		t.Errorf("workspace state = %q, want timed_out/failed after recovery", wsState)
+	}
+	if tkState := taskStateByID(t, f.home, taskID); tkState != "FAILED" {
 		t.Errorf("task state = %q, want FAILED", tkState)
-	}
-	if !foundInterrupted {
-		t.Error("missing run.outcome_decided interrupted audit")
 	}
 	if got := f.primaryHEAD(); got != primaryBefore {
 		t.Errorf("primary checkout changed: %s → %s", primaryBefore, got)
@@ -255,7 +286,8 @@ func TestForgeRun_RestartPreservesTimedOut(t *testing.T) {
 }
 
 // TestForgeRun_LateTerminalEventAfterRestartRejected (BF-03 A4):
-// interrupted terminal after crash/reconcile; late completed event is absorbed.
+// a terminally failed run stays failed across a daemon restart; late
+// completed/failed/cancelled finalize calls are absorbed idempotently.
 func TestForgeRun_LateTerminalEventAfterRestartRejected(t *testing.T) {
 	if testing.Short() {
 		t.Skip("restart E2E")
@@ -263,42 +295,32 @@ func TestForgeRun_LateTerminalEventAfterRestartRejected(t *testing.T) {
 	f := newRunFixture(t)
 	dirs := daemon.WithRoot(f.home)
 
-	// Crash mid-run path (reuse hang + kill).
-	cmd := exec.Command(f.bin, "run", "--engine", "fake", "--model", "fake/cancellation", "late event")
-	cmd.Env = append(os.Environ(), "NEUROFORGE_HOME="+f.home)
-	cmd.Dir = f.repoPath
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+	// Drive a run to a terminal failure (fake/crash fails the execute stage;
+	// the pipeline settles the workspace as failed).
+	doc, _, code := f.runJSON("--engine", "fake", "--model", "fake/crash", "crash the engine")
+	if code != 1 {
+		t.Fatalf("exit=%d, want 1 (failed); doc=%v", code, doc)
 	}
-	if err := waitForActiveWorkspace(f.home, 20*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		t.Fatalf("not active: %v", err)
+	if doc["outcome"] != "failed" {
+		t.Fatalf("outcome=%v, want failed", doc["outcome"])
 	}
-	wsID, taskID := activeWorkspaceIDs(t, f.home)
-	daemonPID := readDaemonPID(t, dirs.PIDFile)
-	proc, _ := os.FindProcess(daemonPID)
-	_ = proc.Signal(syscall.SIGKILL)
-	_, _ = cmd.Process.Wait()
-
-	// Restart → interrupted.
-	if out, _, c := runForge(f.t, f.bin, f.home, "daemon", "start"); c != 0 {
-		t.Fatalf("start: %s", out)
-	}
-	// Wait for failed.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		st := workspaceStateByID(t, f.home, wsID)
-		if st == "failed" {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	wsID, _ := doc["workspace_id"].(string)
+	taskID, _ := doc["task_id"].(string)
 	if st := workspaceStateByID(t, f.home, wsID); st != "failed" {
-		t.Fatalf("ws state=%s, want failed after interrupt reconcile", st)
+		t.Fatalf("ws state=%s, want failed", st)
 	}
 	preHead := workspaceHeadByID(t, f.home, wsID)
 	preResult := workspaceResultByID(t, f.home, wsID)
 	preAudits := countOutcomeAudits(t, f.home, wsID)
+
+	// Restart the daemon: the terminal run must not be revived or re-driven.
+	runForge(f.t, f.bin, f.home, "daemon", "stop")
+	if out, _, c := runForge(f.t, f.bin, f.home, "daemon", "start"); c != 0 {
+		t.Fatalf("start: %s", out)
+	}
+	if st := workspaceStateByID(t, f.home, wsID); st != "failed" {
+		t.Fatalf("ws state=%s after restart, want failed", st)
+	}
 
 	// Late terminal event via real persistence path (open same DB).
 	db, err := storage.Open(context.Background(), dirs.StateDB, nil)
