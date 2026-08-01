@@ -30,13 +30,27 @@ func newRunFixture(t *testing.T) *runFixture {
 	home := t.TempDir()
 	withDaemonCleanup(t, bin, home)
 
-	// Build a temp git repo with one initial commit.
+	// Build a temp git repo with one initial commit. The repo is a minimal
+	// buildable Go module because the durable pipeline's verify stage runs
+	// gofmt/go build/go vet/go test inside the worktree.
 	repoPath := t.TempDir()
 	runGitIn(t, repoPath, "init", "-b", "main")
 	runGitIn(t, repoPath, "config", "user.email", "test@test.local")
 	runGitIn(t, repoPath, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# T\n"), 0o644); err != nil {
-		t.Fatal(err)
+	// Defeat any ambient core.autocrlf: the pipeline's verify stage runs
+	// gofmt, which rejects CRLF line endings.
+	runGitIn(t, repoPath, "config", "core.autocrlf", "false")
+	files := map[string]string{
+		"README.md": "# T\n",
+		// go 1.22: the directive must be satisfiable by the ambient toolchain
+		// without a (possibly network-blocked) toolchain download.
+		"go.mod":  "module fixture\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(repoPath, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runGitIn(t, repoPath, "add", "-A")
 	runGitIn(t, repoPath, "commit", "-m", "init")

@@ -195,10 +195,19 @@ func fileWrite(workspace, rel, content string) error {
 // in-process counterpart of the executable's git-commit step (used by the
 // write-commit scenario so the fake adapter can produce a real commit). All
 // subcommands are local git operations — no network (AC-7).
+// gitInWorkspace runs an allowlisted git command inside the workspace. A
+// `git commit` that finds nothing to commit is NOT an error: the write-commit
+// scenario is re-runnable (the pipeline may re-drive an agent run for repair
+// or restart recovery, and the second commit attempt over an already-committed
+// tree must succeed instead of stranding the run without a terminal event).
 func gitInWorkspace(workspace string, args ...string) error {
 	full := append([]string{"-C", workspace}, args...)
 	cmd := exec.CommandContext(context.Background(), "git", full...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil && args[0] == "commit" && strings.Contains(string(out), "nothing to commit") {
+		return nil
+	}
+	if err != nil {
 		return errors.New("fake: git " + strings.Join(args, " ") + ": " + err.Error() + ": " + string(out))
 	}
 	return nil
