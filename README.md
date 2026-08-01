@@ -78,6 +78,27 @@ and build Linux-side — never from a `/mnt/c` checkout). See the full
 [WSL2 setup guide](docs/platforms/WSL2.md). macOS may work via the generic Unix
 code paths but receives no dedicated support.
 
+### Security model
+
+Understand what NeuroForge does and does not isolate before trusting it with a
+repository:
+
+- **The worktree is an organizational boundary, not a security boundary.** The
+  coding agent runs **unsandboxed, as your user**, with access to your `HOME`
+  (required for the agent CLI's own auth, e.g. OpenCode's
+  `~/.local/share/opencode/auth.json`). Code the agent writes or commands it
+  runs can read anything your user can read. Run NeuroForge only on code and
+  task descriptions you would run yourself.
+- **Review is a quality gate, not a security or adversarial gate.** The review
+  stage reduces the chance of bad changes landing; it does not make running an
+  untrusted agent safe.
+- **Do not paste secrets into task descriptions.** The prompt is visible in
+  local process arguments while the agent runs, and is persisted in local
+  run history.
+- **Multi-tenant use is unsupported.** One NeuroForge home, one user; the
+  loopback daemon token protects the API from other local processes, not one
+  user's runs from another user's agent.
+
 ---
 
 ## Repository layout

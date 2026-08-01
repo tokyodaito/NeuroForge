@@ -96,6 +96,10 @@ Optionally, an explicit binary path can be set in the adapter options (see
 
 ## Warnings
 
+- Read the [security model](../../README.md#security-model) first: the agent
+  runs unsandboxed as your user (with `HOME` access, which OpenCode auth
+  requires), the worktree is not a security boundary, and review is a quality
+  gate — not an adversarial one.
 - **Never copy OpenCode auth files** (`~/.local/share/opencode/auth.json`)
   into the repository or into any worktree. They are credentials.
 - Run NeuroForge and OpenCode as the **same Linux user**; mixing users breaks
