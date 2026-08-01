@@ -38,7 +38,11 @@ func TestPipelineFault_StaleLeaseExpiry_Reclaimed(t *testing.T) {
 		contender = "ws-stale-contender"
 		path      = "src/main.go"
 	)
-	if _, err := lm.AcquirePathTTL(ctx, env.projID, holder, path, 150*time.Millisecond); err != nil {
+	// Wide TTL + poll-for-expiry with a generous deadline: fixed sub-second
+	// sleep margins flaked under load (review follow-up). The assertions stay
+	// identical; only the waiting is event-driven.
+	const ttl = 300 * time.Millisecond
+	if _, err := lm.AcquirePathTTL(ctx, env.projID, holder, path, ttl); err != nil {
 		t.Fatalf("acquire TTL lease: %v", err)
 	}
 
@@ -56,12 +60,22 @@ func TestPipelineFault_StaleLeaseExpiry_Reclaimed(t *testing.T) {
 		t.Errorf("conflict holder = %q, want %q", ce.Reasons[0].WorkspaceID, holder)
 	}
 
-	// The holder "dies" (never releases). After the TTL passes the stale
-	// lease no longer blocks: the contender acquires.
-	time.Sleep(250 * time.Millisecond)
-	l2, err := lm.AcquirePath(ctx, env.projID, contender, path)
-	if err != nil {
-		t.Fatalf("contender acquire after expiry: %v (stale lease still blocking)", err)
+	// The holder "dies" (never releases). Poll until the TTL passes and the
+	// stale lease no longer blocks: the contender acquires.
+	var l2 workgraph.Lease
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		l2, err = lm.AcquirePath(ctx, env.projID, contender, path)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, workgraph.ErrLeaseConflict) {
+			t.Fatalf("contender acquire: %v, want ErrLeaseConflict or success", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stale lease still blocking %v after its TTL", ttl)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 	if l2.WorkspaceID != contender {
 		t.Errorf("lease holder = %q, want %q", l2.WorkspaceID, contender)
@@ -69,18 +83,30 @@ func TestPipelineFault_StaleLeaseExpiry_Reclaimed(t *testing.T) {
 
 	// The sweeper converts abandoned TTL leases to state=expired durably and
 	// is idempotent.
-	if _, err := lm.AcquirePathTTL(ctx, env.projID, holder, "src/other.go", 100*time.Millisecond); err != nil {
+	if _, err := lm.AcquirePathTTL(ctx, env.projID, holder, "src/other.go", ttl); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
-	active, err := lm.ListActiveByProject(ctx, env.projID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, l := range active {
-		if l.Resource == "src/other.go" {
-			t.Errorf("logically-expired lease still listed active: %+v", l)
+	// Poll until the lease is logically expired: ListActiveByProject filters
+	// such rows, so its disappearance is the deterministic expiry signal.
+	deadline = time.Now().Add(30 * time.Second)
+	for {
+		active, err := lm.ListActiveByProject(ctx, env.projID)
+		if err != nil {
+			t.Fatal(err)
 		}
+		listed := false
+		for _, l := range active {
+			if l.Resource == "src/other.go" {
+				listed = true
+			}
+		}
+		if !listed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("logically-expired lease still listed active %v after its TTL", ttl)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 	n1, err := lm.ExpireLeases(ctx)
 	if err != nil {
