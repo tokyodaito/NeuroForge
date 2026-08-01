@@ -89,15 +89,24 @@ func TestPipelineLease_ReleasedAfterFailedRun(t *testing.T) {
 
 // TestPipelineLease_ConflictBlocksThenResumes proves (H4) that a lease
 // conflict parks the run in blocked WITHOUT executing the agent, and that the
-// blocked run resumes to completion once the conflicting lease expires.
+// blocked run resumes to completion once the conflicting lease clears.
+//
+// The competing lease is cleared by an explicit release, not by TTL expiry:
+// lease expiry compares wall-clock timestamps (the correct choice for durable
+// leases, which must survive restarts), so any wall-clock step — NTP slew or
+// jump — changes when "expired" happens and made this test flaky under -race.
+// Expiry-driven reclaim is covered deterministically by
+// TestPipelineFault_StaleLeaseExpiry_Reclaimed; this test's subject is the
+// block → clear → resume contract.
 func TestPipelineLease_ConflictBlocksThenResumes(t *testing.T) {
 	adapter := newScriptedCodingAdapter(writeCommitBehavior(map[string]string{"RESULT.md": "after unblock\n"}))
 	env := newFaultEnv(t, faultDeps{adapter: adapter})
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// A competing workspace holds the scoped path with a short TTL.
-	if _, err := env.leases.AcquirePathTTL(ctx, env.projID, "ws-competitor", "src/main.go", 400*time.Millisecond); err != nil {
+	// A competing workspace holds the scoped path (perpetual — the block must
+	// not depend on clock behaviour).
+	if _, err := env.leases.AcquirePath(ctx, env.projID, "ws-competitor", "src/main.go"); err != nil {
 		t.Fatalf("acquire competing lease: %v", err)
 	}
 
@@ -120,9 +129,11 @@ func TestPipelineLease_ConflictBlocksThenResumes(t *testing.T) {
 		t.Errorf("coding agent calls = %d, want 0 (a blocked run must not execute)", n)
 	}
 
-	// After the conflicting lease expires, restart recovery re-drives the
-	// blocked run to completion.
-	time.Sleep(600 * time.Millisecond)
+	// The conflicting lease clears (deterministic release); restart recovery
+	// re-drives the blocked run to completion.
+	if _, err := env.leases.ReleaseAll(ctx, "ws-competitor"); err != nil {
+		t.Fatalf("release competing lease: %v", err)
+	}
 	env.svc.ResumeActiveRuns(ctx)
 	env.waitRunState(t, dto.TaskID, "completed", 90*time.Second)
 	if n := adapter.codingCalls(); n != 1 {
