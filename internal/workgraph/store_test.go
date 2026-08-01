@@ -275,7 +275,7 @@ func TestReadiness_BlockedByDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadValidated: %v", err)
 	}
-	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now())
+	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now(), "")
 	if len(verdicts) != 2 {
 		t.Fatalf("verdicts = %d want 2", len(verdicts))
 	}
@@ -308,7 +308,7 @@ func TestReadiness_UnblocksAfterDependencySucceeds(t *testing.T) {
 		t.Fatalf("TransitionPackage: %v", err)
 	}
 	loaded, _ := store.LoadValidated(ctx, taskID)
-	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now())
+	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now(), "")
 	byID := map[string]workgraph.Readiness{}
 	for _, r := range verdicts {
 		byID[r.PackageID] = r
@@ -330,7 +330,7 @@ func TestReadiness_TerminalStateNotReady(t *testing.T) {
 		t.Fatalf("TransitionPackage: %v", err)
 	}
 	loaded, _ := store.LoadValidated(ctx, taskID)
-	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now())
+	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now(), "")
 	for _, r := range verdicts {
 		if r.PackageID == taskID+"-AC-1" && r.Ready {
 			t.Errorf("AC-1 in failed state must not be ready: %+v", r)
@@ -357,7 +357,7 @@ func TestReadiness_BlockedByPathLease(t *testing.T) {
 		t.Fatalf("ListActiveByProject: %v", err)
 	}
 	loaded, _ := store.LoadValidated(ctx, taskID)
-	verdicts := workgraph.ComputeReadiness(loaded, active, time.Now())
+	verdicts := workgraph.ComputeReadiness(loaded, active, time.Now(), "")
 	for _, r := range verdicts {
 		if r.PackageID == taskID+"-AC-1" {
 			if r.Ready {
@@ -372,8 +372,8 @@ func TestReadiness_BlockedByPathLease(t *testing.T) {
 
 func TestReadiness_Deterministic(t *testing.T) {
 	v := helperValidatedGraph(t, "T-det")
-	a := workgraph.ComputeReadiness(v, nil, time.Now())
-	b := workgraph.ComputeReadiness(v, nil, time.Now())
+	a := workgraph.ComputeReadiness(v, nil, time.Now(), "")
+	b := workgraph.ComputeReadiness(v, nil, time.Now(), "")
 	if len(a) != len(b) {
 		t.Fatalf("len mismatch %d vs %d", len(a), len(b))
 	}
@@ -656,6 +656,176 @@ func TestScheduler_ClaimBlockedByLeaseConflict(t *testing.T) {
 	p, _ := store.GetPackage(ctx, taskID, taskID+"-AC-1")
 	if p.State != workgraph.PackagePending {
 		t.Errorf("state = %q want pending (claim must not transition on conflict)", p.State)
+	}
+}
+
+// helperSharedScopeGraph builds a chain of two packages with an identical
+// AllowedScope — exactly the shape workgraph.Decompose produces for a spec
+// with ≥2 ACs and a non-empty ProposedScope (chain dependency + shared scope).
+func helperSharedScopeGraph(t *testing.T, taskID string) *workgraph.ValidatedWorkGraph {
+	t.Helper()
+	mk := func(id string, deps ...string) workgraph.WorkPackage {
+		return workgraph.WorkPackage{
+			ID: taskID + "-" + id, TaskID: taskID, Stage: workgraph.StageImplementation,
+			Title: "Implement " + id, Objective: "obj",
+			AcceptedACIDs: []string{id}, AllowedScope: []string{"src/shared.go"},
+			Dependencies: deps,
+			State:        workgraph.PackagePending,
+		}
+	}
+	v, err := workgraph.ValidateWorkGraph(workgraph.WorkGraph{
+		TaskID: taskID, Packages: []workgraph.WorkPackage{mk("AC-1"), mk("AC-2", taskID+"-AC-1")},
+	})
+	if err != nil {
+		t.Fatalf("ValidateWorkGraph: %v", err)
+	}
+	return v
+}
+
+// TestScheduler_ClaimSameWorkspaceSharedScope_NotSelfBlocked is the N1
+// regression test: two packages of the SAME run (one workspace) share an
+// AllowedScope. Claiming the second after the first must NOT report the
+// workspace's own lease as a conflict — before the fix, ComputeReadiness
+// counted it and the second claim failed with NotReady ("held by workspace
+// <its own ws>"), which the daemon classified as lease_lost and parked the
+// run in blocked until the 4h TTL.
+func TestScheduler_ClaimSameWorkspaceSharedScope_NotSelfBlocked(t *testing.T) {
+	db, taskID := setupWGDB(t)
+	store := workgraph.NewWorkGraphStore(db, nil, nil)
+	lm := workgraph.NewLeaseManager(db)
+	sched := workgraph.NewScheduler(store, lm)
+	ctx := context.Background()
+
+	v := helperSharedScopeGraph(t, taskID)
+	if _, err := store.Save(ctx, v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
+	}); err != nil {
+		t.Fatalf("claim AC-1: %v", err)
+	}
+
+	// While AC-1 is still running, AC-2's refusal must name ONLY the unmet
+	// dependency — never the workspace's own lease. Before the fix the
+	// reasons also carried "held by workspace ws-1", which the daemon
+	// classified as lease_lost and parked the run in blocked.
+	_, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-2", WorkspaceID: "ws-1",
+	})
+	if err == nil {
+		t.Fatal("claim AC-2 with unmet dependency must fail")
+	}
+	nre, ok := workgraph.AsNotReadyError(err)
+	if !ok {
+		t.Fatalf("expected *NotReadyError, got %v", err)
+	}
+	if containsAny(nre.Reasons, "held by workspace") {
+		t.Errorf("own-workspace lease reported as conflict: %v", nre.Reasons)
+	}
+	if !containsAny(nre.Reasons, "not succeeded") {
+		t.Errorf("reasons should name the unmet dependency: %v", nre.Reasons)
+	}
+
+	// Once the dependency succeeds, the same workspace claims AC-2 cleanly:
+	// its own lease on the shared scope is re-acquired idempotently.
+	if err := store.TransitionPackage(ctx, taskID, taskID+"-AC-1", workgraph.PackageSucceeded); err != nil {
+		t.Fatalf("succeed AC-1: %v", err)
+	}
+	res, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-2", WorkspaceID: "ws-1",
+	})
+	if err != nil {
+		t.Fatalf("claim AC-2 by the same workspace must not self-block: %v", err)
+	}
+	if res.State != workgraph.PackageRunning {
+		t.Errorf("AC-2 state = %q want running", res.State)
+	}
+}
+
+// TestScheduler_ClaimForeignWorkspaceSharedScope_Blocked is the N1 isolation
+// guard: the own-workspace exclusion must not weaken M14-05 project-scoped
+// isolation — a FOREIGN workspace in the same project still conflicts.
+func TestScheduler_ClaimForeignWorkspaceSharedScope_Blocked(t *testing.T) {
+	db, taskID := setupWGDB(t)
+	store := workgraph.NewWorkGraphStore(db, nil, nil)
+	lm := workgraph.NewLeaseManager(db)
+	sched := workgraph.NewScheduler(store, lm)
+	ctx := context.Background()
+
+	v := helperSharedScopeGraph(t, taskID)
+	if _, err := store.Save(ctx, v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-1", WorkspaceID: "ws-1",
+	}); err != nil {
+		t.Fatalf("claim AC-1: %v", err)
+	}
+	if err := store.TransitionPackage(ctx, taskID, taskID+"-AC-1", workgraph.PackageSucceeded); err != nil {
+		t.Fatalf("succeed AC-1: %v", err)
+	}
+
+	_, err := sched.Claim(ctx, workgraph.ClaimRequest{
+		TaskID: taskID, ProjectID: "proj", PackageID: taskID + "-AC-2", WorkspaceID: "ws-2",
+	})
+	if err == nil {
+		t.Fatal("claim by a foreign workspace must fail on the shared scope")
+	}
+	if !errors.Is(err, workgraph.ErrLeaseConflict) && !errors.Is(err, workgraph.ErrPackageNotReady) {
+		t.Fatalf("expected ErrLeaseConflict or ErrPackageNotReady, got %v", err)
+	}
+	if !containsSubstr(err.Error(), "src/shared.go") || !containsSubstr(err.Error(), "ws-1") {
+		t.Errorf("error should name the conflicting path + holding workspace: %v", err)
+	}
+	p, _ := store.GetPackage(ctx, taskID, taskID+"-AC-2")
+	if p.State != workgraph.PackagePending {
+		t.Errorf("AC-2 state = %q want pending (foreign claim must not transition)", p.State)
+	}
+}
+
+// TestReadiness_OwnWorkspaceLeaseExcluded pins the readiness-level semantics:
+// a lease held by the requesting workspace is not a conflict; the
+// unprivileged view ("") and any foreign workspace still see the block.
+func TestReadiness_OwnWorkspaceLeaseExcluded(t *testing.T) {
+	db, taskID := setupWGDB(t)
+	store := workgraph.NewWorkGraphStore(db, nil, nil)
+	ctx := context.Background()
+
+	v := helperValidatedGraph(t, taskID)
+	if _, err := store.Save(ctx, v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.LoadValidated(ctx, taskID)
+	if err != nil {
+		t.Fatalf("LoadValidated: %v", err)
+	}
+	now := time.Now()
+	leases := []workgraph.Lease{{
+		Scope: "project", ScopeID: "proj", Kind: workgraph.LeasePath,
+		Resource: "src/a.go", WorkspaceID: "ws-1", State: "active",
+	}}
+
+	readyFor := func(requesting string) workgraph.Readiness {
+		t.Helper()
+		for _, r := range workgraph.ComputeReadiness(loaded, leases, now, requesting) {
+			if r.PackageID == taskID+"-AC-1" {
+				return r
+			}
+		}
+		t.Fatalf("no verdict for AC-1")
+		return workgraph.Readiness{}
+	}
+
+	if r := readyFor("ws-1"); !r.Ready {
+		t.Errorf("requesting workspace's own lease must not block: %v", r.BlockedReasons)
+	}
+	if r := readyFor(""); r.Ready || !r.HasReason("ws-1") {
+		t.Errorf("unprivileged view must report the conflict: ready=%v reasons=%v", r.Ready, r.BlockedReasons)
+	}
+	if r := readyFor("ws-2"); r.Ready || !r.HasReason("ws-1") {
+		t.Errorf("foreign workspace must still conflict: ready=%v reasons=%v", r.Ready, r.BlockedReasons)
 	}
 }
 
@@ -1119,7 +1289,7 @@ func TestIntegration_CompileDecomposeSaveReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadValidated: %v", err)
 	}
-	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now())
+	verdicts := workgraph.ComputeReadiness(loaded, nil, time.Now(), "")
 	// Every package is decomposed as a chain (AC-1 → AC-2 → ...), so only
 	// the first is ready; the rest are blocked by their predecessor.
 	readyCount := 0

@@ -75,7 +75,11 @@ func (a *workGraphAPIAdapter) GetWorkGraph(ctx context.Context, taskID string) (
 			return transport.WorkGraphDTO{}, fmt.Errorf("list leases: %w", err)
 		}
 	}
-	readiness := workgraph.ComputeReadiness(graph, leases, time.Now())
+	// The verdict is the unprivileged, workspace-agnostic view ("": no
+	// requesting workspace), so every held lease is reported — inspection
+	// shows the raw conflict map; the claim path excludes the requesting
+	// workspace's own leases instead.
+	readiness := workgraph.ComputeReadiness(graph, leases, time.Now(), "")
 
 	// Build the per-package DTOs with the readiness verdict attached.
 	byID := make(map[string]workgraph.Readiness, len(readiness))

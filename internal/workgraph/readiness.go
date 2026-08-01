@@ -97,10 +97,16 @@ func containsCI(s, substr string) bool {
 // from LeaseManager.ListActiveByProject); now is the reference clock for
 // expiry checks.
 //
+// requestingWorkspaceID is the workspace the verdict is computed FOR: leases
+// it holds itself are NOT conflicts (a pipeline run whose packages share an
+// AllowedScope must not self-block — the claim path re-acquires its own lease
+// idempotently). Pass "" for an unprivileged, workspace-agnostic view (the
+// work-graph inspection API), where every held lease is reported.
+//
 // Deterministic: packages are returned in canonical (sorted-by-ID) order, and
 // the blocked-reasons slice for a package is sorted lexicographically so two
 // computations over the same inputs produce byte-identical results.
-func ComputeReadiness(v *ValidatedWorkGraph, activeLeases []Lease, now time.Time) []Readiness {
+func ComputeReadiness(v *ValidatedWorkGraph, activeLeases []Lease, now time.Time, requestingWorkspaceID string) []Readiness {
 	if v == nil {
 		return nil
 	}
@@ -112,7 +118,7 @@ func ComputeReadiness(v *ValidatedWorkGraph, activeLeases []Lease, now time.Time
 
 	out := make([]Readiness, 0, len(packages))
 	for _, p := range packages {
-		out = append(out, packageReadiness(p, stateByID, activeLeases, now))
+		out = append(out, packageReadiness(p, stateByID, activeLeases, now, requestingWorkspaceID))
 	}
 	// The validated graph already returns packages in canonical (sorted-by-ID)
 	// order, so the output is deterministic without an explicit re-sort. We
@@ -122,7 +128,7 @@ func ComputeReadiness(v *ValidatedWorkGraph, activeLeases []Lease, now time.Time
 	return out
 }
 
-func packageReadiness(p WorkPackage, stateByID map[string]PackageState, activeLeases []Lease, now time.Time) Readiness {
+func packageReadiness(p WorkPackage, stateByID map[string]PackageState, activeLeases []Lease, now time.Time, requestingWorkspaceID string) Readiness {
 	r := Readiness{PackageID: p.ID, State: p.State}
 
 	// Terminal / non-pending states are not (re-)dispatchable. The reasons
@@ -161,15 +167,21 @@ func packageReadiness(p WorkPackage, stateByID map[string]PackageState, activeLe
 	}
 
 	// Path-lease conflict: any active lease on a path in AllowedScope held by
-	// another workspace blocks the package. A logically-expired lease (state
-	// "active" but ExpiresAt in the past) does NOT block: it is treated as
-	// released by the calculator, matching HasActiveLease's defence-in-depth.
+	// another workspace blocks the package. A lease held by the requesting
+	// workspace itself is not a conflict (its packages share one AllowedScope
+	// and must not self-block; the claim path re-acquires its own lease
+	// idempotently). A logically-expired lease (state "active" but ExpiresAt
+	// in the past) does NOT block: it is treated as released by the
+	// calculator, matching HasActiveLease's defence-in-depth.
 	for _, path := range p.AllowedScope {
 		for _, lease := range activeLeases {
 			if lease.Kind != LeasePath {
 				continue
 			}
 			if lease.Resource != path {
+				continue
+			}
+			if requestingWorkspaceID != "" && lease.WorkspaceID == requestingWorkspaceID {
 				continue
 			}
 			if lease.IsExpired(now) {

@@ -141,7 +141,13 @@ func (s *Scheduler) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 	if err != nil {
 		return ClaimResult{}, fmt.Errorf("workgraph: claim: list leases: %w", err)
 	}
-	readiness := ComputeReadiness(vg, active, s.lease.now())
+	// Readiness is computed from the requesting workspace's perspective: leases
+	// this workspace already holds (e.g. claimed by an earlier package of the
+	// same run, whose AllowedScope overlaps) are not conflicts — otherwise the
+	// run would self-block on its second package (review follow-up N1). Leases
+	// held by FOREIGN workspaces in the same project still block (M14-05
+	// project-scoped isolation).
+	readiness := ComputeReadiness(vg, active, s.lease.now(), req.WorkspaceID)
 	var mine *Readiness
 	for i := range readiness {
 		if readiness[i].PackageID == req.PackageID {
