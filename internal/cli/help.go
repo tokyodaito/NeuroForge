@@ -61,10 +61,18 @@ Implemented commands:
                       packages, dependencies, per-package readiness verdicts
                       and active leases. Survives daemon restart (M14-05).
 
-  run \"<description>\"  One-shot reliable run: create task + worktree, run one
-                      production adapter (opencode), finalize + result ref.
+  run \"<description>\"  One-shot reliable run through the durable pipeline:
+                      compile → plan → ready → execute → verify → review →
+                      finalize (bounded repair loop; survives daemon restart).
                       (--engine, --model, --file, --base, --timeout, --json,
                        --verbose)
+
+  pipeline status <task-id>   Show the durable pipeline run state + stage history
+  pipeline cancel <task-id>   Cancel a pipeline run (durable, idempotent)
+  estop on [reason]           Engage the emergency stop: cancel in-flight agent
+                              runs and refuse new pipeline runs (persists)
+  estop off                   Clear the emergency stop (explicit resume)
+  estop status                Show the emergency-stop flag
 
   workspace create -t <task>   Create an isolated Git worktree (--wp, --base, --json)
   workspace list [-t <task>]   List workspaces (--project, --json)

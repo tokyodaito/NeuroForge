@@ -199,15 +199,18 @@ func (a *App) runRunCmd(args []string) int {
 		return ExitErr
 	}
 
-	// Dispatch the run.
-	req := transport.RunTaskRequest{
-		Description: parsed.Description,
-		Engine:      parsed.Engine,
-		Model:       parsed.Model,
-		BaseBranch:  parsed.Base,
-		Timeout:     parsed.Timeout,
+	// Dispatch the run through the durable pipeline (M14-06): the daemon drives
+	// the task through compile → plan → ready → execute → verify → review →
+	// finalize (bounded repair loop), persisting every stage transition so the
+	// run survives daemon restarts.
+	req := transport.PipelineRunRequest{
+		Description:    parsed.Description,
+		Engine:         parsed.Engine,
+		Model:          parsed.Model,
+		BaseBranch:     parsed.Base,
+		TimeoutSeconds: int64(parsed.Timeout / time.Second),
 	}
-	res, err := cli.RunTask(ctx, projectID, req)
+	res, err := cli.RunPipeline(ctx, projectID, req)
 	if err != nil {
 		// User-initiated cancellation (SIGINT/SIGTERM): the daemon finalizes the
 		// run as cancelled independently; the CLI reports cancelled + exit 130
@@ -235,9 +238,67 @@ func (a *App) runRunCmd(args []string) int {
 	progress("Finalizing repository state...")
 
 	if parsed.JSON {
-		return a.emitJSONResult(res)
+		return a.emitPipelineJSONResult(res)
 	}
-	return a.emitHumanResult(res, parsed.Verbose)
+	code := a.emitHumanResult(runTaskDTOFromPipeline(res), parsed.Verbose)
+	a.emitStageSummary(res)
+	return code
+}
+
+// runTaskDTOFromPipeline adapts the pipeline run result to the runapp outcome
+// DTO so the human-readable result block (OUTCOME_CONTRACT.md §2) renders
+// unchanged.
+func runTaskDTOFromPipeline(res transport.PipelineRunResultDTO) transport.RunTaskResultDTO {
+	return transport.RunTaskResultDTO{
+		Outcome:       res.Outcome,
+		TaskID:        res.TaskID,
+		WorkspaceID:   res.WorkspaceID,
+		RunID:         res.RunID,
+		WorkspacePath: res.WorkspacePath,
+		BaseSHA:       res.BaseSHA,
+		ActualHeadSHA: res.ActualHeadSHA,
+		Engine:        res.Engine,
+		Model:         res.Model,
+		ChangedFiles:  res.ChangedFiles,
+		CommitSHA:     res.CommitSHA,
+		ResultBranch:  res.ResultBranch,
+		NextAction:    res.NextAction,
+		Error:         res.Error,
+		ErrorClass:    res.ErrorClass,
+	}
+}
+
+// emitPipelineJSONResult prints the pipeline run result as a single JSON
+// document (the runapp-compatible outcome fields plus run_state, stage and
+// the durable stage records). Returns the exit code per OUTCOME_CONTRACT.md §4.
+func (a *App) emitPipelineJSONResult(res transport.PipelineRunResultDTO) int {
+	b, _ := json.Marshal(res)
+	fmt.Fprintln(a.Out, string(b))
+	return exitCodeFor(res.Outcome)
+}
+
+// emitStageSummary prints the durable stage progression (one line per stage
+// outcome) after the human result block.
+func (a *App) emitStageSummary(res transport.PipelineRunResultDTO) {
+	var lines []string
+	for _, r := range res.StageRecords {
+		if r.Status == "entered" {
+			continue // bare entries carry no outcome; skip the noise
+		}
+		line := fmt.Sprintf("  %-8s attempt %d  %s", r.Stage, r.Attempt, r.Status)
+		if r.FailureCategory != "" {
+			line += " (" + r.FailureCategory + ")"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintln(a.Out)
+	fmt.Fprintln(a.Out, "Stages:")
+	for _, l := range lines {
+		fmt.Fprintln(a.Out, l)
+	}
 }
 
 // resolveOrCreateProjectID finds the registered project whose path matches

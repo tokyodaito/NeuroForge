@@ -79,6 +79,10 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(args[1:])
 	case "run":
 		return a.runRunCmd(args[1:])
+	case "pipeline":
+		return a.runPipelineCmd(args[1:])
+	case "estop":
+		return a.runEstopCmd(args[1:])
 	case "plugin":
 		return a.runPlugin(args[1:])
 	case "quota":
