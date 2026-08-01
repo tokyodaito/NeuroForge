@@ -312,6 +312,24 @@ func (s *Service) Finalize(ctx context.Context, req FinalizeRequest) (FinalizeRe
 	}
 	taskTo, taskTransitionErr := taskTransitionFor(ctx, s.tasks, t, taskAction)
 	if taskTransitionErr != nil {
+		// Idempotency under concurrency (BF-07 B4): a duplicate finalizer that
+		// read the workspace while it was still active can observe the task
+		// already terminal, because the winning finalizer's terminal commit
+		// landed between our workspace read and this task read. The workspace
+		// and task transition in one transaction, so a terminal task implies a
+		// terminal workspace here: converge to the recorded outcome instead of
+		// erroring. A terminal task with a non-terminal workspace is a genuine
+		// inconsistency — keep the original error.
+		if task.IsTerminal(t.State) {
+			fresh, gerr := s.wm.Get(ctx, ws.ID)
+			if gerr != nil {
+				return FinalizeResult{}, fmt.Errorf("runapp: reload workspace after terminal task: %w", gerr)
+			}
+			if isWorkspaceTerminal(fresh.State) {
+				_ = s.db.DeleteFinalizeIntent(ctx, ws.ID)
+				return s.idempotentResult(ctx, fresh, req, outcome)
+			}
+		}
 		return FinalizeResult{}, fmt.Errorf("runapp: compute task transition: %w", taskTransitionErr)
 	}
 

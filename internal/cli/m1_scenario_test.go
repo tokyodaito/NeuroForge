@@ -21,7 +21,9 @@ func makeTestGitRepo(t *testing.T) string {
 	dir := t.TempDir()
 	ctx := context.Background()
 	for _, args := range [][]string{
-		{"init"},
+		// Pin the initial branch: hosts without init.defaultBranch configured
+		// would otherwise get "master", while production code resolves "main".
+		{"init", "-b", "main"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
 		{"commit", "--allow-empty", "-m", "init"},

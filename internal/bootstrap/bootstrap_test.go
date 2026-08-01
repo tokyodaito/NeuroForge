@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,8 +28,13 @@ func detectorWith(tools ...string) *bootstrap.FakeDetector {
 
 func TestScanIsReadOnlyAndDetectsTools(t *testing.T) {
 	d := detectorWith("git", "codex", "node")
-	// Add a package manager so detection succeeds.
-	d.AddPath("brew", "/opt/homebrew/bin/brew")
+	// Add a package manager so detection succeeds. The scanner probes brew on
+	// darwin and apt/dnf/... on linux, so the fake must match the host OS.
+	if runtime.GOOS == "darwin" {
+		d.AddPath("brew", "/opt/homebrew/bin/brew")
+	} else {
+		d.AddPath("apt", "/usr/bin/apt")
+	}
 	scan, err := bootstrap.Scan(context.Background(), d)
 	if err != nil {
 		t.Fatal(err)

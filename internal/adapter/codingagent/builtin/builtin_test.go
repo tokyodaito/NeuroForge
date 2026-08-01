@@ -112,6 +112,12 @@ func TestRegisteredAdapters_SatisfyInterface(t *testing.T) {
 // codingagent.Adapter). It proves the core can route to any of the six engines
 // with zero provider-specific code: the same lookup-and-call works for all.
 func TestDispatch_ViaCommonInterface(t *testing.T) {
+	// Hermetic PATH: Detect probes the local PATH for provider CLIs. On a host
+	// where a real engine binary is installed (e.g. opencode), Detect would
+	// spawn the real CLI, which can hang. An empty temp dir makes "binary
+	// absent" the deterministic result — which Detect must tolerate anyway.
+	t.Setenv("PATH", t.TempDir())
+
 	reg := newRegistry(t)
 
 	// Simulate route resolution for a batch of requested engines, including a
