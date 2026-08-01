@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 
 func TestBuildArgvBasic(t *testing.T) {
 	a := New(Options{Binary: "/usr/bin/opencode", Agent: "build"})
-	argv := a.buildArgv(protocol.AgentRunRequest{
+	argv := mustArgv(t, a, protocol.AgentRunRequest{
 		Workspace: "/ws", Model: "anthropic/claude-x", Prompt: "do the thing",
 	}, false)
 	want := []string{"/usr/bin/opencode", "run", "--format", "json", "--dir", "/ws", "--model", "anthropic/claude-x", "--agent", "build", "do the thing"}
@@ -21,8 +22,8 @@ func TestBuildArgvBasic(t *testing.T) {
 func TestBuildArgvDeterministic(t *testing.T) {
 	a := New(Options{Binary: "opencode"})
 	req := protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "hi"}
-	first := a.buildArgv(req, false)
-	second := a.buildArgv(req, false)
+	first := mustArgv(t, a, req, false)
+	second := mustArgv(t, a, req, false)
 	if !eqSlice(first, second) {
 		t.Errorf("argv not deterministic: %v vs %v", first, second)
 	}
@@ -30,7 +31,7 @@ func TestBuildArgvDeterministic(t *testing.T) {
 
 func TestBuildArgvResumesWithSession(t *testing.T) {
 	a := New(Options{Binary: "opencode"})
-	argv := a.buildArgv(protocol.AgentRunRequest{
+	argv := mustArgv(t, a, protocol.AgentRunRequest{
 		Workspace: "/w", Model: "p/m", Prompt: "hi", SessionID: "sess-123",
 	}, true)
 	if !contains(argv, "--session", "sess-123") {
@@ -40,7 +41,7 @@ func TestBuildArgvResumesWithSession(t *testing.T) {
 
 func TestBuildArgvNoResumeWhenNoSession(t *testing.T) {
 	a := New(Options{Binary: "opencode"})
-	argv := a.buildArgv(protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "hi"}, true)
+	argv := mustArgv(t, a, protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "hi"}, true)
 	for i, v := range argv {
 		if v == "--session" {
 			t.Errorf("should not emit --session without id: %v (at %d)", argv, i)
@@ -50,7 +51,7 @@ func TestBuildArgvNoResumeWhenNoSession(t *testing.T) {
 
 func TestBuildArgvNeverShare(t *testing.T) {
 	a := New(Options{Binary: "opencode", ExtraArgs: []string{"--auto"}})
-	argv := a.buildArgv(protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "hi"}, false)
+	argv := mustArgv(t, a, protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "hi"}, false)
 	for _, v := range argv {
 		if v == "--share" || strings.Contains(v, "share") {
 			t.Errorf("--share must NEVER appear: %v", argv)
@@ -60,7 +61,7 @@ func TestBuildArgvNeverShare(t *testing.T) {
 
 func TestBuildArgvPromptFileFallback(t *testing.T) {
 	a := New(Options{Binary: "opencode"})
-	argv := a.buildArgv(protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", PromptFile: "/p.txt"}, false)
+	argv := mustArgv(t, a, protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", PromptFile: "/p.txt"}, false)
 	if !contains(argv, "/p.txt") {
 		t.Errorf("prompt file not in argv: %v", argv)
 	}
@@ -68,7 +69,7 @@ func TestBuildArgvPromptFileFallback(t *testing.T) {
 
 func TestBuildArgvNoShell(t *testing.T) {
 	a := New(Options{Binary: "opencode"})
-	argv := a.buildArgv(protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "rm -rf /"}, false)
+	argv := mustArgv(t, a, protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "rm -rf /"}, false)
 	// argv must be a real token slice, never a shell string with /bin/sh or cmd /c.
 	joined := strings.Join(argv, " ")
 	if strings.Contains(joined, "/bin/sh") || strings.Contains(joined, "cmd /c") {
@@ -82,7 +83,7 @@ func TestBuildArgvNoShell(t *testing.T) {
 
 func TestBuildArgvSpacesAndUnicode(t *testing.T) {
 	a := New(Options{Binary: `/opt/ünïcode dir/opencode`})
-	argv := a.buildArgv(protocol.AgentRunRequest{
+	argv := mustArgv(t, a, protocol.AgentRunRequest{
 		Workspace: `/home/me/My Workspace/proj`, Model: "p/m", Prompt: "héllo",
 	}, false)
 	if argv[0] != `/opt/ünïcode dir/opencode` {
@@ -148,6 +149,16 @@ func TestBuildEnvCaseInsensitive(t *testing.T) {
 	}
 }
 
+// mustArgv builds argv or fails the test on a validation error.
+func mustArgv(t *testing.T, a *Adapter, req protocol.AgentRunRequest, isResume bool) []string {
+	t.Helper()
+	argv, err := a.buildArgv(req, isResume)
+	if err != nil {
+		t.Fatalf("buildArgv: %v", err)
+	}
+	return argv
+}
+
 // helpers
 func eqSlice(a, b []string) bool {
 	if len(a) != len(b) {
@@ -175,4 +186,47 @@ func contains(s []string, kv ...string) bool {
 		}
 	}
 	return false
+}
+
+// TestBuildArgvRejectsFlagInjection (M4): model and session id values
+// beginning with '-' would be parsed as flags by the opencode CLI (option
+// injection) and must be rejected with a clear error before spawn.
+func TestBuildArgvRejectsFlagInjection(t *testing.T) {
+	a := New(Options{Binary: "opencode"})
+	if _, err := a.buildArgv(protocol.AgentRunRequest{Workspace: "/w", Model: "--help", Prompt: "hi"}, false); err == nil {
+		t.Error("model starting with '-' must be rejected")
+	}
+	if _, err := a.buildArgv(protocol.AgentRunRequest{
+		Workspace: "/w", Model: "p/m", Prompt: "hi", SessionID: "--session=other",
+	}, true); err == nil {
+		t.Error("session id starting with '-' must be rejected on resume")
+	}
+	// The session id is only validated when actually used (resume).
+	if _, err := a.buildArgv(protocol.AgentRunRequest{
+		Workspace: "/w", Model: "p/m", Prompt: "hi", SessionID: "",
+	}, true); err != nil {
+		t.Errorf("empty session id on resume must not error: %v", err)
+	}
+}
+
+// TestResolvedBinaryUsesDetectedPath (L5): without Options.Binary, spawn must
+// use the absolute path Detect resolved (cached), not the bare PATH name.
+func TestResolvedBinaryUsesDetectedPath(t *testing.T) {
+	a := New(Options{})
+	a.lookPath = func(string) (string, error) { return "/resolved/abs/opencode", nil }
+	a.runProbe = func(context.Context, string) (string, string, error) { return "opencode 0.1.48", "", nil }
+
+	// Before Detect: a fresh lookup resolves the absolute path.
+	if got := a.resolvedBinary(); got != "/resolved/abs/opencode" {
+		t.Errorf("resolvedBinary before Detect = %q, want the looked-up absolute path", got)
+	}
+	// After Detect: the cached detection path is used.
+	res := a.Detect(context.Background())
+	if !res.Installed || res.Path != "/resolved/abs/opencode" {
+		t.Fatalf("Detect = %+v", res)
+	}
+	argv := mustArgv(t, a, protocol.AgentRunRequest{Workspace: "/w", Model: "p/m", Prompt: "hi"}, false)
+	if argv[0] != "/resolved/abs/opencode" {
+		t.Errorf("argv[0] = %q, want the detected absolute path (L5)", argv[0])
+	}
 }

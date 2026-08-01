@@ -173,6 +173,8 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Workspace, err
 			return Workspace{}, fmt.Errorf("workspace: resolve base HEAD: %w", err)
 		}
 		baseRef = strings.TrimSpace(out)
+	} else if err := validateBaseRef(ctx, baseRunner, baseRef); err != nil {
+		return Workspace{}, err
 	}
 	baseSHA, err := baseRunner.run(ctx, "rev-parse", baseRef)
 	if err != nil {
@@ -248,6 +250,26 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Workspace, err
 
 	m.logger.Info("workspace created", "id", ws.ID, "path", ws.Path, "branch", ws.Branch)
 	return ws, nil
+}
+
+// validateBaseRef guards the caller-supplied base branch/commit against
+// option injection and unresolvable refs (review finding M4): the value
+// reaches git argv verbatim (rev-parse, worktree add), so a leading '-' would
+// be parsed as a flag. The ref is accepted when it is a valid branch name
+// (git check-ref-format --branch) or any commit-ish that resolves to a
+// commit (e.g. a full or abbreviated SHA, HEAD~1).
+func validateBaseRef(ctx context.Context, r gitRunner, ref string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("workspace: invalid base branch %q: must not begin with '-'", ref)
+	}
+	if _, err := r.run(ctx, "check-ref-format", "--branch", ref); err == nil {
+		return nil
+	}
+	// Not a valid branch name — accept any commit-ish that resolves.
+	if _, err := r.run(ctx, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		return fmt.Errorf("workspace: invalid base branch %q: not a valid branch name or commit", ref)
+	}
+	return nil
 }
 
 // nextAttempt returns the next attempt number for a task + work package.

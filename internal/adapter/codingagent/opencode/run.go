@@ -99,7 +99,10 @@ func (a *Adapter) runCommon(ctx context.Context, req protocol.AgentRunRequest, s
 	if engine == "" {
 		engine = a.ID()
 	}
-	argv := a.buildArgv(req, isResume)
+	argv, err := a.buildArgv(req, isResume)
+	if err != nil {
+		return protocol.RunHandle{}, err
+	}
 	env := buildEnv(req.AllowlistEnv)
 
 	proc, err := a.spawn(argv, req.Workspace, env)

@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -13,13 +14,21 @@ import (
 // by the OS process spawn. Only documented OpenCode `run` flags are used (see
 // docs/adapters/opencode.md).
 //
+// Values that become flag ARGUMENTS (model, session id) are validated: a value
+// starting with '-' would be parsed as a flag by the opencode CLI (option
+// injection, review finding M4) and is rejected with a clear error.
+//
 // `--share` is NEVER emitted: NeuroForge-managed runs are never shared.
-func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) []string {
-	bin := a.opts.Binary
-	if bin == "" {
-		bin = binaryName
+func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) ([]string, error) {
+	if err := validateFlagArgument("model", req.Model); err != nil {
+		return nil, err
 	}
-	argv := []string{bin, "run", "--format", "json"}
+	if isResume {
+		if err := validateFlagArgument("session", req.SessionID); err != nil {
+			return nil, err
+		}
+	}
+	argv := []string{a.resolvedBinary(), "run", "--format", "json"}
 	if dir := strings.TrimSpace(req.Workspace); dir != "" {
 		argv = append(argv, "--dir", dir)
 	}
@@ -45,7 +54,41 @@ func (a *Adapter) buildArgv(req protocol.AgentRunRequest, isResume bool) []strin
 	case strings.TrimSpace(req.PromptFile) != "":
 		argv = append(argv, req.PromptFile)
 	}
-	return argv
+	return argv, nil
+}
+
+// validateFlagArgument rejects a value destined for a CLI flag argument when
+// it starts with '-': passed verbatim it would be parsed as a flag by the
+// engine CLI (option injection, review finding M4).
+func validateFlagArgument(name, value string) error {
+	if strings.HasPrefix(strings.TrimSpace(value), "-") {
+		return fmt.Errorf("opencode: invalid %s %q: must not begin with '-'", name, value)
+	}
+	return nil
+}
+
+// resolvedBinary returns the binary to spawn: Options.Binary verbatim when
+// set, else the absolute path resolved and cached by Detect, else a fresh
+// PATH lookup, else the bare name as a last resort. Spawn and Detect must
+// address the SAME binary (review finding L5: Detect resolved an absolute
+// path while spawn used the bare PATH name).
+func (a *Adapter) resolvedBinary() string {
+	if a.opts.Binary != "" {
+		return a.opts.Binary
+	}
+	a.mu.Lock()
+	cached := ""
+	if a.hasDetect {
+		cached = a.detected.path
+	}
+	a.mu.Unlock()
+	if cached != "" {
+		return cached
+	}
+	if p, err := a.lookPath(binaryName); err == nil {
+		return p
+	}
+	return binaryName
 }
 
 // baseEnvKeys are the allowlisted environment variables always forwarded to the

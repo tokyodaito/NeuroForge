@@ -471,3 +471,34 @@ func TestWorktreeExists(t *testing.T) {
 
 // Ensure time is referenced (used by some helpers).
 var _ = time.Now
+
+// TestCreate_BaseRefValidation (M4): the caller-supplied base branch reaches
+// git argv verbatim, so values beginning with '-' (option injection) and
+// unresolvable refs must be rejected; a branch name and a commit SHA must be
+// accepted.
+func TestCreate_BaseRefValidation(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	head := readHeadSHA(t, repoPath)
+	wm, _, _ := setupManager(t, "task-2", "task-3", "task-4")
+	ctx := context.Background()
+
+	create := func(taskID, base string) error {
+		_, err := wm.Create(ctx, workspace.CreateRequest{
+			ProjectID: "proj", ProjectPath: repoPath, TaskID: taskID, BaseBranch: base,
+		})
+		return err
+	}
+
+	if err := create("task-1", "--upload-pack=evil"); err == nil {
+		t.Error("base branch beginning with '-' must be rejected (option injection)")
+	}
+	if err := create("task-2", "no/such..ref"); err == nil {
+		t.Error("unresolvable base ref must be rejected")
+	}
+	if err := create("task-3", "main"); err != nil {
+		t.Errorf("branch name base rejected: %v", err)
+	}
+	if err := create("task-4", head); err != nil {
+		t.Errorf("commit SHA base rejected: %v", err)
+	}
+}

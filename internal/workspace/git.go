@@ -28,26 +28,27 @@ var forbiddenGitSubcommands = map[string]string{
 // the structural enforcement of AC-7: LOCAL_REVIEW performs zero Git network
 // operations, by construction rather than convention.
 var allowedGitSubcommands = map[string]bool{
-	"worktree":     true, // create/list/remove worktrees
-	"rev-parse":    true, // resolve SHAs, branches
-	"rev-list":     true, // list commits
-	"add":          true, // stage files
-	"commit":       true, // create checkpoint commits
-	"branch":       true, // create/delete/list local branches
-	"diff":         true, // show diffs
-	"log":          true, // show history
-	"status":       true, // show working tree status
-	"show":         true, // show objects
-	"format-patch": true, // export patches
-	"checkout":     true, // switch branches inside a worktree
-	"symbolic-ref": true, // inspect HEAD
-	"config":       true, // local config (e.g. user identity for commits)
-	"stash":        true, // list only (used for accept-into-branch checks)
-	"merge-tree":   true, // merge without touching working tree
-	"cat-file":     true, // read object contents
-	"update-ref":   true, // create result branch refs
-	"for-each-ref": true, // enumerate refs
-	"-C":           true, // change directory flag (handled specially)
+	"worktree":         true, // create/list/remove worktrees
+	"rev-parse":        true, // resolve SHAs, branches
+	"rev-list":         true, // list commits
+	"add":              true, // stage files
+	"commit":           true, // create checkpoint commits
+	"branch":           true, // create/delete/list local branches
+	"diff":             true, // show diffs
+	"log":              true, // show history
+	"status":           true, // show working tree status
+	"show":             true, // show objects
+	"format-patch":     true, // export patches
+	"checkout":         true, // switch branches inside a worktree
+	"symbolic-ref":     true, // inspect HEAD
+	"config":           true, // local config (e.g. user identity for commits)
+	"check-ref-format": true, // validate caller-supplied branch names (M4)
+	"stash":            true, // list only (used for accept-into-branch checks)
+	"merge-tree":       true, // merge without touching working tree
+	"cat-file":         true, // read object contents
+	"update-ref":       true, // create result branch refs
+	"for-each-ref":     true, // enumerate refs
+	"-C":               true, // change directory flag (handled specially)
 }
 
 // ErrGitNetworkForbidden is returned when a git network subcommand is requested.
