@@ -753,6 +753,8 @@ func errorClassForCategory(c pipeline.FailureCategory) string {
 		return "TIMEOUT"
 	case pipeline.FailureCancelled:
 		return "CANCELLED"
+	case pipeline.FailureInterrupted:
+		return "INTERRUPTED"
 	case pipeline.FailureAgentUnavailable:
 		return "AGENT_UNAVAILABLE"
 	case pipeline.FailureInvalidAgentOutput:

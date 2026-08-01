@@ -486,8 +486,9 @@ func TestPipelineFault_EstopMidExecute(t *testing.T) {
 	}
 
 	st := env.status(t, taskID)
-	// Universal invariants regardless of the parking question: the in-flight
-	// stage is honestly recorded as interrupted and the run did NOT complete.
+	// The in-flight stage is honestly recorded as interrupted, the run did NOT
+	// complete, and it is PARKED (still active) — the park-and-resume model:
+	// a terminally-failed run could never resume after `estop off` (NF-FAULT-1).
 	interrupted := false
 	for _, r := range stageRecords(st, "execute", "failed") {
 		if r.FailureCategory == string(pipeline.FailureInterrupted) {
@@ -500,17 +501,8 @@ func TestPipelineFault_EstopMidExecute(t *testing.T) {
 	if st.RunState == "completed" {
 		t.Fatal("estop mid-execute reported the run completed (false success)")
 	}
-
 	if st.RunState != "active" {
-		// TODO(NF-FAULT-1): the pipeline fails the whole run terminally when
-		// the estop cancels an in-flight stage (driver.failStage →
-		// SetRunState(failed) for category interrupted), contradicting the
-		// park-and-resume model documented on PipelineService ("runs stay
-		// active ... the run resumes on the next daemon start"). A
-		// terminally-failed run can never be resumed after `estop off`.
-		// Tracked in the Phase E defect report; remove this skip once the
-		// driver routes FailureInterrupted to a parked (active) run.
-		t.Skipf("estop mid-execute terminally fails the run (state=%s category=%s) instead of parking it — NF-FAULT-1",
+		t.Fatalf("estop mid-execute left the run in state=%s (category=%s), want active (parked)",
 			st.RunState, st.FailureCategory)
 	}
 

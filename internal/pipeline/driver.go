@@ -18,8 +18,12 @@
 //	                                         Transition to verify (re-verification)
 //	finalize            success            → CompleteStage, SetRunState(completed)
 //	any handler         error              → FailStage(category), then:
+//	                                         interrupted → run parked (stays
+//	                                         active, Drive returns
+//	                                         ErrEmergencyStopped);
 //	                                         quota_exceeded / rate_limited from
 //	                                         execute or verify → waiting_quota,
+//	                                         lease_lost from ready → blocked,
 //	                                         anything else → failed
 //
 // "enter repair" always calls IncrementRepairAttempt FIRST: when it reports
@@ -415,6 +419,14 @@ func (d *Driver) failStage(ctx context.Context, rc *RunContext, herr error) erro
 	category, reason := categorizeError(herr)
 	if err := d.store.FailStage(ctx, rc.TaskID, rc.Stage, category, reason, ""); err != nil {
 		return err
+	}
+	if category == FailureInterrupted {
+		// Park, don't fail (NF-FAULT-1): an interrupted stage (emergency stop)
+		// leaves the run ACTIVE at its current stage so it resumes on
+		// estop-off/restart (MarkInterrupted + re-drive). The interrupted
+		// outcome is already durable on the stage record. Drive stops here;
+		// callers treat ErrEmergencyStopped as a parked run, not a failure.
+		return fmt.Errorf("%w: %s", ErrEmergencyStopped, reason)
 	}
 	to := RunFailed
 	// waiting_quota is only reachable from execute/verify (Store invariant);

@@ -36,7 +36,10 @@ import (
 //     / test_failure (progressive levels, stop at first failure);
 //   - unparseable review output maps to invalid_agent_output;
 //   - a cancelled agent run cancels the run durably (Store.Cancel) unless the
-//     emergency stop caused it — then the stage fails as `interrupted`.
+//     emergency stop caused it — then the stage fails as `interrupted` and the
+//     driver parks the run (stays active; resumes on estop-off/restart);
+//   - a lease conflict in ready maps to lease_lost and the driver parks the
+//     run in blocked (resumes via recovery after the lease clears).
 
 // discardWriter silences the default logger when the caller supplies none
 // (mirrors pipeline.Store's pattern).
@@ -591,7 +594,9 @@ func (s *PipelineService) runAgent(ctx context.Context, taskID string, ws *works
 // agentOutcomeError maps a terminal agent run to a StageError, or nil on
 // success. Cancellation cancels the pipeline run durably (Store.Cancel) —
 // unless the emergency stop caused it, in which case the stage fails as
-// `interrupted` so the history distinguishes an estop from a user cancel.
+// `interrupted` and the driver PARKS the run (it stays active at the current
+// stage and resumes on estop-off/restart) so the history distinguishes an
+// estop from a user cancel without losing the run.
 func (s *PipelineService) agentOutcomeError(ctx context.Context, taskID string, res supervisor.RunResult) error {
 	if res.Cancelled {
 		if on, reason, err := s.store.EmergencyStop(context.Background()); err == nil && on {
