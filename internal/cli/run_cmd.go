@@ -49,6 +49,7 @@ type runCmdArgs struct {
 	Model       string
 	Base        string
 	Timeout     time.Duration
+	MaxRepair   int
 	JSON        bool
 	Verbose     bool
 }
@@ -64,6 +65,7 @@ func parseRunArgs(args []string) (runCmdArgs, error) {
 	file := fs.String("file", "", "read the description from a file (mutually exclusive with positional)")
 	base := fs.String("base", "", "base branch/commit (default: current branch)")
 	timeout := fs.Duration("timeout", 10*time.Minute, "hard wall-clock timeout for the agent run")
+	maxRepair := fs.Int("max-repair", 3, "maximum repair attempts after a failed verify/review before the run gives up")
 	jsonOut := fs.Bool("json", false, "emit a single machine-readable JSON document")
 	verbose := fs.Bool("verbose", false, "show internal ids (task/workspace/run) in human output")
 
@@ -73,11 +75,13 @@ func parseRunArgs(args []string) (runCmdArgs, error) {
 	}
 	parsed := runCmdArgs{
 		Engine: *engine, Model: *model, File: *file, Base: *base,
-		Timeout: *timeout, JSON: *jsonOut, Verbose: *verbose,
+		Timeout: *timeout, MaxRepair: *maxRepair, JSON: *jsonOut, Verbose: *verbose,
 	}
 
 	// Validation per REQUIREMENTS.md §1.2.
 	switch {
+	case *maxRepair < 0:
+		return parsed, fmt.Errorf("forge: --max-repair must be >= 0, got %d", *maxRepair)
 	case len(positional) > 0 && *file != "":
 		return parsed, errors.New("forge: --file and a positional description are mutually exclusive")
 	case len(positional) > 0:
@@ -204,11 +208,12 @@ func (a *App) runRunCmd(args []string) int {
 	// finalize (bounded repair loop), persisting every stage transition so the
 	// run survives daemon restarts.
 	req := transport.PipelineRunRequest{
-		Description:    parsed.Description,
-		Engine:         parsed.Engine,
-		Model:          parsed.Model,
-		BaseBranch:     parsed.Base,
-		TimeoutSeconds: int64(parsed.Timeout / time.Second),
+		Description:       parsed.Description,
+		Engine:            parsed.Engine,
+		Model:             parsed.Model,
+		BaseBranch:        parsed.Base,
+		TimeoutSeconds:    int64(parsed.Timeout / time.Second),
+		MaxRepairAttempts: parsed.MaxRepair,
 	}
 	res, err := cli.RunPipeline(ctx, projectID, req)
 	if err != nil {
