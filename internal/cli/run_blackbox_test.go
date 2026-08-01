@@ -161,7 +161,7 @@ func TestForgeRun_NoChangeIsFailure(t *testing.T) {
 	}
 }
 
-// ---- B-03: uncommitted-changes run ----
+// ---- B-03: agent left changes uncommitted -> finalize auto-commits ----
 
 func TestForgeRun_UncommittedChanges(t *testing.T) {
 	f := newRunFixture(t)
@@ -169,15 +169,17 @@ func TestForgeRun_UncommittedChanges(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit = %d, want 0 (uncommitted-changes is success)", code)
 	}
-	if got := doc["outcome"]; got != "completed-with-uncommitted-changes" {
-		t.Errorf("outcome = %v, want completed-with-uncommitted-changes", got)
+	// Since the pipeline finalize auto-commit, an agent that never commits
+	// still yields a result commit on the result branch.
+	if got := doc["outcome"]; got != "completed-with-commit" {
+		t.Errorf("outcome = %v, want completed-with-commit (finalize auto-commit)", got)
 	}
 	changed, _ := doc["changed_files"].([]any)
 	if len(changed) == 0 {
-		t.Errorf("changed_files empty; expected the uncommitted file")
+		t.Errorf("changed_files empty; expected the agent-written file")
 	}
-	if got := doc["commit_sha"]; got != nil && got != "" {
-		t.Errorf("commit_sha should be empty/null for uncommitted changes, got %v", got)
+	if got := doc["commit_sha"]; got == nil || got == "" {
+		t.Errorf("commit_sha missing; finalize must auto-commit agent changes")
 	}
 }
 
