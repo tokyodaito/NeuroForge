@@ -449,6 +449,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_unique_active_resource
 ON leases (scope, scope_id, kind, resource) WHERE state = 'active';
 `,
 	},
+	{
+		Version:     10,
+		Description: "create pipeline_runs, pipeline_stage_records and control_flags tables (M14-06, durable pipeline stage state machine)",
+		Up: `
+-- Durable pipeline runs (milestone M14-06). One row per task pipeline
+-- execution: the task_id primary key enforces "at most one pipeline run per
+-- task" at the storage layer. current_stage is the stage cursor the driver
+-- resumes from after a restart; run_state distinguishes actively-driven runs
+-- from the non-terminal wait states (waiting_quota, blocked) and the terminal
+-- outcomes (completed, failed, cancelled, repair_exhausted). stage_attempt is
+-- the attempt counter for the current stage (bumped on re-entry, e.g. the
+-- repair loop re-entering execute); repair_attempt counts repair cycles and is
+-- capped by max_repair_attempts before the run is declared repair_exhausted.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+	task_id             TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+	project_id          TEXT NOT NULL,
+	current_stage       TEXT NOT NULL,
+	run_state           TEXT NOT NULL DEFAULT 'active',
+	stage_attempt       INTEGER NOT NULL DEFAULT 1,
+	repair_attempt      INTEGER NOT NULL DEFAULT 0,
+	max_repair_attempts INTEGER NOT NULL DEFAULT 3,
+	failure_category    TEXT,
+	failure_reason      TEXT,
+	result_ref          TEXT,
+	created_at          TEXT NOT NULL,
+	updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_state   ON pipeline_runs (run_state);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs (project_id);
+
+-- Append-only stage history. Every stage entry and outcome is a row; the
+-- UNIQUE(task_id, stage, attempt, status) constraint makes re-entering a
+-- stage after a crash/restart idempotent at the database level (the driver
+-- can blindly re-INSERT its "entered" record and rely on the conflict being
+-- absorbed). finished_at on the 'entered' row is set when the stage reaches
+-- an outcome (completed / failed / skipped) or is swept by the startup
+-- reconciler (interrupted).
+CREATE TABLE IF NOT EXISTS pipeline_stage_records (
+	id               INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+	stage            TEXT NOT NULL,
+	attempt          INTEGER NOT NULL,
+	status           TEXT NOT NULL,  -- entered | completed | failed | skipped
+	failure_category TEXT,
+	reason           TEXT NOT NULL DEFAULT '',
+	evidence_ref     TEXT,
+	entered_at       TEXT NOT NULL,
+	finished_at      TEXT,
+	UNIQUE (task_id, stage, attempt, status)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_stage_records_task ON pipeline_stage_records (task_id, stage, attempt);
+
+-- Keyed control flags (M14-06). Holds the persisted emergency-stop flag so
+-- the pipeline driver can cheaply check "am I allowed to start ANY stage"
+-- before every stage dispatch, surviving restarts.
+CREATE TABLE IF NOT EXISTS control_flags (
+	key        TEXT PRIMARY KEY,
+	value      TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order. It is idempotent: re-running
