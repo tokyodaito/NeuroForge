@@ -24,7 +24,8 @@ const smokeArtifactsDir = "/tmp/neuroforge-smoke-failure"
 // is set, so it never runs in `go test ./...` nor in CI.
 //
 // When enabled, the test drives the PRODUCTION OpenCode adapter (no fake
-// fallback — it is skipped entirely otherwise) and asserts:
+// fallback — it is skipped entirely otherwise) through the durable pipeline
+// (compile → plan → ready → execute → verify → review → finalize) and asserts:
 //   - the engine/model fields are forwarded verbatim;
 //   - a real commit exists (actual_head_sha != base_sha) and the result ref /
 //     commit_sha equal the actual head SHA (invariant I.5);
@@ -50,8 +51,20 @@ func TestForgeRun_Smoke_OpenCode(t *testing.T) {
 	runGitIn(t, repoPath, "init", "-b", "main")
 	runGitIn(t, repoPath, "config", "user.email", "smoke@smoke.smoke")
 	runGitIn(t, repoPath, "config", "user.name", "Smoke")
-	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# Smoke\n"), 0o644); err != nil {
-		t.Fatal(err)
+	// Defeat any ambient core.autocrlf: the pipeline's verify stage runs
+	// gofmt, which rejects CRLF line endings.
+	runGitIn(t, repoPath, "config", "core.autocrlf", "false")
+	// The durable pipeline's verify stage runs gofmt/go build/go vet/go test
+	// inside the worktree, so the fixture is a minimal buildable Go module
+	// (go directive satisfiable by the ambient toolchain, no download).
+	for name, content := range map[string]string{
+		"README.md": "# Smoke\n",
+		"go.mod":    "module fixture\n\ngo 1.22\n",
+		"main.go":   "package main\n\nfunc main() {}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repoPath, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runGitIn(t, repoPath, "add", "-A")
 	runGitIn(t, repoPath, "commit", "-m", "init")
