@@ -34,9 +34,13 @@
 //
 // # Robustness
 //
-// Unknown event types and malformed JSONL never abort a run: they are surfaced
-// as recoverable warning events and persisted to the artifacts dir for
-// forensics (spec: malformed events are saved + classified, never fatal).
+// The adapter parses both the Protocol-v1 normalized schema and opencode's
+// native v1.x `--format json` schema (step_start / text / step_finish),
+// translating the latter onto the normalized event set (see translate.go).
+// Lines matching neither schema, and malformed JSONL, never abort a run: they
+// are surfaced as recoverable warning events and persisted to the artifacts
+// dir for forensics (spec: malformed events are saved + classified, never
+// fatal).
 // Cancellation terminates the whole process group via
 // [neuroforge/internal/adapter/codingagent/proctree].
 package opencode

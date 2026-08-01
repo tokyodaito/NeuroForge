@@ -65,6 +65,10 @@ func (s *jsonlScanner) next() (line []byte, hasMore bool) {
 
 // parseLine decodes one JSONL line via the canonical protocol parser. On a
 // recoverable parse problem (malformed JSON, unknown event type, bad payload) it
+// first retries with the native opencode schema (opencode v1.x `--format json`
+// output): a line that translates to a normalized event (or is a recognised
+// native type with no counterpart, such as step_start) is consumed WITHOUT a
+// warning and without a malformed artifact. Only a line that fails BOTH parsers
 // returns the non-nil warning event produced by [protocol.ParseEventLine] plus a
 // non-nil error so the caller can persist the (redacted) raw bytes as an
 // artifact (spec: malformed events are saved + classified, never fatal). Only a
@@ -76,6 +80,17 @@ func parseLine(line []byte) (protocol.NormalizedEvent, bool, error) {
 		return protocol.NormalizedEvent{}, false, nil
 	}
 	ev, err := protocol.ParseEventLine(trimmed)
+	if err == nil {
+		return ev, true, nil
+	}
+	// Not protocol v1: try opencode's native schema before classifying the line
+	// as malformed, so genuine engine output is neither warning-spammed nor
+	// persisted as a malformed artifact.
+	if ne, ok := ParseNativeEvent(trimmed); ok {
+		if tev, emit, recognised := translateNative(ne); recognised {
+			return tev, emit, nil
+		}
+	}
 	return ev, true, err
 }
 
