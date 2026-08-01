@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"neuroforge/internal/adapter/codingagent/proctree"
+	"neuroforge/internal/supervisor"
 )
 
 // DefaultShellCmdTimeout bounds a single verification command.
@@ -41,8 +42,11 @@ type ShellRunnerOptions struct {
 //
 // Guarantees:
 //   - Commands run with Dir = WorkspacePath, no shell (argv only).
-//   - The environment is inherited from the daemon process (already
-//     allowlisted upstream) with GOFLAGS forced to -mod=readonly.
+//   - The environment is the daemon's environment stripped to the supervisor
+//     allowlist (no GITHUB_TOKEN-style secrets) plus the Go toolchain
+//     essentials, with GOFLAGS forced to -mod=readonly. Verification runs
+//     agent-authored code (go test), so daemon secrets must never reach it
+//     (security review H3).
 //   - The workspace is never mutated: no gofmt -w, no go mod tidy, no go get.
 //   - Cancellation and timeouts kill the whole process group.
 type ShellRunner struct {
@@ -132,16 +136,24 @@ func (r *ShellRunner) runSyntax(ctx context.Context, req RunRequest, res *Result
 // otherwise drop the executable(s) into the workspace, mutating the tree the
 // runner promises to keep pristine (a stray binary later surfaces as an
 // uncommitted change in the worktree inspection). `-o` cannot be used
-// unconditionally — it fails on modules without main packages.
+// unconditionally — it fails on modules without main packages. If the temp
+// dir cannot be created the check FAILS rather than mutating the worktree
+// (review finding L3).
 func (r *ShellRunner) runCompile(ctx context.Context, req RunRequest, res *Result) {
 	args := []string{"build", "./..."}
 	var outDir string
 	if r.hasMainPackages(ctx, req.WorkspacePath) {
-		if dir, err := os.MkdirTemp("", "testengine-build-*"); err == nil {
-			outDir = dir
-			defer func() { _ = os.RemoveAll(outDir) }()
-			args = []string{"build", "-o", outDir + string(filepath.Separator), "./..."}
+		dir, err := os.MkdirTemp("", "testengine-build-*")
+		if err != nil {
+			res.Status = StatusFailed
+			res.Failed = 1
+			res.Failures = []TestFailure{{Message: "cannot create temp build dir: " + err.Error()}}
+			res.SlicedOutput = "go build requires a temp output dir for main packages; refusing to build into the workspace"
+			return
 		}
+		outDir = dir
+		defer func() { _ = os.RemoveAll(outDir) }()
+		args = []string{"build", "-o", outDir + string(filepath.Separator), "./..."}
 	}
 	out, err := r.runCmd(ctx, req.WorkspacePath, r.goBin, args...)
 	res.SlicedOutput = sliceTail(out)
@@ -245,6 +257,33 @@ func (r *ShellRunner) runModule(ctx context.Context, req RunRequest, res *Result
 	res.Status = StatusPassed
 }
 
+// goEssentialEnvKeys are the Go toolchain variables forwarded to verification
+// commands in addition to the supervisor allowlist (which already covers
+// PATH, HOME, TMPDIR/TEMP/TMP, LANG/LC_ALL and TERM). GIT_* variables are
+// deliberately absent: go tooling does not need them and the supervisor
+// allowlist forbids them.
+var goEssentialEnvKeys = []string{
+	"GOPATH", "GOMODCACHE", "GOCACHE", "GOPROXY",
+}
+
+// verifyEnv builds the environment for verification commands. Verification
+// runs agent-authored code (go build / go vet / go test) and its output is
+// persisted as evidence, so the daemon's full environment (GITHUB_TOKEN and
+// other secrets) must never reach it (security review H3). The base is the
+// supervisor allowlist applied to the daemon's environment — reused, not
+// duplicated — plus the Go toolchain essentials; GOFLAGS is forced to
+// -mod=readonly so nothing in the worktree is rewritten (os/exec keeps the
+// last value of a duplicated key, so this overrides any ambient GOFLAGS).
+func verifyEnv() []string {
+	env := supervisor.EnvAllowlist(os.Environ())
+	for _, k := range goEssentialEnvKeys {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return append(env, "GOFLAGS=-mod=readonly")
+}
+
 // runCmd executes one verification command with the timeout applied, output
 // combined (stdout+stderr), and process-group kill on cancellation.
 func (r *ShellRunner) runCmd(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -257,10 +296,7 @@ func (r *ShellRunner) runCmd(ctx context.Context, dir, name string, args ...stri
 
 	cmd := proctree.NewGroupCommand(name, args...)
 	cmd.Dir = dir
-	// Inherit the (already allowlisted) daemon environment; force module
-	// read-only mode so nothing in the worktree is rewritten. os/exec keeps the
-	// last value of a duplicated key, so this overrides any ambient GOFLAGS.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+	cmd.Env = verifyEnv()
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

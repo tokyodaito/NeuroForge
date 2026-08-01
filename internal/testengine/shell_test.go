@@ -319,3 +319,68 @@ func TestShellRunnerRequiresWorkspace(t *testing.T) {
 		t.Fatal("expected error for empty WorkspacePath")
 	}
 }
+
+// envProbeTestFile fails when a daemon secret is visible to agent-authored
+// test code (security review H3).
+const envProbeTestFile = `package calc
+
+import (
+	"os"
+	"testing"
+)
+
+func TestNoDaemonSecrets(t *testing.T) {
+	if v := os.Getenv("GITHUB_TOKEN"); v != "" {
+		t.Fatalf("GITHUB_TOKEN leaked into verification environment")
+	}
+}
+`
+
+// TestShellRunnerStripsDaemonSecrets proves (H3) that agent-authored test
+// code executed by the module verification level never sees daemon secrets:
+// GITHUB_TOKEN is set in this process's environment (as the daemon would have
+// it) and must be stripped from the go test child.
+func TestShellRunnerStripsDaemonSecrets(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "secret-token-value")
+	dir := writeModule(t, map[string]string{
+		"calc/calc.go":      passingModuleFile,
+		"calc/calc_test.go": envProbeTestFile,
+	})
+	res, err := newRunner(t).Run(context.Background(), RunRequest{Level: LevelModule, WorkspacePath: dir})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Status != StatusPassed {
+		t.Fatalf("status = %s, want passed — a secret leaked into the verification env (output: %s)", res.Status, res.SlicedOutput)
+	}
+}
+
+// TestVerifyEnv unit-tests the environment construction: forbidden vars are
+// stripped, the Go essentials survive, and GOFLAGS is forced to
+// -mod=readonly (overriding any ambient value).
+func TestVerifyEnv(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "secret-token-value")
+	t.Setenv("NEUROFORGE_DAEMON_TOKEN", "daemon-secret")
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	env := verifyEnv()
+	vals := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		vals[k] = v
+	}
+	for _, forbidden := range []string{"GITHUB_TOKEN", "NEUROFORGE_DAEMON_TOKEN"} {
+		if _, ok := vals[forbidden]; ok {
+			t.Errorf("%s present in verification env", forbidden)
+		}
+	}
+	if vals["GOPROXY"] != "off" {
+		t.Errorf("GOPROXY = %q, want forwarded value %q", vals["GOPROXY"], "off")
+	}
+	if vals["GOFLAGS"] != "-mod=readonly" {
+		t.Errorf("GOFLAGS = %q, want -mod=readonly", vals["GOFLAGS"])
+	}
+	if vals["PATH"] == "" {
+		t.Error("PATH missing from verification env")
+	}
+}
