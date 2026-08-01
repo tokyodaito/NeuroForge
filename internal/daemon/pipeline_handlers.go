@@ -108,9 +108,22 @@ func (s *PipelineService) handlePlan(ctx context.Context, rc *pipeline.RunContex
 
 // ---- ready ----
 
+// pipelineLeaseTTL bounds every lease the pipeline claims. A crashed run
+// must not hold its leases forever: after the TTL the lease expires and a
+// competing run may proceed (review finding H4 — leases were perpetual).
+const pipelineLeaseTTL = 4 * time.Hour
+
 // handleReady prepares dispatch: the managed worktree exists (created on
 // first pass, reused on re-drive) and the pending, dependency-ready work
-// package(s) are claimed under project-scoped leases (M14-05).
+// package(s) are claimed under project-scoped, TTL-bounded leases (M14-05).
+//
+// A claim that fails because of a LEASE/READINESS CONFLICT (another workspace
+// holds a path the package needs) is not a stage failure: the run is parked
+// in blocked (driver rule: lease_lost from ready) and re-driven by restart
+// recovery once the conflicting lease is released or expires. A claim that
+// fails only because a chained package's dependency is pending is expected —
+// the loop stops there; the dependent package is dispatched after its
+// dependency succeeds.
 func (s *PipelineService) handleReady(ctx context.Context, rc *pipeline.RunContext) (string, error) {
 	params, err := s.loadParams(rc.TaskID)
 	if err != nil {
@@ -147,8 +160,18 @@ func (s *PipelineService) handleReady(ctx context.Context, rc *pipeline.RunConte
 			ProjectID:   rc.ProjectID,
 			PackageID:   pkg.ID,
 			WorkspaceID: ws.ID,
+			TTL:         pipelineLeaseTTL,
 		}); cerr != nil {
+			if errors.Is(cerr, workgraph.ErrLeaseConflict) {
+				return "", &pipeline.StageError{Category: pipeline.FailureLeaseLost,
+					Reason: fmt.Sprintf("package %s blocked by conflicting lease: %v", pkg.ID, cerr)}
+			}
 			if errors.Is(cerr, workgraph.ErrPackageNotReady) {
+				if nre, ok := workgraph.AsNotReadyError(cerr); ok && hasLeaseConflictReason(nre) {
+					return "", &pipeline.StageError{Category: pipeline.FailureLeaseLost,
+						Reason: fmt.Sprintf("package %s blocked by conflicting lease: %s",
+							pkg.ID, strings.Join(nre.Reasons, "; "))}
+				}
 				break // chained packages wait for their dependency; out of scope here
 			}
 			return "", &pipeline.StageError{Category: pipeline.FailureLeaseLost, Reason: cerr.Error()}
@@ -158,6 +181,19 @@ func (s *PipelineService) handleReady(ctx context.Context, rc *pipeline.RunConte
 	evidence := fmt.Sprintf("workspace:%s;claimed:%d", ws.ID, claimed)
 	s.auditStage(ctx, rc, "completed", evidence, "")
 	return evidence, nil
+}
+
+// hasLeaseConflictReason reports whether a not-ready verdict is caused by an
+// active lease held by another workspace (reason text from
+// workgraph.ComputeReadiness: `path %q held by workspace %q`), as opposed to
+// an unmet dependency.
+func hasLeaseConflictReason(nre *workgraph.NotReadyError) bool {
+	for _, r := range nre.Reasons {
+		if strings.Contains(r, "held by workspace") {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- execute ----

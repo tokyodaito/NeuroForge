@@ -55,6 +55,7 @@ type PipelineService struct {
 	projects *project.Registry
 	specs    *task.SpecificationStore
 	graphs   *workgraph.WorkGraphStore
+	leases   *workgraph.LeaseManager
 	sched    *workgraph.Scheduler
 	wm       *workspace.Manager
 	sup      *supervisor.Supervisor
@@ -112,6 +113,7 @@ func NewPipelineService(deps PipelineDeps) (*PipelineService, error) {
 		projects:  deps.Projects,
 		specs:     deps.Specs,
 		graphs:    deps.Graphs,
+		leases:    deps.Leases,
 		sched:     workgraph.NewScheduler(deps.Graphs, deps.Leases),
 		wm:        deps.WM,
 		sup:       deps.Sup,
@@ -458,11 +460,22 @@ func (s *PipelineService) ResumeActiveRuns(ctx context.Context) {
 	}
 	for _, run := range runs {
 		if pipeline.IsWaitState(run.State) {
-			// The only legal resume from a wait state re-enters ready (which
-			// also re-activates the run).
-			if _, err := s.store.Transition(ctx, run.TaskID, pipeline.StageReady, "resume after restart", ""); err != nil {
-				s.logger.Warn("pipeline: recovery: resume wait state failed", "task", run.TaskID, "err", err)
-				continue
+			if run.CurrentStage == pipeline.StageReady {
+				// Parked while claiming (lease conflict at ready): the stage
+				// cursor is already at ready, so a stage Transition would be an
+				// idempotent no-op that never re-activates the run. Re-activate
+				// it directly; the driver re-runs the ready stage.
+				if err := s.store.SetRunState(ctx, run.TaskID, pipeline.RunStateChange{To: pipeline.RunActive}); err != nil {
+					s.logger.Warn("pipeline: recovery: re-activate blocked run failed", "task", run.TaskID, "err", err)
+					continue
+				}
+			} else {
+				// The only legal resume from a wait state re-enters ready (which
+				// also re-activates the run).
+				if _, err := s.store.Transition(ctx, run.TaskID, pipeline.StageReady, "resume after restart", ""); err != nil {
+					s.logger.Warn("pipeline: recovery: resume wait state failed", "task", run.TaskID, "err", err)
+					continue
+				}
 			}
 		} else {
 			// Store-documented re-drive path: record the interruption, bump the
@@ -510,6 +523,11 @@ func (s *PipelineService) settleRun(ctx context.Context, taskID string, run *pip
 	if !pipeline.IsTerminalRunState(run.State) {
 		return
 	}
+	// A terminal run must not hold its semantic leases beyond its lifetime:
+	// release every lease the run's workspace claimed (review finding H4 —
+	// leases were claimed and never released, so a finished run blocked
+	// competing work until the TTL expired).
+	s.releaseRunLeases(ctx, taskID)
 	ws, err := s.workspaceForTask(ctx, taskID)
 	if err != nil {
 		s.logger.Warn("pipeline: settle: list workspaces failed", "task", taskID, "err", err)
@@ -557,6 +575,24 @@ func (s *PipelineService) settleRun(ctx context.Context, taskID string, run *pip
 		RunID:         ws.RunID,
 	}); ferr != nil {
 		s.logger.Warn("pipeline: settle: finalize failed", "task", taskID, "err", ferr)
+	}
+}
+
+// releaseRunLeases releases every active lease held by the run's workspace.
+// Best-effort: a release failure is logged, never fatal — the bounded lease
+// TTL is the backstop.
+func (s *PipelineService) releaseRunLeases(ctx context.Context, taskID string) {
+	if s.leases == nil {
+		return
+	}
+	ws, err := s.workspaceForTask(ctx, taskID)
+	if err != nil || ws == nil {
+		return
+	}
+	if n, rerr := s.leases.ReleaseAll(ctx, ws.ID); rerr != nil {
+		s.logger.Warn("pipeline: release run leases failed", "task", taskID, "workspace", ws.ID, "err", rerr)
+	} else if n > 0 {
+		s.logger.Info("pipeline: released run leases", "task", taskID, "workspace", ws.ID, "count", n)
 	}
 }
 
@@ -692,6 +728,10 @@ func (s *PipelineService) buildDTO(ctx context.Context, taskID string) (transpor
 		dto.Error = run.FailureReason
 		dto.ErrorClass = errorClassForCategory(run.FailureCategory)
 		dto.NextAction = "quota exhausted; the run resumes on the next daemon start after quota reset"
+	case pipeline.RunBlocked:
+		dto.Error = run.FailureReason
+		dto.ErrorClass = "BLOCKED_LEASE"
+		dto.NextAction = "a conflicting lease blocks the run; it resumes on the next daemon start after the lease is released or expires"
 	default:
 		// active / blocked: still in flight.
 		dto.Outcome = ""

@@ -408,7 +408,9 @@ func (d *Driver) runRepair(ctx context.Context, rc *RunContext) error {
 
 // failStage records a handler error on the current stage and routes the run:
 // quota/rate-limit exhaustion from execute or verify parks the run in
-// waiting_quota; anything else fails it.
+// waiting_quota; a lease conflict from ready parks it in blocked (recovery
+// re-drives it once the conflicting lease is released or expires); anything
+// else fails it.
 func (d *Driver) failStage(ctx context.Context, rc *RunContext, herr error) error {
 	category, reason := categorizeError(herr)
 	if err := d.store.FailStage(ctx, rc.TaskID, rc.Stage, category, reason, ""); err != nil {
@@ -420,6 +422,12 @@ func (d *Driver) failStage(ctx context.Context, rc *RunContext, herr error) erro
 	if (category == FailureQuotaExceeded || category == FailureRateLimited) &&
 		(rc.Stage == StageExecute || rc.Stage == StageVerify) {
 		to = RunWaitingQuota
+	}
+	// A lease conflict while claiming work packages is a transient block, not
+	// a failure: park the run in blocked so recovery re-drives it after the
+	// conflicting lease is released or expires (review finding H4).
+	if category == FailureLeaseLost && rc.Stage == StageReady {
+		to = RunBlocked
 	}
 	return d.store.SetRunState(ctx, rc.TaskID, RunStateChange{To: to, Reason: reason})
 }
